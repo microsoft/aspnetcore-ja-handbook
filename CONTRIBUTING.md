@@ -60,7 +60,7 @@
 
 ### IDEごとの コンテンツの書き方
 
-.NET CLI と Visual Studio, Visual Studio Code + C# DevKit で異なる 固有のコンテンツを文書化する場合は、`<details` タグと`<summary>`タグを使用して、セクションを折りたたみ可能にしてください。
+.NET CLI と Visual Studio、Visual Studio Code + C# Dev Kit で異なる固有のコンテンツを文書化する場合は、`<details>` タグと `<summary>` タグを使用して、セクションを折りたたみ可能にしてください。
 
 例:
 
