@@ -190,7 +190,7 @@ public class ProductsController : Controller  // ControllerクラスはControlle
     public async Task<IActionResult> Index()
     {
         // ビューに渡すモデルデータを準備
-        var products = await _context.Product.ToListAsync();
+        var products = await _context.Product.ToListAsync(); // _contextを受け取る DI の実装は上記と同じため省略していることに注意
         return View(products);  // "Index"ビューを生成して返す (ビュー名省略時はアクション名と同じビューを探す)
     }
 
