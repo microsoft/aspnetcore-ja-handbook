@@ -92,7 +92,7 @@ app.MapGet("/hello", ExternalHandlers.SayHello);
 上記は **GET** リクエストのルート `"/hello"` に対し、 `ExternalHandlers.SayHello` を対応付けています。 
 ブラウザや HTTP クライアントで `/hello` にアクセスすると、このメソッドが実行され、文字列 `"Hello World!"` が HTTP レスポンスとして返されます。
 
-**パラメーター付きルート** の定義もシンプルです。  
+**パラメータ付きルート** の定義もシンプルです。  
 例えば製品 ID を受け取る REST パスを作る場合は以下のように書けます。
 
 ```csharp
@@ -551,6 +551,7 @@ var app = builder.Build();
 ```csharp
 // バリデーション属性を持つ Product レコード
 public record Product(
+    [Required] int Id,
     [Required] string Name,
     [Range(1, 1000)] int Quantity,
     [MaxLength(200)] string? Description
