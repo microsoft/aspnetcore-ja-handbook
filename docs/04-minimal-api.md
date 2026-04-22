@@ -4,7 +4,7 @@
 
 **Minimal API** は、ASP.NET Core (.NET 6 以降) で導入された **シンプルな HTTP API 構築手法** です。  
 従来の MVC コントローラを使用せず、 **わずかなコードで REST エンドポイントを定義** できるのが特徴です。  
-具体的には、`Program.cs`（エントリポイント）上で **ルートと対応処理（ハンドラー）を直接コードでマッピング** することで、コントローラやアクションメソッドのボイラープレートを省略できます。
+具体的には、`Program.cs`（エントリポイント）上で **ルートと対応処理（ハンドラ）を直接コードでマッピング** することで、コントローラやアクションメソッドのボイラープレートを省略できます。
 
 **※この構成は、第1章：開発環境セットアップの [6. 初回プロジェクト作成](01-setup-dev-env#6.%20初回プロジェクト作成) 節で作成します。**
 
@@ -23,7 +23,7 @@ app.Run();
 
 各エンドポイントにはラムダ式のほか、 **ローカル関数、静的メソッド、インスタンスメソッドなど任意のデリゲートを指定可能** です。  
 例えば外部のクラスに `static string SayHello()` というメソッドがあれば、 `app.MapGet("/hello", SayHello);` のように渡すこともできます。  
-※全てのコードを Program.cs に書く必要はありません。より詳細なコード構成パターンに関しては本章の「3. DI を使ったハンドラー注入、MapGroup・エンドポイントグループ化などの構成パターン」節を参照ください。
+※全てのコードを Program.cs に書く必要はありません。より詳細なコード構成パターンに関しては本章の「3. DI を使ったハンドラ注入、MapGroup・エンドポイントグループ化などの構成パターン」節を参照ください。
 
 ```csharp
 public static class ExternalHandlers
@@ -33,7 +33,7 @@ public static class ExternalHandlers
 ```
 
 ```csharp
-// 静的メソッドをそのままハンドラーとして渡す
+// 静的メソッドをそのままハンドラとして渡す
 app.MapGet("/hello", ExternalHandlers.SayHello);
 ```
 
@@ -45,7 +45,7 @@ flowchart TB
     subgraph minimal ["Minimal API"]
         direction TB
         MA_Req["HTTP リクエスト"] --> MA_Map["app.MapGet('/path', handler)（ソースで明示定義）"]
-        MA_Map --> MA_Fn["ハンドラー関数（ラムダ / メソッド）"]
+        MA_Map --> MA_Fn["ハンドラ関数（ラムダ / メソッド）"]
         MA_Fn --> MA_Resp["HTTP レスポンス"]
     end
     subgraph mvc ["MVC"]
@@ -85,7 +85,7 @@ public static class ExternalHandlers
 ```
 
 ```csharp
-// 静的メソッドをそのままハンドラーとして渡す
+// 静的メソッドをそのままハンドラとして渡す
 app.MapGet("/hello", ExternalHandlers.SayHello);
 ```
 
@@ -135,9 +135,9 @@ app.MapMethods("/products/{id}", new[] { "GET", "HEAD" }, (int id, IProductRepos
 
 ### 戻り値とレスポンス
 
-Minimal API では、ハンドラーが返す値をフレームワークが解析し、適切な HTTP レスポンスに変換します。  
+Minimal API では、ハンドラが返す値をフレームワークが解析し、適切な HTTP レスポンスに変換します。  
 例えば **文字列** を返せば `text/plain` で返送され、 **オブジェクト** を返せば JSON にシリアライズされて返送されます（既定では `System.Text.Json` を使用）。  
-`void` や `Task` を返すハンドラーで何も返さなければ 204 No Content となります。
+`void` や `Task` を返すハンドラで何も返さなければ 204 No Content となります。
 
 コントローラの `IActionResult` に相当する **汎用結果型** として、Minimal API では `IResult`（および具体実装の `Results` ヘルパー）が用意されています。  
 例えば明示的に HTTP ステータスを制御したいときは `Results.NotFound()` や `Results.Ok(data)`、`Results.Created("/resource/123", obj)` といった **ファクトリーメソッド** を return できます。  
@@ -167,15 +167,15 @@ public static Results<Ok<Product>, NotFound> GetById(int id)
 }
 ```
 
-## 3. DI を使ったハンドラー注入、MapGroup・エンドポイントグループ化などの構成パターン
+## 3. DI を使ったハンドラ注入、MapGroup・エンドポイントグループ化などの構成パターン
 
 ### Minimal API における DI
 
 **TODO** DI の詳細は6章で扱います。
 
-ASP.NET Core の DI 機能は Minimal API のハンドラーでもシームレスに利用できます。  
-コントローラではコンストラクタインジェクションで行う形式が一般的ですが、Minimal API では **ハンドラー関数のパラメータ** としてサービスを受け取ります。  
-具体的には、`builder.Services` に登録した任意のサービス型をハンドラーの引数に含めれば、実行時に自動解決されます。
+ASP.NET Core の DI 機能は Minimal API のハンドラでもシームレスに利用できます。  
+コントローラではコンストラクタインジェクションで行う形式が一般的ですが、Minimal API では **ハンドラ関数のパラメータ** としてサービスを受け取ります。  
+具体的には、`builder.Services` に登録した任意のサービス型をハンドラの引数に含めれば、実行時に自動解決されます。
 
 たとえば、データアクセス用のリポジトリサービス `IProductRepository` を DI コンテナに登録してある場合のエンドポイント定義は次の通りです。
 
@@ -195,16 +195,16 @@ app.Run();
 ```
 
 `IProductRepository repo` という形でパラメータに宣言するだけで、呼び出し時にフレームワークがコンテナから `repo` インスタンスを供給します。  
-この仕組みにより、Minimal API でも **ビジネスロジックをサービスクラスに委譲** し、ハンドラーが膨らむことを防止できます。
+この仕組みにより、Minimal API でも **ビジネスロジックをサービスクラスに委譲** し、ハンドラが膨らむことを防止できます。
 
 > [!TIP]
-> 他のフレームワークとの対応関係：MVC コントローラではコンストラクタにサービスを注入していましたが、Minimal API ではハンドラー関数の引数に直接宣言するだけで同じ DI コンテナが自動解決します。  
+> 他のフレームワークとの対応関係：MVC コントローラではコンストラクタにサービスを注入していましたが、Minimal API ではハンドラ関数の引数に直接宣言するだけで同じ DI コンテナが自動解決します。  
 > Spring Boot のコンストラクタインジェクションや Laravel の `app()->make(T::class)` に相当します。  
 > サービスの登録方法（`builder.Services.AddScoped<T>()` 等）は MVC コントローラと変わりません。
 
 ### 各種入力のバインディング
 
-Minimal API のハンドラー引数にはサービス以外にも、 **HTTP リクエストからの各種データを直接バインド** できます。  
+Minimal API のハンドラ引数にはサービス以外にも、 **HTTP リクエストからの各種データを直接バインド** できます。  
 上記の `id` のようにルートからの取得はもちろん、 **クエリ文字列** や **ヘッダー** もパラメータとして受け取れます。
 
 例えば `(int page, [FromHeader(Name="X-Custom")] string customHeader)` とパラメータを書けば、`page` は `?page=` クエリ値から、`customHeader` は HTTP ヘッダー `X-Custom` からそれぞれバインドされます。  
@@ -251,7 +251,7 @@ flowchart TD
         S["DI サービス 登録済みインターフェイス"]
     end
     Binder["Minimal API パラメータバインダー"]
-    subgraph args ["ハンドラー関数の引数"]
+    subgraph args ["ハンドラ関数の引数"]
         A1["int id （ルートから）"]
         A2["Product newProd （JSON ボディから）"]
         A3["IProductRepository repo （DI から）"]
@@ -547,8 +547,8 @@ var app = builder.Build();
 
 #### DataAnnotations によるバリデーション定義
 
-検証ルールは、ハンドラーに渡すモデルクラスやレコードのプロパティに **DataAnnotations 属性** で宣言します。（第3章の「4. モデルバインディング / 入力検証 (Validation)」節で説明したものと同等のものです。）  
-ハンドラー引数がクラスまたはレコード型の場合、フレームワークがそのプロパティに付与された属性を自動的に評価します。
+検証ルールは、ハンドラに渡すモデルクラスやレコードのプロパティに **DataAnnotations 属性** で宣言します。（第3章の「4. モデルバインディング / 入力検証 (Validation)」節で説明したものと同等のものです。）  
+ハンドラ引数がクラスまたはレコード型の場合、フレームワークがそのプロパティに付与された属性を自動的に評価します。
 
 ```csharp
 // バリデーション属性を持つ Product レコード
@@ -796,7 +796,7 @@ flowchart TD
 
 - [ASP.NET Core での Minimal API 概要 - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis/overview?view=aspnetcore-10.0)
 - [Minimal API のクイック リファレンス - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis?view=aspnetcore-10.0)
-- [Minimal API アプリのルートハンドラー - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis/route-handlers?view=aspnetcore-10.0)
+- [Minimal API アプリのルートハンドラ - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis/route-handlers?view=aspnetcore-10.0)
 - [Minimal API のパラメータバインディング - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis/parameter-binding?view=aspnetcore-10.0)
 - [Minimal API での検証のサポート - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis?view=aspnetcore-10.0#validation-support-in-minimal-apis)
 - [コントローラを使った API と Minimal API の選択 - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/apis?view=aspnetcore-10.0)
