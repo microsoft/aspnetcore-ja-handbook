@@ -456,7 +456,7 @@ graph LR
         Test["🧪 テスト\ndotnet test"]
         Publish["🚀 発行\ndotnet publish"]
         Watch["👁️ ウォッチ\ndotnet watch"]
-        Package["📦 パッケージ\ndotnet package add"]
+        Package["📦 パッケージ\ndotnet add package"]
     end
 ```
 
@@ -692,7 +692,7 @@ flowchart TB
     Step3["③ dotnet --version で確認\n10.0.xxx が表示されれば OK"]
 
     VS["Visual Studio"]
-    VSC["VS Code + C#35; Dev Kit"]
+    VSC["VS Code + C&#35; Dev Kit"]
     Rider["JetBrains Rider"]
 
     VS_Create["④ 新しいプロジェクトの作成\nから ASP.NET Core テンプレートを選択"]

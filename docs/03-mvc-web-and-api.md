@@ -24,7 +24,7 @@ sequenceDiagram
 Visual Studio のテンプレートや CLI から ASP.NET Core MVC プロジェクトを作成すると、Controllers・Models・Views フォルダーがそれぞれ作成されることが確認できます。  
 **※この構成は、第1章：開発環境セットアップの [6. 初回プロジェクト作成](01-setup-dev-env#6.%20初回プロジェクト作成) 節で作成します。**
 
-![MVC プロジェクトの Controllers・Models・Views フォルダー構成（ソリューション エクスプローラー）](images/03-01_mvc-folder-structure.png)
+![MVC プロジェクトの Controllers・Models・Views フォルダー構成（ソリューション エクスプローラー）](./images/03-01_mvc-folder-structure.png)
 
 ASP.NET Core における MVC は `Microsoft.AspNetCore.Mvc` 名前空間のアセンブリとして提供されており、 `Program.cs` でサービスを登録することで利用できます。  
 ビューを含む Web アプリケーションでは `AddControllersWithViews()` 、JSON を返す Web API のみの構成では `AddControllers()` を呼び出して MVC 機能を有効化します。  
@@ -626,7 +626,7 @@ public class Product
 }
 ```
 
-![DataAnnotations によるクライアント側バリデーションエラーがフォームに表示されている様子](images/03-02_validation-errors.png)
+![DataAnnotations によるクライアント側バリデーションエラーがフォームに表示されている様子](./images/03-02_validation-errors.png)
 
 ### 入力検証のカスタマイズ
 
@@ -762,7 +762,7 @@ public class ProductsController : ControllerBase   // ControllerBaseを継承（
 `ActionResult<T>` でオブジェクトを返せば、ASP.NET Core が自動で JSON にシリアライズしてくれます。  
 例えば前述の `ProductsController.GetProduct` では、戻り値が `ActionResult<Product>` で `return product;` としていますが、これは実際には `return Ok(product);` と同等の効果で、JSON ボディが返っています。
 
-![API コントローラーが返す JSON レスポンスをブラウザの開発者ツールで確認した様子](images/03-03_api-json-response.png)
+![API コントローラーが返す JSON レスポンスをブラウザの開発者ツールで確認した様子](./images/03-03_api-json-response.png)
 
 ### ControllerBase
 
