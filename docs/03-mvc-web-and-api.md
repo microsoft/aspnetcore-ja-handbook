@@ -757,7 +757,7 @@ public class ProductsController : ControllerBase   // ControllerBaseを継承（
 `CreatedAtAction` は第 1 引数に指定したアクション（ここでは `GetProduct` ）への URI を Location ヘッダーに含め、ボディに新規作成したリソースを含む標準的な HTTP 201 応答を構築します。  
 このように、ASP.NET Core MVC のコントローラーでは、少ないコードで HTTP のベストプラクティスに沿ったレスポンスを返すことができます。
 
-加えて、API コントローラーでは **明示的な内容協調 (コンテンツネゴシエーション)** が行われます。  
+加えて、API コントローラーでは **コンテンツネゴシエーション（Content Negotiation）** が行われます。  
 デフォルトではクライアントからの `Accept` ヘッダーを見て JSON や XML で返すか決定します（標準では JSON シリアライザーが登録済み）。  
 `ActionResult<T>` でオブジェクトを返せば、ASP.NET Core が自動で JSON にシリアライズしてくれます。  
 例えば前述の `ProductsController.GetProduct` では、戻り値が `ActionResult<Product>` で `return product;` としていますが、これは実際には `return Ok(product);` と同等の効果で、JSON ボディが返っています。

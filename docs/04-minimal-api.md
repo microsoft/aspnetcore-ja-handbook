@@ -99,7 +99,7 @@ app.MapGet("/hello", ExternalHandlers.SayHello);
 app.MapGet("/products/{id}", (int id) => $"ProductId: {id}");
 ```
 
-拡張メソッドとして別途定義したメソッドに渡す場合は以下のように書けます。
+別途定義した static メソッドに渡す場合は以下のように書けます。
 
 ```csharp
 public static IResult GetById(int id)
@@ -122,14 +122,14 @@ app.MapGet("/products/{id}", GetById);
 この **ルート値のバインド** は MVC の Attribute Routing と同様ですが、Minimal API では **引数リストとルートテンプレートを突き合わせて自動バインド** します。  
 
 **HTTP メソッドの種類** も、 `MapGet` 以外に `MapPost` , `MapPut` , `MapDelete` などが用意されています。  
-一つの URL パスに対し複数のメソッドを受け付けたい場合は、 `MapMethods("パス", new[] { "PATCH", "HEAD" }, handler)` のような汎用メソッドを使用できます。
+一つの URL パスに対し複数のメソッドを受け付けたい場合は、 `MapMethods("パス", new[] { "GET", "HEAD" }, handler)` のような汎用メソッドを使用できます。
 
 ```csharp
-// PATCH と HEAD の両メソッドを受け付けるエンドポイント
-app.MapMethods("/products/{id}", new[] { "PATCH", "HEAD" }, (int id, Product patch, IProductRepository repo) =>
+// GET と HEAD の両メソッドを受け付けるエンドポイント
+app.MapMethods("/products/{id}", new[] { "GET", "HEAD" }, (int id, IProductRepository repo) =>
 {
-    var updated = repo.Patch(id, patch);
-    return updated is not null ? Results.Ok(updated) : Results.NotFound();
+    var product = repo.GetById(id);
+    return updated is not null ? Results.Ok(product) : Results.NotFound();
 });
 ```
 
@@ -174,7 +174,7 @@ public static Results<Ok<Product>, NotFound> GetById(int id)
 **TODO** DI の詳細は6章で扱います。
 
 ASP.NET Core の DI 機能は Minimal API のハンドラーでもシームレスに利用できます。  
-コントローラーではコンストラクタインジェクションで行う形式が一般的ですが、Minimal API では **ハンドラー関数のパラメーター** としてサービスを受け取ります。  
+コントローラーではコンストラクタインジェクションで行う形式が一般的ですが、Minimal API では **ハンドラー関数のパラメータ** としてサービスを受け取ります。  
 具体的には、`builder.Services` に登録した任意のサービス型をハンドラーの引数に含めれば、実行時に自動解決されます。
 
 たとえば、データアクセス用のリポジトリサービス `IProductRepository` を DI コンテナに登録してある場合のエンドポイント定義は次の通りです。
@@ -185,7 +185,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddScoped<IProductRepository, ProductRepository>(); // DI 登録
 
 var app = builder.Build();
-app.MapGet("/products/{id}", (int id, IProductRepository repo) => // 登録した具象クラスを受け取る
+app.MapGet("/products/{id}", (int id, IProductRepository repo) => // 登録した具象クラスをIProductRepositoryとして受け取る
 {
     var prod = repo.Find(id);
     return prod is not null ? Results.Ok(prod) : Results.NotFound();
@@ -342,6 +342,8 @@ app.Run();
 
 ```csharp
 // ProductsEndpoints.cs ─ 商品エンドポイントを拡張メソッドに分離
+using Microsoft.AspNetCore.Http.HttpResults;
+
 public static class ProductsEndpoints
 {
     public static IEndpointRouteBuilder MapProducts(this IEndpointRouteBuilder app)

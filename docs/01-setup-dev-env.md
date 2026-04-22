@@ -135,7 +135,7 @@ winget install Microsoft.DotNet.SDK.10
 winget install Microsoft.DotNet.AspNetCore.10
 
 # インストール済み SDK 一覧を確認
-winget search Microsoft.DotNet.SDK
+dotnet --list-sdks
 ```
 
 #### 方法 C: PowerShell スクリプト（CI / 非管理者環境向け）
