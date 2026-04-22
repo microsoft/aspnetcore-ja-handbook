@@ -64,7 +64,7 @@
 
 例:
 
-```
+````markdown
 <details>
 <summary>CLI</summary>
 
@@ -75,7 +75,7 @@ dotnet add src/Web/Web.csproj reference src/ApplicationCore/ApplicationCore.cspr
 ```
 
 </details>
-```
+````
 
 この実装は次のように表示されます。
 <details>
