@@ -95,8 +95,8 @@ dotnet add src/Web/Web.csproj reference src/ApplicationCore/ApplicationCore.cspr
 
 ```
 > [!TIP]
-> NuGet は .NET 標準のパッケージ管理システムであり、Java における Maven/Gradle 、JavaScript における npm 、PHP における Composer に近いものです。
+> NuGet は .NET 標準のパッケージ管理システムであり、Java における Maven/Gradle、JavaScript における npm、PHP における Composer に近いものです。
 ```
 
 > [!TIP]
-> NuGet は .NET 標準のパッケージ管理システムであり、Java における Maven/Gradle 、JavaScript における npm 、PHP における Composer に近いものです。
+> NuGet は .NET 標準のパッケージ管理システムであり、Java における Maven/Gradle、JavaScript における npm、PHP における Composer に近いものです。
