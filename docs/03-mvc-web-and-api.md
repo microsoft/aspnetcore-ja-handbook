@@ -326,7 +326,7 @@ app.Run();
 ```
 
 上記 `MapControllerRoute` でパターン `{controller=Home}/{action=Index}/{id?}` を登録することで、URL とコントローラー/アクションのマッピングが有効になります。  
-この規約では、 `controller` プレースホルダーにはコントローラー名（末尾の「Controller」除く）が、 `action` にはアクションメソッド名が、 `id` にはオプションのパラメーターがそれぞれマッチします。  
+この規約では、 `controller` プレースホルダーにはコントローラー名（末尾の「Controller」除く）が、 `action` にはアクションメソッド名が、 `id` にはオプションのパラメータがそれぞれマッチします。  
 例えば URL が `/Home/Privacy` なら `HomeController` の `Privacy` アクションが実行されます。
 
 なお、 `=Home` や `=Index` の部分はデフォルト値であり、必須ではありません。  
