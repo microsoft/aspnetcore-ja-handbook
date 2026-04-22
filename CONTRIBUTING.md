@@ -33,7 +33,7 @@
 5. 分かりやすいコミットメッセージでコミットする
 6. フォーク先にプッシュする
 7. Pull Request を作成する
-   - Pull Request 作成時の説明は必ず キーワードを使用して issue のリンクを含める必要があります。例: `fixes #123`、`closes #123` など。詳しくは [GitHub のドキュメント](https://docs.github.com/ja/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue#linking-a-pull-request-to-an-issue-using-a-keyword)をご確認ください
+   - Pull Request 作成時の説明は必ずキーワードを使用して issue のリンクを含める必要があります。例: `fixes #123`、`closes #123` など。詳しくは [GitHub のドキュメント](https://docs.github.com/ja/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue#linking-a-pull-request-to-an-issue-using-a-keyword)をご確認ください
    - 必ず [行動規範](CODE_OF_CONDUCT.md) に従ってください
 
 ## ✍️ ライティングスタイルガイド
