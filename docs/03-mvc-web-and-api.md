@@ -22,7 +22,7 @@ sequenceDiagram
 ```
 
 Visual Studio のテンプレートや CLI から ASP.NET Core MVC プロジェクトを作成すると、Controllers・Models・Views フォルダーがそれぞれ作成されることが確認できます。  
-**TODO: ※この構成は、第1章：開発環境セットアップの [初回プロジェクト作成（テンプレート選択：Web API, MVC, Minimal API など）]() 節で作成します。**
+**※この構成は、第1章：開発環境セットアップの [6. 初回プロジェクト作成](01-setup-dev-env#6.%20初回プロジェクト作成) 節で作成します。**
 
 ![MVC プロジェクトの Controllers・Models・Views フォルダー構成（ソリューション エクスプローラー）](images/03-01_mvc-folder-structure.png)
 
@@ -190,7 +190,7 @@ public class ProductsController : Controller  // ControllerクラスはControlle
     public async Task<IActionResult> Index()
     {
         // ビューに渡すモデルデータを準備
-        var products = await _context.Product.ToListAsync()
+        var products = await _context.Product.ToListAsync();
         return View(products);  // "Index"ビューを生成して返す (ビュー名省略時はアクション名と同じビューを探す)
     }
 
@@ -268,7 +268,7 @@ public class ProductsController : Controller
     // UI 用: ビューを返すアクション（IActionResult を返す）
     public async Task<IActionResult> Index()
     {
-        var products = await _context.Product.ToListAsync()
+        var products = await _context.Product.ToListAsync();
         return View(products);                  // 200 OK + Razor ビューで HTML を生成
     }
 

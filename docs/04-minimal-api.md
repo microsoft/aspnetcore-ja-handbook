@@ -6,7 +6,7 @@
 従来の MVC コントローラーを使用せず、 **わずかなコードで REST エンドポイントを定義** できるのが特徴です。  
 具体的には、`Program.cs`（エントリポイント）上で **ルートと対応処理（ハンドラー）を直接コードでマッピング** することで、コントローラーやアクションメソッドのボイラープレートを省略できます。
 
-**TODO: ※この構成は、第1章：開発環境セットアップの [初回プロジェクト作成（テンプレート選択：Web API, MVC, Minimal API など）]() 節で作成します。**
+**※この構成は、第1章：開発環境セットアップの [6. 初回プロジェクト作成](01-setup-dev-env#6.%20初回プロジェクト作成) 節で作成します。**
 
 **ASP.NET Core テンプレートから作成した、Minimal API の最小コード例**
 
@@ -89,8 +89,8 @@ public static class ExternalHandlers
 app.MapGet("/hello", ExternalHandlers.SayHello);
 ```
 
-上記は **GET** リクエストのルート `"/"` （ルート URL）に対し、 `ExternalHandlers.SayHello` を対応付けています。  
-ブラウザや HTTP クライアントでルートにアクセスすると、このメソッドが実行され、文字列 `"Hello World!"` が HTTP レスポンスとして返されます。  
+上記は **GET** リクエストのルート `"/hello"` に対し、 `ExternalHandlers.SayHello` を対応付けています。 
+ブラウザや HTTP クライアントで `/hello` にアクセスすると、このメソッドが実行され、文字列 `"Hello World!"` が HTTP レスポンスとして返されます。
 
 **パラメーター付きルート** の定義もシンプルです。  
 例えば製品 ID を受け取る REST パスを作る場合は以下のように書けます。
@@ -353,6 +353,8 @@ public static class ProductsEndpoints
         group.MapPost("/", Create);
         group.MapPut("/{id}", Update);
         group.MapDelete("/{id}", Delete);
+
+        return app;
     }
 
     private static Ok<List<Product>> GetAll() =>

@@ -479,16 +479,16 @@ graph LR
 
 ```bash
 # NuGet パッケージを追加
-dotnet package add Microsoft.EntityFrameworkCore
+dotnet add package Microsoft.EntityFrameworkCore
 
 # インストール済みパッケージ一覧
-dotnet package list
+dotnet list package
 
 # パッケージを削除
-dotnet package remove Microsoft.EntityFrameworkCore
+dotnet remove package Microsoft.EntityFrameworkCore
 
 # パッケージを更新
-dotnet package update Microsoft.EntityFrameworkCore
+dotnet add package Microsoft.EntityFrameworkCore --version 9.0.0
 ```
 
 ### ビルドと実行の流れ
