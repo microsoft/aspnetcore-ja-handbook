@@ -58,7 +58,7 @@
 
 以降に本コンテンツ固有の記載方法について説明します。
 
-### IDEごとの コンテンツの書き方
+### IDEごとのコンテンツの書き方
 
 .NET CLI と Visual Studio、Visual Studio Code + C# Dev Kit で異なる固有のコンテンツを文書化する場合は、`<details>` タグと `<summary>` タグを使用して、セクションを折りたたみ可能にしてください。
 
