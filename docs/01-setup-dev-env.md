@@ -535,16 +535,16 @@ graph TD
     Web_API --> ControllerAPI["Controller API\n(webapi --use-controllers)\nREST API 向け\n大規模プロジェクト向け"]
     Web_API --> AOT["AOT API\n(webapiaot)\nNative AOT\n最高パフォーマンス"]
 
-    MVC --> MVCApp["ASP.NET Core MVC\n(mvc)\nUI + コントローラー"]
+    MVC --> MVCApp["ASP.NET Core MVC\n(mvc)\nUI + コントローラ"]
     MVC --> RazorPages["Razor Pages\n(webapp)\nページベース"]
 ```
 
 | テンプレート | コマンド | 用途 |
 |---|---|---|
 | **ASP.NET Core Web API** (Minimal API) | `dotnet new webapi` | REST API・マイクロサービス |
-| ASP.NET Core Web API (コントローラー) | `dotnet new webapi --use-controllers` | 大規模 REST API |
+| ASP.NET Core Web API (コントローラ) | `dotnet new webapi --use-controllers` | 大規模 REST API |
 | ASP.NET Core API (Native AOT) | `dotnet new webapiaot` | 高パフォーマンス API |
-| ASP.NET Core MVC | `dotnet new mvc` | サーバーサイドレンダリング Web アプリ |
+| ASP.NET Core MVC | `dotnet new mvc` | サーバサイドレンダリング Web アプリ |
 | ASP.NET Core Web App (Razor Pages) | `dotnet new webapp` | ページ中心のシンプルな Web アプリ |
 | ASP.NET Core gRPC | `dotnet new grpc` | gRPC サービス |
 | Worker Service | `dotnet new worker` | バックグラウンドサービス |
@@ -605,7 +605,7 @@ MVC プロジェクトの構造:
 ```
 MyMvcApp/
 ├── Controllers/
-│   └── HomeController.cs      # コントローラー
+│   └── HomeController.cs      # コントローラ
 ├── Models/
 │   └── ErrorViewModel.cs      # モデル
 ├── Views/
@@ -627,7 +627,7 @@ MyMvcApp/
 ```bash
 # テンプレートを指定してプロジェクト作成
 dotnet new webapi                          # Web API（Minimal API）
-dotnet new webapi --use-controllers        # Web API（コントローラーベース）
+dotnet new webapi --use-controllers        # Web API（コントローラベース）
 dotnet new mvc                             # MVC
 dotnet new webapp                          # Razor Pages
 
@@ -654,7 +654,7 @@ flowchart LR
     New["dotnet new\nプロジェクト作成"] --> Restore["dotnet restore\nパッケージ復元\n（自動実行）"]
     Restore --> Build["dotnet build\nビルド"]
     Build --> Test["dotnet test\nテスト実行"]
-    Test --> Run["dotnet run\n開発サーバー起動"]
+    Test --> Run["dotnet run\n開発サーバ起動"]
     Run --> |コード変更| Watch["dotnet watch\nHot Reload"]
     Watch --> |変更検知| Run
 
@@ -700,7 +700,7 @@ flowchart TB
     Rider_Create["④ New Solution から\nASP.NET Core テンプレートを選択"]
 
     VS_Run["⑤ F5 または Ctrl+F5 で\nデバッグ実行"]
-    VSC_Run["⑤ dotnet watch run で\n開発サーバーを起動"]
+    VSC_Run["⑤ dotnet watch run で\n開発サーバを起動"]
     Rider_Run["⑤ Run / Debug で\nデバッグ実行"]
 
     Step1 --> Step3 --> Step2
