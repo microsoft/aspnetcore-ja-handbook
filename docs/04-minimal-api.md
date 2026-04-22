@@ -362,7 +362,8 @@ public static class ProductsEndpoints
     private static Ok<List<Product>> GetAll() =>
         TypedResults.Ok(ProductStore.Products);
 
-    ... // 他のエンドポイント用メソッド定義
+        // 他のエンドポイント用メソッド定義
+        // ...
 }
 ```
 
@@ -497,7 +498,8 @@ public static class ProductsV1Handler
     private static Ok<List<Product>> GetAll() =>
         TypedResults.Ok(ProductStore.Products);
 
-    ... // 他のエンドポイント用メソッド定義
+        // 他のエンドポイント用メソッド定義
+        // ...
 }
 ```
 
@@ -524,7 +526,8 @@ public static class ProductsV2Handler
         return TypedResults.Ok(new ProductListResult(result.Count, result));
     }
 
-    ... // 他のエンドポイント用メソッド定義
+    // 他のエンドポイント用メソッド定義
+    // ...
 }
 ```
 
