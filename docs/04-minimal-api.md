@@ -244,13 +244,13 @@ app.MapPost("/upload", ([FromForm] string description, IFormFile file, ILogger<P
 ```mermaid
 flowchart TD
     subgraph sources ["バインド元（引数の型と名前で自動判定）"]
-        R["ルートパラメーター 例: /items/{id}"]
+        R["ルートパラメータ 例: /items/{id}"]
         Q["クエリ文字列 例: ?page=2"]
         B["リクエストボディ（JSON） ※複合型の引数"]
         H["ヘッダー [FromHeader] 属性を付与"]
         S["DI サービス 登録済みインターフェイス"]
     end
-    Binder["Minimal API パラメーターバインダー"]
+    Binder["Minimal API パラメータバインダー"]
     subgraph args ["ハンドラー関数の引数"]
         A1["int id （ルートから）"]
         A2["Product newProd （JSON ボディから）"]
@@ -797,6 +797,6 @@ flowchart TD
 - [ASP.NET Core での Minimal API 概要 - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis/overview?view=aspnetcore-10.0)
 - [Minimal API のクイック リファレンス - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis?view=aspnetcore-10.0)
 - [Minimal API アプリのルートハンドラー - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis/route-handlers?view=aspnetcore-10.0)
-- [Minimal API のパラメーターバインディング - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis/parameter-binding?view=aspnetcore-10.0)
+- [Minimal API のパラメータバインディング - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis/parameter-binding?view=aspnetcore-10.0)
 - [Minimal API での検証のサポート - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis?view=aspnetcore-10.0#validation-support-in-minimal-apis)
 - [コントローラーを使った API と Minimal API の選択 - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/apis?view=aspnetcore-10.0)

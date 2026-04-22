@@ -223,7 +223,7 @@ public string Hello() => "Hello, World!";
 そのため、実際のアプリケーションでは **戻り値型** として `IActionResult` インターフェイス（または ASP.NET Core 2.1 以降はジェネリック版の `ActionResult<T>` ）を使用する場面が多く、これが HTTP レスポンスとしてクライアントに送出されます。  
 1 つのアクションから HTML ビューや JSON データ、HTTP ステータスコードのみといった多様なレスポンスを返すために、ASP.NET Core では共通して `IActionResult` で抽象化する手法を用います。
 
-また、 `IActionResult` インターフェースを実装した具象クラスを簡単に返せるよう、 `Controller` および `ControllerBase` クラスには多数のヘルパーメソッドが用意されています。  
+また、 `IActionResult` インターフェイスを実装した具象クラスを簡単に返せるよう、 `Controller` および `ControllerBase` クラスには多数のヘルパーメソッドが用意されています。  
 `IActionResult` インターフェイスを実装した主な具象クラスと、対応するヘルパーメソッドの一覧を以下に示します。
 
 **`IActionResult` 具象クラスとヘルパーメソッド対応表**
@@ -349,7 +349,7 @@ app.Run();
 > 属性ルーティングは、Java の Spring MVC における `@RequestMapping` / `@GetMapping` などを用いた各メソッドへのパス付与に近い方法です。
 
 属性ルーティングを使うには、コントローラークラスに `[Route("...")]` 属性を、アクションメソッドに HTTP メソッドに対応する `[HttpGet]` , `[HttpPost]` 等の属性を付与します。  
-属性内では中括弧 `{}` を使ってパラメーターを指定できます。  
+属性内では中括弧 `{}` を使ってパラメータを指定できます。  
 また `[controller]` や `[action]` といったトークンを用いると、それぞれクラス名から「Controller」を除いた部分やメソッド名に自動置換されます。  
 属性ルーティングを有効にするには、 `Program.cs` で `app.MapControllers();` を呼び出す（ `AddControllers` 登録時）か、 `AddControllersWithViews` を使っている場合も内部的に属性ルートが有効になります。
 
@@ -377,7 +377,7 @@ public class ProductsController : Controller
 ```
 
 上記では、 `ProductsController` に対し `[Route("api/[controller]")]` を指定することで、このクラス内のアクションはすべて `api/Products` プレフィックスを持つ URL にマップされます。  
-各アクションには HTTP メソッドごとの属性を付与し、必要に応じてパスに `{id}` のようなパラメーターを定義しています。  
+各アクションには HTTP メソッドごとの属性を付与し、必要に応じてパスに `{id}` のようなパラメータを定義しています。  
 例えば、 `GET api/Products/5` というリクエストが来た場合、 `GetProduct(int id)` メソッドが `id=5` として呼び出されます。  
  `HttpPost` が付いた `Create` メソッドは `POST api/Products` に対応します。
 
@@ -419,7 +419,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     subgraph sources ["バインド元"]
-        R["ルートパラメーター 例: /products/{id}"]
+        R["ルートパラメータ 例: /products/{id}"]
         Q["クエリ文字列 例: ?page=2"]
         B["リクエストボディ JSON / フォームデータ"]
         H["ヘッダー / Cookie"]
@@ -516,7 +516,7 @@ using (var reader = new StreamReader(Request.Body))
 ### 補足：文脈に応じたバインド元推論
 
 ASP.NET Core のモデルバインディングは **複雑な型**（クラスなど）の引数であればリクエストボディ（通常は JSON や XML）からデータを取得し、 **シンプルな型**（int や string など）の引数であればルート変数やクエリ文字列、フォームデータから値を取得する、というように **文脈に応じたバインド元推論** が行われます。  
-例えば Web API で `[ApiController]` を付与している場合、 `POST` メソッドの複合型パラメーターは自動的に\[FromBody]（リクエストボディから）と解釈され、 `GET` メソッドの int や string パラメーターは\[FromRoute]または\[FromQuery]と解釈されます。必要であれば明示的に属性で指定することも可能です。（ `[ApiController]` 属性に関して詳細は次節「5. API を MVC コントローラーで実装する方法（ControllerBase, \[ApiController] 属性）」で解説します。）
+例えば Web API で `[ApiController]` を付与している場合、 `POST` メソッドの複合型パラメータは自動的に\[FromBody]（リクエストボディから）と解釈され、 `GET` メソッドの int や string パラメータは\[FromRoute]または\[FromQuery]と解釈されます。必要であれば明示的に属性で指定することも可能です。（ `[ApiController]` 属性に関して詳細は次節「5. API を MVC コントローラーで実装する方法（ControllerBase, \[ApiController] 属性）」で解説します。）
 
 ```csharp
 [ApiController]
@@ -541,14 +541,14 @@ public class ProductsController : ControllerBase
 ```
 
 > [!NOTE]
-> クエリ文字列のキー名とアクションパラメーター名の照合は **既定では大文字・小文字を区別しません**（例: `?ReturnUrl=...` と `?returnUrl=...` はどちらも `string returnUrl` にバインドされます）。  
+> クエリ文字列のキー名とアクションパラメータ名の照合は **既定では大文字・小文字を区別しません**（例: `?ReturnUrl=...` と `?returnUrl=...` はどちらも `string returnUrl` にバインドされます）。  
 > JSON リクエストボディについても、ASP.NET Core が既定で使用する `System.Text.Json` のデシリアライザーは標準では **大文字・小文字を区別せず** プロパティ名を照合します。  
 > そのため `{ "name": "ProductA" }` と `{ "Name": "ProductA" }` はどちらも `Product.Name` にバインドされます。  
 > ただし、JSON リクエストボディのデシリアライズ時に `JsonSerializerOptions` で `PropertyNameCaseInsensitive = false` を明示した場合は区別されるようになります。
 
 バインドの際に名前が合致しない場合や、型変換が失敗した場合、その情報は `ModelState` に格納されます。  
 `ModelState` はキー（フィールド名）ごとにバインドや検証の状態を持つ辞書で、アクション内で検証に使用されます。  
-例えばクエリ文字列 `?price=abc` を int パラメーター `price` にバインドしようとすると、変換エラーで `ModelState` にエラーが追加されます。
+例えばクエリ文字列 `?price=abc` を int パラメータ `price` にバインドしようとすると、変換エラーで `ModelState` にエラーが追加されます。
 
 このような挙動により、大抵の場合は開発者が特に意識せずとも適切にバインドが行われます。
 
@@ -779,8 +779,8 @@ API 用コントローラークラスには `[ApiController]` 属性を付与す
 
 1. **属性ルーティングの必須化** – `[ApiController]` を付けたコントローラーでは **従来の規約ルートによるアクセスが無効** となり、 **明示的に付与したルート属性経由でしかアクションにアクセスできなくなります** 。そのため、API コントローラーは **必ず `[Route]` や `[HttpGet]` 等でルートを定義する必要があります** 。
 2. **自動 HTTP 400応答** – モデルバインドや検証でエラーが発生した場合、アクションメソッドへ到達する前に自動的に 400 Bad Request 応答が返されます。開発者が明示的に `if (!ModelState.IsValid) return BadRequest(...);` と書かなくてもよくなります。返される 400 応答のボディは標準化された **ValidationProblemDetails** 型で、どのフィールドでエラーが起きたかを JSON 形式で示す内容になります。
-3. **バインド元の自動推論** – アクションメソッドのパラメーターに対し、明示的な `[FromBody]` や `[FromQuery]` を付けなくても **適切なバインド元をフレームワークが推定** します。例えば複合型のパラメーターであればリクエストボディから、 `IFormFile` 型であればフォームデータから、 `int` や `string` でルートテンプレートに含まれていれば URI セグメントから、などです。この推論規則により、コードを簡潔に保てます（必要であれば `[FromQuery]` 等で明示も可能）。
-4. **Multipart/form-data の推論** – Content-Type が multipart/form-data の場合の取り扱いも自動化され、ファイルアップロードシナリオで便利になります。例えばアクションに `IFormFile` パラメーターがあれば、 `[FromForm]` と推定されます。
+3. **バインド元の自動推論** – アクションメソッドのパラメータに対し、明示的な `[FromBody]` や `[FromQuery]` を付けなくても **適切なバインド元をフレームワークが推定** します。例えば複合型のパラメータであればリクエストボディから、 `IFormFile` 型であればフォームデータから、 `int` や `string` でルートテンプレートに含まれていれば URI セグメントから、などです。この推論規則により、コードを簡潔に保てます（必要であれば `[FromQuery]` 等で明示も可能）。
+4. **Multipart/form-data の推論** – Content-Type が multipart/form-data の場合の取り扱いも自動化され、ファイルアップロードシナリオで便利になります。例えばアクションに `IFormFile` パラメータがあれば、 `[FromForm]` と推定されます。
 5. **エラー時の ProblemDetails 適用** – 404 や 500 エラーなど、特定のステータスコードでレスポンスを返す際に **RFC7807 に準拠した Problem Details** 形式のボディを既定で生成します。例えば `return NotFound();` とすると空ボディではなくエラー詳細を含む JSON が返ります（カスタマイズも可能）。
 
 > [!TIP]
