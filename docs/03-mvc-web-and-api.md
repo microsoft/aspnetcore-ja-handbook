@@ -27,7 +27,7 @@
    - [API コントローラー／アクション実装の例](#api-コントローラーアクション実装の例)
    - [ControllerBase](#controllerbase)
    - [[ApiController] 属性](#apicontroller-属性)
-   - [APIコントローラー実装時の注意](#apiコントローラー実装時の注意)
+   - [API コントローラー実装時の注意](#apiコントローラー実装時の注意)
 6. [フィルター（ActionFilter, ExceptionFilter 等）と横断処理](#6-フィルターactionfilter-exceptionfilter-等と横断処理)
    - [フィルターの用途とベストプラクティス](#フィルターの用途とベストプラクティス)
 7. [参考ドキュメント](#7-参考ドキュメント)
