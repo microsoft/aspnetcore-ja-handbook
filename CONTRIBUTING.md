@@ -11,7 +11,7 @@
 - **コンテンツの改善** - 既存のドキュメントをより分かりやすい説明、最新の情報、追加の例などで改善します。
 - **コードへの貢献** - サイトのコードベースの改善、バグ修正、新機能の追加を行います。
 
-貢献の手段は GitHub 上での Issue を作成、または Discussion を立ててから Issue を作成、その上で Pull Request を作成する形になります。以下のセクションで詳しく説明します。
+貢献の手段は GitHub 上での Issue を作成、または Discussion を経て Issue を作成し、その上で Pull Request を作成する形になります。以下のセクションで詳しく説明します。
 
 ## ➡️ Git ワークフロー
 
@@ -36,9 +36,9 @@
    - Pull Request 作成時の説明は必ずキーワードを使用して Issue のリンクを含める必要があります。例: `fixes #123`、`closes #123` など。詳しくは [GitHub のドキュメント](https://docs.github.com/ja/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue#linking-a-pull-request-to-an-issue-using-a-keyword)をご確認ください
    - 必ず [行動規範](CODE_OF_CONDUCT.md) に従ってください
 8. GitHub Copilot code review のレビューに対応する
-   - Pull Request を作成すると、自動的に GitHub Copilot code review が起動し、あなたの Pull Request の内容をレビューします。必ずレビューの通りに修正しなければならない訳ではありませんが、従っておいた方が良い結果となることが多いはずです。修正したら、必ずレビューを「解決」にしてください。もし、レビューの内容がおかしかった場合は、ただ「解決」にしてください。
-9. Pull Request が承認されて main に マージ されます
-   - GitHub Copilot code review による全てのレビューが解決済みであり、CODEOWNER による手動レビューの後に main にマージされます。
+   - Pull Request を作成すると、自動的に GitHub Copilot code review が起動し、あなたの Pull Request の内容をレビューします。レビューの修正は必須ではありませんが、従うことを推奨します。修正後は該当レビューを解決済みにマークしてください。レビュー内容が不適切な場合も同様に解決済みとしてください。
+9. Pull Request が承認されて `main` にマージされる
+   - GitHub Copilot code review による全てのレビューが解決済みであり、CODEOWNERS による手動レビューの後に `main` にマージされます。
 
 ## ✍️ ライティングスタイルガイド
 
