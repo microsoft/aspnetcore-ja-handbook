@@ -1,5 +1,27 @@
 # 第4章：Minimal API の解説と使いどころ
 
+---
+
+## 目次
+
+1. [Minimal API とは何か？（MVC ベースとどう違うか）](#1-minimal-api-とは何かmvc-ベースとどう違うか)
+2. [Minimal API の基本構文（MapGet, MapPost 等）](#2-minimal-api-の基本構文mapget-mappost-等)
+   - [マッピング定義](#マッピング定義)
+   - [戻り値とレスポンス](#戻り値とレスポンス)
+3. [DI を使ったハンドラ注入、MapGroup・エンドポイントグループ化などの構成パターン](#3-di-を使ったハンドラ注入mapgroupエンドポイントグループ化などの構成パターン)
+   - [Minimal API における DI](#minimal-api-における-di)
+   - [各種入力のバインディング](#各種入力のバインディング)
+   - [コード構成パターン](#コード構成パターン)
+4. [Minimal API の制約・注意点と MVC との比較（構造、可読性、機能面）](#4-minimal-api-の制約注意点と-mvc-との比較構造可読性機能面)
+   - [構造と可読性](#構造と可読性)
+   - [バリデーション](#バリデーション)
+   - [フィルター/横断的関心事](#フィルター横断的関心事)
+   - [性能](#性能)
+5. [どのようなケースで使うかの判断基準](#5-どのようなケースで使うかの判断基準)
+6. [参考ドキュメント](#6-参考ドキュメント)
+
+---
+
 ## 1. Minimal API とは何か？（MVC ベースとどう違うか）
 
 **Minimal API** は、ASP.NET Core (.NET 6 以降) で導入された **シンプルな HTTP API 構築手法** です。  
@@ -795,7 +817,7 @@ flowchart TD
 **サーバーレス（Azure Functions 等）** との親和性も高く、無駄な処理を省いた Minimal API はコールドスタート時間短縮に寄与します。
 一方で、サーバーサイドレンダリングの HTML が必要な場合や、既存資産（認証認可の仕組み、フィルター、一部モデルバインドや O/R マッパーとの連携など）を活かす場合は MVC コントローラーの採用が検討されます。
 
-## 参考ドキュメント
+## 6. 参考ドキュメント
 
 - [ASP.NET Core での Minimal API 概要 - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis/overview?view=aspnetcore-10.0)
 - [Minimal API のクイック リファレンス - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis?view=aspnetcore-10.0)

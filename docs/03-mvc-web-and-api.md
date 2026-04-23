@@ -3,6 +3,37 @@
 この章では **MVC スタイルのコントローラー** で Web アプリケーション および API を実装する方法を説明します。  
 ※昨今は **Minimal API** と呼ばれるコントローラーを使わない手法もあり、 [次章](./04-minimal-api.md) で紹介します。
 
+---
+
+## 目次
+
+1. [MVC (Model-View-Controller) 構成の基本](#1-mvc-model-view-controller-構成の基本)
+   - [モデル (Model)](#モデル-model)
+   - [ビュー (View)](#ビュー-view)
+   - [コントローラー (Controller)](#コントローラー-controller)
+2. [コントローラー／アクションの書き方](#2-コントローラーアクションの書き方)
+   - [コントローラー](#コントローラー)
+   - [アクション](#アクション)
+3. [ルーティング（属性ルーティング / 規約ベースルーティング）](#3-ルーティング属性ルーティング--規約ベースルーティング)
+   - [規約ベースルーティング (Convention-based Routing)](#規約ベースルーティング-convention-based-routing)
+   - [属性ルーティング (Attribute Routing)](#属性ルーティング-attribute-routing)
+4. [モデルバインディング / 入力検証 (Validation)](#4-モデルバインディング--入力検証-validation)
+   - [モデルバインディング](#モデルバインディング)
+   - [補足： `Product` に含まれないリクエスト情報の取得例](#補足-product-に含まれないリクエスト情報の取得例)
+   - [補足：文脈に応じたバインド元推論](#補足文脈に応じたバインド元推論)
+   - [入力検証 (バリデーション)](#入力検証-バリデーション)
+   - [入力検証のカスタマイズ](#入力検証のカスタマイズ)
+5. [API を MVC コントローラーで実装する方法（ControllerBase, [ApiController] 属性）](#5-api-を-mvc-コントローラーで実装する方法controllerbase-apicontroller-属性)
+   - [API コントローラー／アクション実装の例](#api-コントローラーアクション実装の例)
+   - [ControllerBase](#controllerbase)
+   - [[ApiController] 属性](#apicontroller-属性)
+   - [API コントローラー実装時の注意](#apiコントローラー実装時の注意)
+6. [フィルター（ActionFilter, ExceptionFilter 等）と横断処理](#6-フィルターactionfilter-exceptionfilter-等と横断処理)
+   - [フィルターの用途とベストプラクティス](#フィルターの用途とベストプラクティス)
+7. [参考ドキュメント](#7-参考ドキュメント)
+
+---
+
 ## 1. MVC (Model-View-Controller) 構成の基本
 
 **MVC パターン** はアプリケーションを **モデル (Model)** ・ **ビュー (View)** ・ **コントローラー (Controller)** の 3 つの要素に分けるアーキテクチャスタイルです。  
@@ -971,7 +1002,7 @@ flowchart TD
 フィルターはあくまで **MVC（あるいはAPI）レイヤー内部** の前後処理であり、コントローラーに入る前提条件が整った後で動作します。  
 そのため、認証のようにリクエストの文脈依存で **早期に短絡させたい処理**（＝未認証なら後工程に進めない）はフィルターに適しています。
 
-## 参考ドキュメント
+## 7. 参考ドキュメント
 
 - [ASP.NET Core MVC の概要 - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/mvc/overview?view=aspnetcore-10.0)
 - [ASP.NET Core を使って Web API を作成する - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/web-api/?view=aspnetcore-10.0)
