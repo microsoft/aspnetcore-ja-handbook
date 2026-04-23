@@ -48,7 +48,7 @@ Razor Pages や Blazor に興味がある方は、以下の公式ドキュメン
 - [Razor Pages の概要 - Microsoft Learn](https://learn.microsoft.com/aspnet/core/razor-pages/?view=aspnetcore-10.0)
 - [Blazor の概要 - Microsoft Learn](https://learn.microsoft.com/aspnet/core/blazor/?view=aspnetcore-10.0)
 
-また、C# 言語の解説も行いません。C#を全く知らない場合はマイクロソフト公式の初心者向けのチュートリアルから始めることをお勧めします。
+また、C# 言語の解説も行いません。C# を全く知らない場合はマイクロソフト公式の初心者向けのチュートリアルから始めることをおすすめします。
 
 - [C# 言語のドキュメント](https://learn.microsoft.com/ja-jp/dotnet/csharp/)
 
