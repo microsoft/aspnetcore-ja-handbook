@@ -19,6 +19,8 @@
    - [JetBrains Rider](#43-jetbrains-rider)
 5. [.NET CLI 基本コマンド](#5-net-cli-基本コマンド)
 6. [初回プロジェクト作成](#6-初回プロジェクト作成)
+7. [まとめ](#7-まとめ)
+8. [参考ドキュメント](#8-参考ドキュメント)
 
 ---
 
@@ -681,7 +683,7 @@ macOS / Linux ではパスワード入力を求められる場合があります
 
 ---
 
-## まとめ
+## 7. まとめ
 
 > 以下は **.NET 10 (LTS)** を使用する場合の手順です。他のバージョンを使用する場合は、バージョン番号を適宜読み替えてください。
 
@@ -727,7 +729,7 @@ flowchart TB
 
 ---
 
-## 参考リンク（MS 公式）
+## 8. 参考ドキュメント
 
 - [.NET ダウンロード](https://dotnet.microsoft.com/download)
 - [.NET のリリースとサポート](https://learn.microsoft.com/ja-jp/dotnet/core/releases-and-support)
