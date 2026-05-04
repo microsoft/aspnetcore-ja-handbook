@@ -311,7 +311,7 @@ builder.Configuration.AddEnvironmentVariables(prefix: "MYAPP_");
 ```
 
 > [!WARNING]
-> `WebApplication.CreateBuilder(args)` は既定で `AddEnvironmentVariables()` （プレフィックスなし）を登録します。したがって、後から `AddEnvironmentVariables(prefix: "MYAPP_")` を追加しても、既定の環境変数プロバイダは削除されません。そのため、最終的な `builder.Configuration` では `MYAPP_` プレフィックスを持たない環境変数（例：`Age`、`ASPNETCORE_ENVIRONMENT` など）も引き続き参照できます。
+> `WebApplication.CreateBuilder(args)` は既定で `AddEnvironmentVariables()` （プレフィックスなし）を登録します。したがって、後から `AddEnvironmentVariables(prefix: "MYAPP_")` を追加しても、既定の環境変数プロバイダは削除されません。そのため、最終的な `builder.Configuration` では `MYAPP_` プレフィックスを持たない環境変数（例：`PATH`、`ASPNETCORE_ENVIRONMENT` など）も引き続き参照できます。
 >
 > つまり、`prefix` パラメータは「この呼び出しで追加するプロバイダがどの環境変数を読むか」を制御するものであり、「アプリケーション全体でそのプレフィックス以外の環境変数を無効化する」ものではありません。
 >
