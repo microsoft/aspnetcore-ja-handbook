@@ -38,7 +38,7 @@ ASP.NET Core アプリケーションでは、設定値を **JSON ファイル**
 
 次に示すのは既定で作成される `appsettings.json` です。
 
-```json:appsettings.json
+```json
 {
   "Logging": {
     "LogLevel": {
@@ -181,7 +181,7 @@ ASP.NET Core では、 `appsettings.json` に加え **`appsettings.{Environment}
 > [!TIP]
 > `ASPNETCORE_ENVIRONMENT` は Spring Boot の `spring.profiles.active` 、Laravel の `APP_ENV` 、Node.js の `NODE_ENV` に相当します。
 
-`ASPNETCORE_ENVIRONMENT` はローカル開発では `Properties/launchSettings.json` で管理するのが一般的です（詳しくは [第2章：ソリューションとプロジェクト構成 - デバッグ設定・起動構成の管理](./02-solutions-and-projects.md##5-デバッグ設定起動構成の管理) を参照）。
+`ASPNETCORE_ENVIRONMENT` はローカル開発では `Properties/launchSettings.json` で管理するのが一般的です（詳しくは [第2章：ソリューションとプロジェクト構成 - デバッグ設定・起動構成の管理](./02-solutions-and-projects.md#5-デバッグ設定起動構成の管理) を参照）。
 
 ```json
 // Properties/launchSettings.json（抜粋）
@@ -341,7 +341,7 @@ builder.Configuration.AddEnvironmentVariables(prefix: "MYAPP_");
 # dotnet run でコマンドライン引数を渡す例（-- の後に引数を指定）
 dotnet run -- --MyFeature:Title=OverrideValue
 
-# スラッシュ形式でも記述可能O
+# スラッシュ形式でも記述可能
 dotnet run -- /MyFeature:Title=OverrideValue
 
 # スペース区切りでも記述可能
