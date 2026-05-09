@@ -512,24 +512,36 @@ builder.Services.Configure<MyFeatureOptions>(
 
 | インターフェイス | DI ライフタイム | 再読み込み | 主な用途 |
 | --- | --- | --- | --- |
-| `IOptions<T>` | シングルトン | なし（起動時に 1 回のみ読み込み） | 起動後に変更されない設定値の参照 |
-| `IOptionsSnapshot<T>` | スコープ | リクエストごと（HTTP リクエスト間で再読み込み） | HTTP リクエスト単位で最新値を参照したい場合 |
-| `IOptionsMonitor<T>` | シングルトン | リアルタイム変更通知あり | シングルトン サービスで常に最新の設定値を参照したい場合 |
+| `IOptions<T>` | シングルトン | なし（初回アクセス時に生成され、以後は同じ値を参照） | 起動後に変更されない設定値の参照 |
+| `IOptionsSnapshot<T>` | スコープ | リクエストごと（HTTP リクエスト間で再読み込み） | HTTP リクエスト単位で最新値を参照したい、あるいはリクエスト毎に設定値を計算する場合 |
+| `IOptionsMonitor<T>` | シングルトン | リアルタイム(設定値の変更通知をハンドリングすることも可能) | 常に最新の設定値を参照したい場合 |
+
+
+<details>
+<summary>IOptions&lt;T&gt;の実装例</summary>
+
+#### Controller で DI する例 (IOptions&lt;T&gt;)
 
 ```csharp
-// IOptions<T>：起動時に一度だけ読み込まれる（シングルトン）
-public class MyService
+// Controller で IOptions<T> を DI する例
+public class MyController : ControllerBase
 {
     private readonly MyFeatureOptions _options;
 
-    public MyService(IOptions<MyFeatureOptions> options)
+    public MyController(IOptions<MyFeatureOptions> options)
     {
-        _options = options.Value;  // .Value で設定値にアクセス
+  _options = options.Value;  // 最初の .Value アクセスで生成され、以後は同じ値を参照
     }
 
-    public string GetTitle() => _options.Title;
+    [HttpGet("/feature")]
+    public IActionResult GetFeature()
+    {
+        return Ok(new { _options.Title, _options.MaxItems });
+    }
 }
 ```
+
+#### Minimal API の ルートハンドラーで DI する例 (IOptions&lt;T&gt;)
 
 ```csharp
 // Minimal API での IOptions<T> の使用例
@@ -541,21 +553,35 @@ app.MapGet("/feature", (IOptions<MyFeatureOptions> options) =>
 });
 ```
 
+</details>
+
+<details>
+<summary>IOptionsSnapshot&lt;T&gt;の実装例</summary>
+
+#### Controller で DI する例 (IOptionsSnapshot&lt;T&gt;)
+
 ```csharp
 // IOptionsSnapshot<T>：HTTP リクエストごとに最新値を取得（スコープ）
 public class MyController : ControllerBase
 {
-    private readonly MyFeatureOptions _options;
+  private readonly MyFeatureOptions _options;
 
-    public MyController(IOptionsSnapshot<MyFeatureOptions> snapshot)
-    {
-        _options = snapshot.Value;  // リクエストのたびに最新値が取得される
-    }
+  public MyController(IOptionsSnapshot<MyFeatureOptions> snapshot)
+  {
+    _options = snapshot.Value;  // リクエストのたびに最新値が取得される
+  }
+
+  [HttpGet("/feature")]
+  public IActionResult GetFeature()
+  {
+    return Ok(new { _options.Title, _options.MaxItems });
+  }
 }
 ```
 
+#### Minimal API の ルートハンドラーで DI する例 (IOptionsSnapshot&lt;T&gt;)
+
 ```csharp
-// Minimal API での IOptionsSnapshot<T> の使用例
 // Minimal API のルートハンドラーはリクエストスコープ内で実行されるため、IOptionsSnapshot<T> を直接注入できる
 app.MapGet("/feature/snapshot", (IOptionsSnapshot<MyFeatureOptions> snapshot) =>
 {
@@ -563,44 +589,70 @@ app.MapGet("/feature/snapshot", (IOptionsSnapshot<MyFeatureOptions> snapshot) =>
     return Results.Ok(new { opt.Title, opt.Enabled });
 });
 ```
+</details>
+
+<details>
+<summary>IOptionsMonitor&lt;T&gt;の実装例</summary>
+
+#### Controller で DI する例 (IOptionsMonitor&lt;T&gt;)
 
 ```csharp
-// IOptionsMonitor<T>：リアルタイムで設定変更を検知できる（シングルトン）
-public class MyBackgroundService : BackgroundService
+public class MyController : ControllerBase
 {
-    private readonly IOptionsMonitor<MyFeatureOptions> _monitor;
+  private readonly IOptionsMonitor<MyFeatureOptions> _monitor;
 
-    public MyBackgroundService(IOptionsMonitor<MyFeatureOptions> monitor)
-    {
-        _monitor = monitor;
+  public MyController(IOptionsMonitor<MyFeatureOptions> monitor)
+  {
+    _monitor = monitor;
+  }
 
-        // 設定変更時にコールバックを受け取る
-        _monitor.OnChange(options =>
-        {
-            Console.WriteLine($"設定が変更されました: Title={options.Title}");
-        });
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            var current = _monitor.CurrentValue;  // .CurrentValue で常に最新値を参照
-            // current.Title などを使った処理
-            await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
-        }
-    }
+  [HttpGet("/feature/monitor")]
+  public IActionResult GetFeature()
+  {
+    var opt = _monitor.CurrentValue; // .CurrentValue で常に最新値を参照
+    return Ok(new { opt.Title, opt.MaxItems });
+  }
 }
 ```
 
+#### Minimal API の ルートハンドラーで DI する例 (IOptionsMonitor&lt;T&gt;)
+
 ```csharp
-// Minimal API での IOptionsMonitor<T> の使用例
 // IOptionsMonitor<T> はシングルトンのため、Minimal API のルートハンドラーにも直接注入できる
 app.MapGet("/feature/monitor", (IOptionsMonitor<MyFeatureOptions> monitor) =>
 {
     var opt = monitor.CurrentValue;  // .CurrentValue で常に最新値を参照
     return Results.Ok(new { opt.Title, opt.MaxItems });
 });
+```
+
+</details>
+
+> [!IMPORTANT]
+> `IOptionsSnapshot<T>`, `IOptionsMonitor<T>` は、すべての構成ソースの変更を自動反映するわけではありません。アプリ起動後の変更を反映できるのは、更新検知と再読み込みをサポートする構成プロバイダーを使用している場合に限られます。例えば、既定の `appsettings.json` / `appsettings.{Environment}.json` は `reloadOnChange` により反映されます。
+> 本番環境では `appsettings.json` を環境変数で上書きする運用が一般的ですが、**環境変数の値は実行中プロセスに対してそのままでは反映されません**。値を変更するには、アプリの再起動・再デプロイ（コンテナー再作成、Pod 再起動を含む）が必要です。
+> 実行中に設定値を切り替える要件がある場合は、Azure App Configuration などの動的リフレッシュ対応プロバイダーを利用してください。
+> 参考：[チュートリアル:ASP.NET Core アプリで動的な構成を使用する](https://learn.microsoft.com/ja-jp/azure/azure-app-configuration/enable-dynamic-configuration-aspnet-core)
+
+---
+
+#### Controller やルートハンドラー以外での DI
+
+次のようにサービスレイヤーのクラスで DI して受け取ることも可能です。（IOptions&lt;T&gt;, IOptionsSnapshot&lt;T&gt;, IOptionsMonitor&lt;T&gt; いずれも DI で受け取る方法は同じ）
+
+```csharp
+// IOptions<T>：最初の .Value アクセスで生成され、以後は同じ値を参照
+public class MyService
+{
+    private readonly MyFeatureOptions _options;
+
+    public MyService(IOptions<MyFeatureOptions> options)
+    {
+        _options = options.Value;  // .Value で設定値にアクセス
+    }
+
+    public string GetTitle() => _options.Title;
+}
 ```
 
 > [!NOTE]
@@ -653,8 +705,11 @@ public class AuthService
 
 ### バリデーション
 
-オプションクラスのプロパティに **DataAnnotations 属性** を付与することで、設定値の検証を行えます。  
-`ValidateOnStart()` を指定するとアプリケーション起動時に検証が実行され、設定値が不正な場合は起動時点で例外がスローされます（デプロイ後に問題が顕在化するのを防ぐ効果があります）。
+オプション値の検証には複数の方式があります。
+
+#### 1. DataAnnotations を使用した検証
+
+オプションクラスのプロパティに **DataAnnotations 属性** を付与することで、設定値の検証を行えます。
 
 ```csharp
 // Options/MyFeatureOptions.cs（バリデーション属性を追加）
@@ -677,13 +732,88 @@ public class MyFeatureOptions
 ```csharp
 // Program.cs でバリデーションを有効化する
 builder.Services.AddOptions<MyFeatureOptions>()
-    .BindConfiguration(MyFeatureOptions.SectionName)  // セクションをバインド
-    .ValidateDataAnnotations()                         // DataAnnotations による検証を有効化
-    .ValidateOnStart();                                // アプリ起動時に検証を実行（.NET 6 以降）
+    .BindConfiguration(MyFeatureOptions.SectionName)
+    .ValidateDataAnnotations();  // DataAnnotations による検証を有効化
 ```
+
+#### 2. ラムダ式によるカスタムバリデーション
+
+`.Validate()` メソッドで直接カスタムバリデーションロジックを記述できます。複雑なバリデーションルール（複数プロパティ間の比較など）が必要な場合に有効です。
+
+```csharp
+builder.Services.AddOptions<MyFeatureOptions>()
+    .BindConfiguration(MyFeatureOptions.SectionName)
+    .ValidateDataAnnotations()
+    .Validate(options =>
+    {
+        // 複数プロパティ間のバリデーション
+        if (options.Title.Length > 100)
+        {
+            return false;
+        }
+        return true;
+    }, "Title の長さは 100 文字以内である必要があります");
+```
+
+#### 3. 専用バリデーションクラス（IValidateOptions<T>）
+
+複雑なバリデーションロジックを専用クラスに分離する場合は、`IValidateOptions<TOptions>` を実装します。
+
+```csharp
+// Options/MyFeatureOptionsValidation.cs
+using Microsoft.Extensions.Options;
+
+public class MyFeatureOptionsValidation : IValidateOptions<MyFeatureOptions>
+{
+    public ValidateOptionsResult Validate(string? name, MyFeatureOptions options)
+    {
+        if (string.IsNullOrEmpty(options.Title))
+        {
+            return ValidateOptionsResult.Fail("Title は必須です");
+        }
+
+        if (options.MaxItems < 1 || options.MaxItems > 1000)
+        {
+            return ValidateOptionsResult.Fail("MaxItems は 1 から 1000 の範囲で指定してください");
+        }
+
+        return ValidateOptionsResult.Success;
+    }
+}
+```
+
+```csharp
+// Program.cs で登録
+builder.Services.AddOptions<MyFeatureOptions>()
+    .BindConfiguration(MyFeatureOptions.SectionName);
+
+// バリデーションクラスを登録
+builder.Services.AddSingleton<IValidateOptions<MyFeatureOptions>, MyFeatureOptionsValidation>();
+```
+
+#### バリデーションのタイミング
+
+`ValidateOnStart()` を指定するとアプリケーション起動時に検証が実行され、設定値が不正な場合は起動時点で例外がスローされます（デプロイ後に問題が顕在化するのを防ぐ効果があります）。
+
+```csharp
+builder.Services.AddOptions<MyFeatureOptions>()
+    .BindConfiguration(MyFeatureOptions.SectionName)
+    .ValidateDataAnnotations()
+    .ValidateOnStart();  // アプリ起動時に検証を実行（.NET 6 以降）
+```
+
+`ValidateOnStart()` を付けない場合、バリデーションは遅延実行されます。  
+つまり、`IOptions<T>` の `.Value`、`IOptionsSnapshot<T>` の `.Value`、`IOptionsMonitor<T>` の `.CurrentValue` / `.Get(name)` に**初めてアクセスした時点**で検証され、無効な値なら `OptionsValidationException` がスローされます。
 
 > [!NOTE]
 > `AddOptions<T>().BindConfiguration(sectionName)` は `Configure<T>(builder.Configuration.GetSection(sectionName))` と同等ですが、 `.ValidateDataAnnotations()` や `.ValidateOnStart()` をチェーンで続けて記述できるため、バリデーションを追加する場合に適しています。
+
+> [!IMPORTANT]
+> `ValidateOnStart()` による起動時検証は、ホスト起動処理（`app.Run()` / `RunAsync()` など）で実行されます。  
+> そのため、アプリをビルドするだけ（`builder.Build()` のみ）ではこの検証は走りません。テストやツールから起動時検証を期待する場合は、実際にホストを開始する必要があります。
+
+> [!CAUTION]
+> モデルのバリデーションで用いられる `IValidatableObject` インターフェースは、[MVC モデルのバリデーション](./03-mvc-web-and-api.md#入力検証のカスタマイズ) や [Minimal API](./04-minimal-api.md#ivalidatableobject-によるカスタム検証) のモデルバインディングで使用されるもので、オプションパターンのバリデーションでは使用されません。オプションのバリデーションには、上記の `ValidateDataAnnotations()`、`.Validate()` ラムダ、または `IValidateOptions<T>` インターフェースを使用してください。
 
 ### DI を使わない直接バインド
 
@@ -833,3 +963,7 @@ builder.Configuration
 - [ASP.NET Core で複数の環境を使用する | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/environments?view=aspnetcore-10.0)
 - [.NET の構成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/core/extensions/configuration)
 - [.NET の構成プロバイダー | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/core/extensions/configuration-providers)
+- [Options pattern in ASP.NET Core | Microsoft Learn](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/options?view=aspnetcore-10.0)
+- [OptionsBuilderExtensions.ValidateOnStart | Microsoft Learn](https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.dependencyinjection.optionsbuilderextensions.validateonstart)
+- [IValidateOptions<TOptions> | Microsoft Learn](https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.options.ivalidateoptions-1)
+- [ValidateOptionsResult | Microsoft Learn](https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.options.validateoptionsresult)
