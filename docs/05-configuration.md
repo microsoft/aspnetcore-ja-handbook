@@ -629,9 +629,9 @@ app.MapGet("/feature/monitor", (IOptionsMonitor<MyFeatureOptions> monitor) =>
 </details>
 
 > [!IMPORTANT]
-> `IOptionsSnapshot<T>`, `IOptionsMonitor<T>` は、すべての構成ソースの変更を自動反映するわけではありません。アプリ起動後の変更を反映できるのは、更新検知と再読み込みをサポートする構成プロバイダーを使用している場合に限られます。例えば、既定の `appsettings.json` / `appsettings.{Environment}.json` は `reloadOnChange` により反映されます。
-> 本番環境では `appsettings.json` を環境変数で上書きする運用が一般的ですが、**環境変数の値は実行中プロセスに対してそのままでは反映されません**。値を変更するには、アプリの再起動・再デプロイ（コンテナー再作成、Pod 再起動を含む）が必要です。
-> 実行中に設定値を切り替える要件がある場合は、Azure App Configuration などの動的リフレッシュ対応プロバイダーを利用してください。
+> `IOptionsSnapshot<T>`, `IOptionsMonitor<T>` は、すべての構成ソースの変更を自動反映するわけではないことは知っておく必要があります。アプリ起動後の変更を反映できるのは、更新検知と再読み込みをサポートする構成プロバイダーを使用している場合に限られます。例えば、既定の `appsettings.json` / `appsettings.{Environment}.json` は `reloadOnChange=true` により自動反映されます。
+> 一方、本番環境では `appsettings.json` を環境変数で上書きする運用が一般的ですが、たとえ `IOptionsSnapshot<T>`, `IOptionsMonitor<T>` を使用しても**一度起動したアプリに対して環境変数の値を変更してもオプションクラスに対して自動的に反映されません**。値を変更するには、アプリの再起動・再デプロイ（コンテナー再作成、Pod 再起動を含む）が必要です。
+> 実行中にアプリを再起動・再デプロイせずに設定値を自動的に切り替える要件がある場合は、Azure App Configuration などの動的リフレッシュ対応プロバイダーを利用してください。
 > 参考：[チュートリアル:ASP.NET Core アプリで動的な構成を使用する](https://learn.microsoft.com/ja-jp/azure/azure-app-configuration/enable-dynamic-configuration-aspnet-core)
 
 ---
