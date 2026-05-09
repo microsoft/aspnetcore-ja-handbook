@@ -530,7 +530,7 @@ public class MyController : ControllerBase
 
     public MyController(IOptions<MyFeatureOptions> options)
     {
-  _options = options.Value;  // 最初の .Value アクセスで生成され、以後は同じ値を参照
+        _options = options.Value;  // 最初の .Value アクセスで生成され、以後は同じ値を参照
     }
 
     [HttpGet("/feature")]
@@ -568,13 +568,13 @@ public class MyController : ControllerBase
 
   public MyController(IOptionsSnapshot<MyFeatureOptions> snapshot)
   {
-    _options = snapshot.Value;  // リクエストのたびに最新値が取得される
+      _options = snapshot.Value;  // リクエストのたびに最新値が取得される
   }
 
   [HttpGet("/feature")]
   public IActionResult GetFeature()
   {
-    return Ok(new { _options.Title, _options.MaxItems });
+      return Ok(new { _options.Title, _options.MaxItems });
   }
 }
 ```
@@ -603,14 +603,14 @@ public class MyController : ControllerBase
 
   public MyController(IOptionsMonitor<MyFeatureOptions> monitor)
   {
-    _monitor = monitor;
+      _monitor = monitor;
   }
 
   [HttpGet("/feature/monitor")]
   public IActionResult GetFeature()
   {
-    var opt = _monitor.CurrentValue; // .CurrentValue で常に最新値を参照
-    return Ok(new { opt.Title, opt.MaxItems });
+      var opt = _monitor.CurrentValue; // .CurrentValue で常に最新値を参照
+      return Ok(new { opt.Title, opt.MaxItems });
   }
 }
 ```
