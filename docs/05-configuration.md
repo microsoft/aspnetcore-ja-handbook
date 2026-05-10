@@ -174,9 +174,10 @@ ASP.NET Core では、 `appsettings.json` に加え **`appsettings.{Environment}
 
 ### 実行環境の切り替え
 
-読み込む環境別設定ファイルは **`ASPNETCORE_ENVIRONMENT`** 環境変数によって決まります。  
+読み込む環境別設定ファイルは実行環境名（`EnvironmentName`）によって決まり、ローカル開発では **`ASPNETCORE_ENVIRONMENT`** を使って指定するのが一般的です。  
 この変数に `Development` / `Staging` / `Production` などの値を設定することで、対応する `appsettings.{Environment}.json` が読み込まれます。  
-未設定の場合は `Production` として動作します。
+未設定の場合は `Production` として動作します。  
+なお、 `WebApplication.CreateBuilder()` を使用する ASP.NET Core アプリでは `DOTNET_ENVIRONMENT` が `ASPNETCORE_ENVIRONMENT` より優先される点に注意してください（詳細は「[4. 設定のオーバーライド順序と仕組み](#4-設定のオーバーライド順序と仕組み)」を参照）。
 
 > [!TIP]
 > `ASPNETCORE_ENVIRONMENT` は Spring Boot の `spring.profiles.active` 、Laravel の `APP_ENV` 、Node.js の `NODE_ENV` に相当します。
@@ -812,11 +813,11 @@ builder.Services.AddOptions<MyFeatureOptions>()
 > `ValidateOnStart()` による起動時検証は、ホスト起動処理（`app.Run()` / `RunAsync()` など）で実行されます。  
 > そのため、アプリをビルドするだけ（`builder.Build()` のみ）ではこの検証は走りません。テストやツールから起動時検証を期待する場合は、実際にホストを開始する必要があります。
 
-バリデーションするときは上記の通り、DataAnnotations 属性と `ValidateDataAnnotations()`、`.Validate()` ラムダ、`IValidateOptions<T>` を活用するのが推奨です。[MVC モデルのバリデーション](./03-mvc-web-and-api.md#入力検証のカスタマイズ) や [Minimal API のモデルバインディング](./04-minimal-api.md#ivalidatableobject-によるカスタム検証) で使用される [`IValidatableObject`](https://learn.microsoft.com/ja-jp/dotnet/api/system.componentmodel.dataannotations.ivalidatableobject) インターフェイスを使用することもできなくはありませんが、次のような複雑な挙動がある点に留意する必要があります。
+バリデーションするときは上記の通り、DataAnnotations 属性と `ValidateDataAnnotations()`、`.Validate()` ラムダ、`IValidateOptions<T>` を活用するのが推奨です。[MVC モデルのバリデーション](./03-mvc-web-and-api.md#入力検証のカスタマイズ) や [Minimal API のモデルバインディング](./04-minimal-api.md#ivalidatableobject-によるカスタム検証) で使用される [`IValidatableObject`](https://learn.microsoft.com/ja-jp/dotnet/api/system.componentmodel.dataannotations.ivalidatableobject) インターフェイスをオプション検証に流用することもできますが、次の点に留意してください。
 
-- **`ValidateDataAnnotations()` を使う場合** → [`Validator.TryValidateObject()`](https://learn.microsoft.com/ja-jp/dotnet/api/system.componentmodel.dataannotations.validator.tryvalidateobject) が内部で呼ばれるため、DataAnnotations 属性バリデーションが**全て通過した場合に限り** `IValidatableObject.Validate()` が実行されます。属性バリデーションが失敗した場合は呼ばれません
-- **`.Validate()` ラムダを使う場合** → `IValidatableObject` は自動的に呼ばれません。明示的に呼び出す実装が必要です
-- **`IValidateOptions<T>` を使う場合** → `IValidatableObject` は呼ばれません。明示的に呼び出す実装が必要です
+- **`ValidateDataAnnotations()` を使う場合** → 内部では [`Validator.TryValidateObject()`](https://learn.microsoft.com/ja-jp/dotnet/api/system.componentmodel.dataannotations.validator.tryvalidateobject) が利用されます。`IValidatableObject.Validate()` の呼び出しタイミングは実装詳細に依存するため、順序に依存した設計は避けるのが安全です
+- **`.Validate()` ラムダを使う場合** → `IValidatableObject` は自動連携されないため、必要であれば明示的に呼び出す実装が必要です
+- **`IValidateOptions<T>` を使う場合** → `IValidatableObject` は自動連携されないため、必要であれば明示的に呼び出す実装が必要です
 
 そもそも `IValidatableObject` は MVC / Minimal API のモデル検証を主な想定シナリオとしたインターフェイスであり、オプション検証とは用途が異なります。さらに、モデル（この場合はオプションクラス）自身に検証ロジックを持たせる設計になるため、設定値を表す責務と検証する責務が同じクラスに混在しやすいという課題があります。
 
@@ -923,8 +924,7 @@ dotnet run -- --ConnectionStrings:DefaultConnection="Server=override;"
 この場合、最終的に使用される接続文字列は `"Server=override;"` （コマンドライン引数の値）になります。
 
 > [!NOTE]
-> `DOTNET_ENVIRONMENT` 環境変数も `ASPNETCORE_ENVIRONMENT` と同様に実行環境の切り替えに使用できますが、 `ASPNETCORE_ENVIRONMENT` の方が優先されます。  
-> ホスト構成（`ASPNETCORE_` プレフィックスを持つ変数）はアプリケーション構成より前に読み込まれるため、 `ASPNETCORE_ENVIRONMENT` は必ず環境の切り替えに機能します。
+> `DOTNET_ENVIRONMENT` 環境変数も `ASPNETCORE_ENVIRONMENT` と同様に実行環境の切り替えに使用できますが、 `WebApplication.CreateBuilder()` を使用する ASP.NET Core アプリでは `DOTNET_ENVIRONMENT` の方が優先されます。なお、従来の `WebHost` では `ASPNETCORE_ENVIRONMENT` の方が優先されます。
 
 ### プロバイダのカスタマイズ
 
@@ -963,8 +963,7 @@ builder.Configuration
 > 例えば Azure Key Vault の場合は `Azure.Extensions.AspNetCore.Configuration.Secrets` パッケージを使い、 `builder.Configuration.AddAzureKeyVault(...)` のように追加します。
 
 また、.NET 8 以降で利用できる `WebApplication.CreateSlimBuilder()` は Web アプリケーションのトリミング（Tree Shaking）や AOT（Ahead of Time）コンパイルに対応した最小構成の `WebApplicationBuilder` です。  
-このビルダーでは `appsettings.{Environment}.json` やユーザーシークレットが既定では読み込まれないため、必要に応じて手動で追加する必要があります。  
-通常の Web アプリケーション開発では `WebApplication.CreateBuilder()` を使用してください。
+このビルダーは `WebApplication.CreateBuilder()` と同様に `appsettings.json` / `appsettings.{Environment}.json` の読み込みおよびユーザーシークレットを既定でサポートしています。一方、HTTPS エンドポイント、IIS 統合、Windows EventLog ロギングなど一部の機能は含まれません。Native AOT / トリミングを必要としない通常の Web アプリケーション開発では `WebApplication.CreateBuilder()` を使用してください。
 
 ---
 
