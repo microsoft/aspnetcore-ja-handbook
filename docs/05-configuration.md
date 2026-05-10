@@ -907,7 +907,7 @@ flowchart LR
 
 ```bash
 # 環境変数（Bash の場合）
-export ConnectionStrings__DefaultConnection=Server=prod;
+export ConnectionStrings__DefaultConnection="Server=prod;"
 ```
 
 ```powershell
