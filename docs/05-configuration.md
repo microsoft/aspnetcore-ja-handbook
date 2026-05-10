@@ -541,11 +541,11 @@ public class MyController : ControllerBase
 }
 ```
 
-#### Minimal API の ルートハンドラーで DI する例 (IOptions&lt;T&gt;)
+#### Minimal API の ルートハンドラで DI する例 (IOptions&lt;T&gt;)
 
 ```csharp
 // Minimal API での IOptions<T> の使用例
-// ルートハンドラーのパラメータに直接 IOptions<T> を宣言すると DI から自動注入される
+// ルートハンドラのパラメータに直接 IOptions<T> を宣言すると DI から自動注入される
 app.MapGet("/feature", (IOptions<MyFeatureOptions> options) =>
 {
     var opt = options.Value;  // .Value で設定値にアクセス
@@ -579,10 +579,10 @@ public class MyController : ControllerBase
 }
 ```
 
-#### Minimal API の ルートハンドラーで DI する例 (IOptionsSnapshot&lt;T&gt;)
+#### Minimal API の ルートハンドラで DI する例 (IOptionsSnapshot&lt;T&gt;)
 
 ```csharp
-// Minimal API のルートハンドラーはリクエストスコープ内で実行されるため、IOptionsSnapshot<T> を直接注入できる
+// Minimal API のルートハンドラはリクエストスコープ内で実行されるため、IOptionsSnapshot<T> を直接注入できる
 app.MapGet("/feature/snapshot", (IOptionsSnapshot<MyFeatureOptions> snapshot) =>
 {
     var opt = snapshot.Value;  // リクエストごとに最新値が取得される
@@ -615,10 +615,10 @@ public class MyController : ControllerBase
 }
 ```
 
-#### Minimal API の ルートハンドラーで DI する例 (IOptionsMonitor&lt;T&gt;)
+#### Minimal API の ルートハンドラで DI する例 (IOptionsMonitor&lt;T&gt;)
 
 ```csharp
-// IOptionsMonitor<T> はシングルトンのため、Minimal API のルートハンドラーにも直接注入できる
+// IOptionsMonitor<T> はシングルトンのため、Minimal API のルートハンドラにも直接注入できる
 app.MapGet("/feature/monitor", (IOptionsMonitor<MyFeatureOptions> monitor) =>
 {
     var opt = monitor.CurrentValue;  // .CurrentValue で常に最新値を参照
@@ -636,7 +636,7 @@ app.MapGet("/feature/monitor", (IOptionsMonitor<MyFeatureOptions> monitor) =>
 
 ---
 
-#### Controller やルートハンドラー以外での DI
+#### Controller やルートハンドラ以外での DI
 
 次のようにサービスレイヤーのクラスで DI して受け取ることも可能です。（IOptions&lt;T&gt;, IOptionsSnapshot&lt;T&gt;, IOptionsMonitor&lt;T&gt; いずれも DI で受け取る方法は同じ）
 
