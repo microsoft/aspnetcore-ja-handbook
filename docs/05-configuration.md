@@ -459,7 +459,7 @@ var connStr = builder.Configuration.GetConnectionString("DefaultConnection");
 > Spring Boot には設定値を扱う方法が主に 2 種類あります。
 > 
 > - `@Value("${my-feature.title}")` でフィールドごとに設定値をインジェクトする方法 → `IConfiguration["Key"]` による直接アクセスに相当
-> - `@ConfigurationProperties(prefix = "my-feature")` でクラスに設定セクションをバインドする方法 → **オプションパターン**に相当
+> - `@ConfigurationProperties(prefix = "my-feature")` でクラスに設定セクションをバインドする方法 → **オプションパターン** に相当
 > 
 > 大規模アプリケーションでは `@ConfigurationProperties` が推奨されるのと同様に、ASP.NET Core でもオプションパターンの使用が推奨されています。
 
@@ -564,18 +564,18 @@ app.MapGet("/feature", (IOptions<MyFeatureOptions> options) =>
 // IOptionsSnapshot<T>：HTTP リクエストごとに最新値を取得（スコープ）
 public class MyController : ControllerBase
 {
-  private readonly MyFeatureOptions _options;
+    private readonly MyFeatureOptions _options;
 
-  public MyController(IOptionsSnapshot<MyFeatureOptions> snapshot)
-  {
-      _options = snapshot.Value;  // リクエストのたびに最新値が取得される
-  }
+    public MyController(IOptionsSnapshot<MyFeatureOptions> snapshot)
+    {
+        _options = snapshot.Value;  // リクエストのたびに最新値が取得される
+    }
 
-  [HttpGet("/feature")]
-  public IActionResult GetFeature()
-  {
-      return Ok(new { _options.Title, _options.MaxItems });
-  }
+    [HttpGet("/feature")]
+    public IActionResult GetFeature()
+    {
+        return Ok(new { _options.Title, _options.MaxItems });
+    }
 }
 ```
 
