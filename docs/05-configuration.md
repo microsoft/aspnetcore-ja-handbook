@@ -16,7 +16,7 @@
 3. [IOptions&lt;T&gt; / オプションバインディング](#3-ioptionst--オプションバインディング)
    - [オプションパターンとは](#オプションパターンとは)
    - [オプションクラスの定義と登録](#オプションクラスの定義と登録)
-   - [IOptions&lt;T&gt;・IOptionsSnapshot&lt;T&gt;・IOptionsMonitor&lt;T&gt;](#ioptionst-ioptionssnapshott-ioptionsmonitort)
+   - [IOptions&lt;T&gt;・IOptionsSnapshot&lt;T&gt;・IOptionsMonitor&lt;T&gt;](#ioptionstioptionssnapshottioptionsmonitort)
    - [名前付きオプション](#名前付きオプション)
    - [バリデーション](#バリデーション)
    - [DI を使わない直接バインド](#di-を使わない直接バインド)
@@ -482,7 +482,7 @@ public class MyFeatureOptions
 ```
 
 ```json
-// appsettings.jsonの一部（再掲）
+// appsettings.json の一部（再掲）
 {
   "MyFeature": {
     "Title": "Hello",
@@ -514,7 +514,7 @@ builder.Services.Configure<MyFeatureOptions>(
 | --- | --- | --- | --- |
 | `IOptions<T>` | シングルトン | なし（初回アクセス時に生成され、以後は同じ値を参照） | 起動後に変更されない設定値の参照 |
 | `IOptionsSnapshot<T>` | スコープ | リクエストごと（HTTP リクエスト間で再読み込み） | HTTP リクエスト単位で最新値を参照したい、あるいはリクエスト毎に設定値を計算する場合 |
-| `IOptionsMonitor<T>` | シングルトン | リアルタイム(設定値の変更通知をハンドリングすることも可能) | 常に最新の設定値を参照したい場合 |
+| `IOptionsMonitor<T>` | シングルトン | リアルタイム（設定値の変更通知をハンドリングすることも可能） | 常に最新の設定値を参照したい場合 |
 
 
 <details>
@@ -630,7 +630,7 @@ app.MapGet("/feature/monitor", (IOptionsMonitor<MyFeatureOptions> monitor) =>
 
 > [!IMPORTANT]
 > `IOptionsSnapshot<T>`, `IOptionsMonitor<T>` は、すべての構成ソースの変更を自動反映するわけではないことは知っておく必要があります。アプリ起動後の変更を反映できるのは、更新検知と再読み込みをサポートする構成プロバイダを使用している場合に限られます。例えば、既定の `appsettings.json` / `appsettings.{Environment}.json` は `reloadOnChange=true` により自動反映されます。
-> 一方、本番環境では `appsettings.json` を環境変数で上書きする運用が一般的ですが、たとえ `IOptionsSnapshot<T>`, `IOptionsMonitor<T>` を使用しても**一度起動したアプリに対して環境変数の値を変更してもオプションクラスに対して自動的に反映されません**。値を変更するには、アプリの再起動・再デプロイ（コンテナー再作成、Pod 再起動を含む）が必要です。
+> 一方、本番環境では `appsettings.json` を環境変数で上書きする運用が一般的ですが、たとえ `IOptionsSnapshot<T>`, `IOptionsMonitor<T>` を使用しても**一度起動したアプリに対して環境変数の値を変更してもオプションクラスに対して自動的に反映されません**。値を変更するには、アプリの再起動・再デプロイ（コンテナ再作成、Pod 再起動を含む）が必要です。
 > 実行中にアプリを再起動・再デプロイせずに設定値を自動的に切り替える要件がある場合は、Azure App Configuration などの動的リフレッシュ対応プロバイダを利用してください。
 > 参考：[チュートリアル:ASP.NET Core アプリで動的な構成を使用する](https://learn.microsoft.com/ja-jp/azure/azure-app-configuration/enable-dynamic-configuration-aspnet-core)
 
