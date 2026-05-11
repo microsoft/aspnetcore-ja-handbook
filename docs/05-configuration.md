@@ -602,19 +602,19 @@ app.MapGet("/feature/snapshot", (IOptionsSnapshot<MyFeatureOptions> snapshot) =>
 ```csharp
 public class MyController : ControllerBase
 {
-  private readonly IOptionsMonitor<MyFeatureOptions> _monitor;
+    private readonly IOptionsMonitor<MyFeatureOptions> _monitor;
 
-  public MyController(IOptionsMonitor<MyFeatureOptions> monitor)
-  {
-      _monitor = monitor;
-  }
+    public MyController(IOptionsMonitor<MyFeatureOptions> monitor)
+    {
+        _monitor = monitor;
+    }
 
-  [HttpGet("/feature/monitor")]
-  public IActionResult GetFeature()
-  {
-      var opt = _monitor.CurrentValue; // .CurrentValue で常に最新値を参照
-      return Ok(new { opt.Title, opt.MaxItems });
-  }
+    [HttpGet("/feature/monitor")]
+    public IActionResult GetFeature()
+    {
+        var opt = _monitor.CurrentValue; // .CurrentValue で常に最新値を参照
+        return Ok(new { opt.Title, opt.MaxItems });
+    }
 }
 ```
 
