@@ -174,12 +174,14 @@ ASP.NET Core では、 `appsettings.json` に加え **`appsettings.{Environment}
 
 ### 実行環境の切り替え
 
-読み込む環境別設定ファイルは実行環境名（`EnvironmentName`）によって決まり、ローカル開発では **`ASPNETCORE_ENVIRONMENT`** を使って指定するのが一般的です。  
+読み込む環境別設定ファイルは実行環境名（`EnvironmentName`）によって決まり、ローカル開発では環境変数 **`ASPNETCORE_ENVIRONMENT`** を使って指定するのが一般的です。  
 この変数に `Development` / `Staging` / `Production` などの値を設定することで、対応する `appsettings.{Environment}.json` が読み込まれます。  
 未設定の場合は `Production` として動作します。  
-なお、 `WebApplication.CreateBuilder()` を使用する ASP.NET Core アプリでは `DOTNET_ENVIRONMENT` が `ASPNETCORE_ENVIRONMENT` より優先される点に注意してください（詳細は「[4. 設定のオーバーライド順序と仕組み](#4-設定のオーバーライド順序と仕組み)」を参照）。
 
 > [!TIP]
+>なお、 .NET 6 以降の `WebApplication.CreateBuilder()` を使用する ASP.NET Core アプリでは環境変数 `DOTNET_ENVIRONMENT` も環境切り替えに使用することが可能です。 `DOTNET_ENVIRONMENT` と `ASPNETCORE_ENVIRONMENT` の両方を使用する場合、 [`DOTNET_ENVIRONMENT` が優先されます](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/environments?view=aspnetcore-10.0#environment-variables-that-determine-the-runtime-environment)。しかし、両方使うと混乱の元となるため、どちらかだけを使用することを推奨します。
+
+> [!NOTE]
 > `ASPNETCORE_ENVIRONMENT` は Spring Boot の `spring.profiles.active` 、Laravel の `APP_ENV` 、Node.js の `NODE_ENV` に相当します。
 
 `ASPNETCORE_ENVIRONMENT` はローカル開発では `Properties/launchSettings.json` で管理するのが一般的です（詳しくは [第2章：ソリューションとプロジェクト構成 - デバッグ設定・起動構成の管理](./02-solutions-and-projects.md#5-デバッグ設定起動構成の管理) を参照）。
@@ -922,9 +924,6 @@ dotnet run -- --ConnectionStrings:DefaultConnection="Server=override;"
 ```
 
 この場合、最終的に使用される接続文字列は `"Server=override;"` （コマンドライン引数の値）になります。
-
-> [!NOTE]
-> `DOTNET_ENVIRONMENT` 環境変数も `ASPNETCORE_ENVIRONMENT` と同様に実行環境の切り替えに使用できますが、 `WebApplication.CreateBuilder()` を使用する ASP.NET Core アプリでは `DOTNET_ENVIRONMENT` の方が優先されます。なお、従来の `WebHost` では `ASPNETCORE_ENVIRONMENT` の方が優先されます。
 
 ### プロバイダのカスタマイズ
 
