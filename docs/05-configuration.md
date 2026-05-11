@@ -1001,7 +1001,6 @@ builder.Configuration
 - [ASP.NET Core で複数の環境を使用する | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/environments?view=aspnetcore-10.0)
 - [.NET の構成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/core/extensions/configuration)
 - [.NET の構成プロバイダ | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/core/extensions/configuration-providers)
-- [Options pattern in ASP.NET Core | Microsoft Learn](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/configuration/options?view=aspnetcore-10.0)
 - [OptionsBuilderExtensions.ValidateOnStart | Microsoft Learn](https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.dependencyinjection.optionsbuilderextensions.validateonstart)
 - [IValidateOptions<TOptions> | Microsoft Learn](https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.options.ivalidateoptions-1)
 - [ValidateOptionsResult | Microsoft Learn](https://learn.microsoft.com/en-us/dotnet/api/microsoft.extensions.options.validateoptionsresult)
