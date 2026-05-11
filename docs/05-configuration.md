@@ -354,18 +354,43 @@ dotnet run -- /MyFeature:Title=OverrideValue
 dotnet run -- --MyFeature:Title OverrideValue
 ```
 
-また、短いエイリアスを定義したい場合は **スイッチマッピング** を使用できます。
+また、短いエイリアスを定義したい場合は **スイッチマッピング** を使用できます。  
+スイッチマッピングを使う場合は、 **`CreateBuilder` には `args` を渡さず**、 `AddCommandLine(args, switchMappings)` に `args` とマッピング情報を渡して処理する方法を推奨します。  
+`WebApplication.CreateBuilder(args)` に `args` を渡したうえで、さらに `AddCommandLine(args, switchMappings)` を呼ぶと、同じ `args` の処理が重複し、意図しないキーが設定に含まれる可能性があるためです。
 
 ```csharp
-// Program.cs でスイッチマッピングを定義する例
+// Program.cs でスイッチマッピングを使う場合の例
+// CreateBuilder には args を渡さず、AddCommandLine で switchMappings を適用する
+var builder = WebApplication.CreateBuilder();
+
 var switchMappings = new Dictionary<string, string>
 {
     ["-t"] = "MyFeature:Title",
     ["-m"] = "MyFeature:MaxItems"
 };
+
 builder.Configuration.AddCommandLine(args, switchMappings);
 // → dotnet run -- -t=OverrideValue のように短縮形で指定できる
 ```
+
+呼び出し例（スイッチマッピング適用時）
+
+```bash
+# 短縮キーのみを使う
+dotnet run -- -t=OverrideValue -m=42
+
+# 元のキー名を使う（そのまま利用できる）
+dotnet run -- --MyFeature:Title=LongForm --MyFeature:MaxItems=55
+
+# 短縮キーと元のキー名を混在させる
+dotnet run -- -t=MixedTitle --MyFeature:MaxItems=100
+
+# スイッチマッピングで指定していないキーも同時に渡せる
+dotnet run -- -t=MappedTitle --Logging:LogLevel:Default=Debug
+```
+
+> [!TIP]
+> スイッチマッピングを追加していても、 `--MyFeature:Title=...` や `--MyFeature:MaxItems=...` のような **元のキー名** を使った指定はそのまま利用できます。
 
 ### シークレット管理（User Secrets）
 
