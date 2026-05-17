@@ -60,8 +60,8 @@ src/
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
-mkdir -p src/{NN}/{SampleName}
-cd src/{NN}/{SampleName}
+mkdir -p src/{NN}
+cd src/{NN}
 dotnet new classlib -n {SampleName} --framework net{N}.0
 ```
 
