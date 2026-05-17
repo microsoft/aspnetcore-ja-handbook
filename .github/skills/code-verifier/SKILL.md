@@ -59,7 +59,7 @@ src/
 #### 実装プロジェクトの作成
 
 ```bash
-cd /workspaces/aspnetcore-ja-handbook
+cd "$(git rev-parse --show-toplevel)"
 mkdir -p src/{NN}/{SampleName}
 cd src/{NN}/{SampleName}
 dotnet new classlib -n {SampleName} --framework net{N}.0
@@ -71,7 +71,7 @@ dotnet new classlib -n {SampleName} --framework net{N}.0
 #### テストプロジェクトの作成
 
 ```bash
-cd /workspaces/aspnetcore-ja-handbook/src/{NN}
+cd "$(git rev-parse --show-toplevel)/src/{NN}"
 dotnet new xunit -n {SampleName}.Tests --framework net{N}.0
 cd {SampleName}.Tests
 dotnet add reference ../{SampleName}/{SampleName}.csproj
@@ -142,7 +142,7 @@ public class SampleClassTests
 ### 5. ビルドとテストの実行
 
 ```bash
-cd /workspaces/aspnetcore-ja-handbook/src/{NN}/{SampleName}.Tests
+cd "$(git rev-parse --show-toplevel)/src/{NN}/{SampleName}.Tests"
 dotnet build
 dotnet test
 ```
@@ -173,7 +173,7 @@ dotnet test
 章ごとにソリューションファイルを作成し、その章のすべてのプロジェクトをまとめる。
 
 ```bash
-cd /workspaces/aspnetcore-ja-handbook/src/{NN}
+cd "$(git rev-parse --show-toplevel)/src/{NN}"
 dotnet new sln -n Chapter{NN}
 dotnet sln add {SampleName}/{SampleName}.csproj
 dotnet sln add {SampleName}.Tests/{SampleName}.Tests.csproj
