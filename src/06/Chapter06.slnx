@@ -1,0 +1,10 @@
+<Solution>
+  <Project Path="AdvancedRegistration.Tests/AdvancedRegistration.Tests.csproj" />
+  <Project Path="AdvancedRegistration/AdvancedRegistration.csproj" />
+  <Project Path="BasicDI.Tests/BasicDI.Tests.csproj" />
+  <Project Path="BasicDI/BasicDI.csproj" />
+  <Project Path="ServiceLayer.Tests/ServiceLayer.Tests.csproj" />
+  <Project Path="ServiceLayer/ServiceLayer.csproj" />
+  <Project Path="ServiceLifetimes.Tests/ServiceLifetimes.Tests.csproj" />
+  <Project Path="ServiceLifetimes/ServiceLifetimes.csproj" />
+</Solution>
