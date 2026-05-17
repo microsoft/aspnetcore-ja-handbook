@@ -186,4 +186,4 @@ dotnet sln add {SampleName}.Tests/{SampleName}.Tests.csproj
 - テストプロジェクトでは `IServiceProvider` を直接使ったテストを許容する（テスト対象が DI の動作確認であるため）
 - `WebApplicationFactory<T>` を使う統合テストは、コントローラーやエンドポイントのテストでのみ使用する
 - テスト内で外部リソース（DB、ネットワーク）に依存しないこと。必要な場合はモックを使用する
-- `ImplicitUsings` と `Nullable` は有効のままにする（.NET 10 のデフォルト設定）
+- `ImplicitUsings` と `Nullable` は有効のままにする（対象バージョンのデフォルト設定に従う。バージョンは `.github/instructions/versioning.instructions.md` で決定する）
