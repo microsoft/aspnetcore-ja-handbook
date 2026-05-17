@@ -13,9 +13,8 @@ argument-hint: '作成する章のタイトルとセクション一覧を指定'
 
 ## 前提条件
 
-- 対象バージョン: 作成・編集時点の最新バージョン（下記「バージョン決定ルール」に従う）
 - 言語: 日本語
-- 対象読者: Java, Python, TypeScript, Go など他言語の経験者
+- 対象読者: 他言語の経験者（対象言語・フレームワーク一覧は `.github/skills/languages.md` を参照）
 - 対象バージョン: `.github/instructions/versioning.instructions.md` のバージョン決定ルールに従い、作成時点の最新バージョンを使用する
 
 ## 手順
@@ -86,7 +85,7 @@ argument-hint: '作成する章のタイトルとセクション一覧を指定'
 3. **最新バージョン準拠** — バージョン決定ルールで決定した .NET N / ASP.NET Core N に準拠し、古い API（Startup.cs 方式など）ではなく最新の Program.cs 方式で記載する
 4. **最新 C# 機能の活用** — 対象バージョンに対応する最新の C# 言語機能を使用する
 5. **MS Learn を根拠にする** — 独自の解釈や推測ではなく、公式ドキュメントの記載を根拠とする
-6. **他言語比較を含める** — ASP.NET Core 特有の機能について、Spring Boot (Java), NestJS/Angular (TypeScript), Django (Python), Laravel (PHP), Go など対応する機能がある場合は NOTE として比較を記載する
+6. **他言語比較を含める** — ASP.NET Core 特有の機能について、`.github/skills/languages.md` に記載の言語・フレームワークに対応する機能がある場合は NOTE として比較を記載する
 
 ### 4. 日本語表記ルール
 

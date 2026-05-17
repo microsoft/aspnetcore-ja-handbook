@@ -62,7 +62,7 @@ src/
 cd /workspaces/aspnetcore-ja-handbook
 mkdir -p src/{NN}/{SampleName}
 cd src/{NN}/{SampleName}
-dotnet new classlib -n {SampleName} --framework net10.0
+dotnet new classlib -n {SampleName} --framework net{N}.0
 ```
 
 > [!NOTE]
@@ -72,7 +72,7 @@ dotnet new classlib -n {SampleName} --framework net10.0
 
 ```bash
 cd /workspaces/aspnetcore-ja-handbook/src/{NN}
-dotnet new xunit -n {SampleName}.Tests --framework net10.0
+dotnet new xunit -n {SampleName}.Tests --framework net{N}.0
 cd {SampleName}.Tests
 dotnet add reference ../{SampleName}/{SampleName}.csproj
 ```
