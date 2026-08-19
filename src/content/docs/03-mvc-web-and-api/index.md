@@ -1,7 +1,10 @@
-# 第3章：MVC モデルによる Web アプリケーション / API 解説
+---
+title: "第3章：MVC モデルによる Web アプリケーション / API 解説"
+description: "MVC 構成の基本、コントローラー／アクションの書き方、ルーティング、モデルバインディングと入力検証、ControllerBase による API 実装、フィルターによる横断処理を解説します。"
+---
 
 この章では **MVC スタイルのコントローラー** で Web アプリケーション および API を実装する方法を説明します。  
-※昨今は **Minimal API** と呼ばれるコントローラーを使わない手法もあり、 [次章](./04-minimal-api.md) で紹介します。
+※昨今は **Minimal API** と呼ばれるコントローラーを使わない手法もあり、 [次章](../04-minimal-api/index.md) で紹介します。
 
 ---
 
@@ -53,7 +56,7 @@ sequenceDiagram
 ```
 
 Visual Studio のテンプレートや CLI から ASP.NET Core MVC プロジェクトを作成すると、Controllers・Models・Views フォルダがそれぞれ作成されることが確認できます。  
-**※この構成は、第1章：開発環境セットアップの [6. 初回プロジェクト作成](./01-setup-dev-env.md#6-初回プロジェクト作成) 節で作成します。**
+**※この構成は、第1章：開発環境セットアップの [6. 初回プロジェクト作成](../01-setup-dev-env/index.md#6-初回プロジェクト作成) 節で作成します。**
 
 ![MVC プロジェクトの Controllers・Models・Views フォルダ構成（ソリューション エクスプローラー）](./images/03-01_mvc-folder-structure.png)
 

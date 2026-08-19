@@ -1,5 +1,6 @@
-# 第5章：アプリ設定 (Configuration)
-
+---
+title: "第5章：アプリ設定 (Configuration)"
+description: "appsettings.json と環境別設定、環境変数／コマンドライン引数／シークレット管理、IOptions&lt;T&gt; によるオプションバインディング、設定のオーバーライド順序と仕組みを解説します。"
 ---
 
 ## 目次
@@ -184,7 +185,7 @@ ASP.NET Core では、 `appsettings.json` に加え **`appsettings.{Environment}
 > [!NOTE]
 > `ASPNETCORE_ENVIRONMENT` は Spring Boot の `spring.profiles.active` 、Laravel の `APP_ENV` 、Node.js の `NODE_ENV` に相当します。
 
-`ASPNETCORE_ENVIRONMENT` はローカル開発では `Properties/launchSettings.json` で管理するのが一般的です（詳しくは [第2章：ソリューションとプロジェクト構成 - デバッグ設定・起動構成の管理](./02-solutions-and-projects.md#5-デバッグ設定起動構成の管理) を参照）。
+`ASPNETCORE_ENVIRONMENT` はローカル開発では `Properties/launchSettings.json` で管理するのが一般的です（詳しくは [第2章：ソリューションとプロジェクト構成 - デバッグ設定・起動構成の管理](../02-solutions-and-projects/index.md#5-デバッグ設定起動構成の管理) を参照）。
 
 ```json
 // Properties/launchSettings.json（抜粋）
@@ -872,7 +873,7 @@ builder.Services.AddOptions<MyFeatureOptions>()
 > `ValidateOnStart()` は、実行時ではなく起動時に検証を強制するための拡張メソッドです。  
 > 検証の実行タイミングはホストの起動処理（`app.Run()` / `RunAsync()` など）です。そのため、アプリをビルドするだけ（`builder.Build()` のみ）ではこの検証は走りません。テストやツールから起動時検証を期待する場合は、実際にホストを開始する必要があります。
 
-バリデーションするときは上記の通り、DataAnnotations 属性と `ValidateDataAnnotations()`、`.Validate()` ラムダ、`IValidateOptions<T>` を活用するのが推奨です。[MVC モデルのバリデーション](./03-mvc-web-and-api.md#入力検証のカスタマイズ) や [Minimal API のモデルバインディング](./04-minimal-api.md#ivalidatableobject-によるカスタム検証) で使用される [`IValidatableObject`](https://learn.microsoft.com/ja-jp/dotnet/api/system.componentmodel.dataannotations.ivalidatableobject) インターフェイスをオプション検証に流用することもできますが、次の点に留意してください。
+バリデーションするときは上記の通り、DataAnnotations 属性と `ValidateDataAnnotations()`、`.Validate()` ラムダ、`IValidateOptions<T>` を活用するのが推奨です。[MVC モデルのバリデーション](../03-mvc-web-and-api/index.md#入力検証のカスタマイズ) や [Minimal API のモデルバインディング](../04-minimal-api/index.md#ivalidatableobject-によるカスタム検証) で使用される [`IValidatableObject`](https://learn.microsoft.com/ja-jp/dotnet/api/system.componentmodel.dataannotations.ivalidatableobject) インターフェイスをオプション検証に流用することもできますが、次の点に留意してください。
 
 - **`ValidateDataAnnotations()` を使う場合** → 内部では [`Validator.TryValidateObject()`](https://learn.microsoft.com/ja-jp/dotnet/api/system.componentmodel.dataannotations.validator.tryvalidateobject) が利用されます。`IValidatableObject.Validate()` の呼び出しタイミングは実装詳細に依存するため、順序に依存した設計は避けるのが安全です
 - **`.Validate()` ラムダを使う場合** → `IValidatableObject` は自動連携されないため、必要であれば明示的に呼び出す実装が必要です
