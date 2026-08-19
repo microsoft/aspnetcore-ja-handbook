@@ -1,0 +1,20 @@
+---
+// Starlight 既定の Sidebar のオーバーライド。
+// 折りたたみグループを「フォルダ名」ではなく index.md の title で表示し、
+// グループ名クリックで index.md を開き、子項目に index.md の `##` 見出しを並べる。
+import MobileMenuFooter from 'virtual:starlight/components/MobileMenuFooter';
+import SidebarPersister from '@astrojs/starlight/components/SidebarPersister.astro';
+import SidebarSublist from './SidebarSublist.astro';
+import { getPageHeadings } from '../lib/page-headings';
+
+const { sidebar } = Astro.locals.starlightRoute;
+const headings = await getPageHeadings();
+---
+
+<SidebarPersister>
+	<SidebarSublist sublist={sidebar as any} headings={headings} />
+</SidebarPersister>
+
+<div class="md:sl-hidden">
+	<MobileMenuFooter />
+</div>

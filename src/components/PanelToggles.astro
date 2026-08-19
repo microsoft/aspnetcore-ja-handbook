@@ -1,0 +1,105 @@
+---
+// Starlight の SocialIcons を差し替えて、左サイドバー／右サイドバー（目次）の
+// 開閉ボタンをヘッダー右側に追加する。
+// 元の SocialIcons もそのまま描画するため、social 設定を追加しても失われない。
+import Default from '@astrojs/starlight/components/SocialIcons.astro';
+---
+
+<Default />
+
+<button
+	class="panel-toggle"
+	type="button"
+	data-panel="sidebar"
+	aria-controls="starlight__sidebar"
+	aria-expanded="true"
+	aria-label="サイドバー"
+	title="サイドバーを隠す"
+>
+	<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+		<rect
+			x="2"
+			y="3"
+			width="12"
+			height="10"
+			rx="1.5"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="1.2"></rect>
+		<path
+			class="panel-toggle__fill"
+			d="M3.5 3H6v10H3.5A1.5 1.5 0 0 1 2 11.5v-7A1.5 1.5 0 0 1 3.5 3Z"></path>
+	</svg>
+</button>
+
+<button
+	class="panel-toggle"
+	type="button"
+	data-panel="toc"
+	aria-expanded="true"
+	aria-label="目次"
+	title="目次を隠す"
+>
+	<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+		<rect
+			x="2"
+			y="3"
+			width="12"
+			height="10"
+			rx="1.5"
+			fill="none"
+			stroke="currentColor"
+			stroke-width="1.2"></rect>
+		<path
+			class="panel-toggle__fill"
+			d="M12.5 3H10v10h2.5a1.5 1.5 0 0 0 1.5-1.5v-7A1.5 1.5 0 0 0 12.5 3Z"></path>
+	</svg>
+</button>
+
+<script>
+	// 状態は <html> の属性で表し、CSS 側だけがレイアウトを制御する。
+	// （初期状態は astro.config.mjs の head インラインスクリプトが FOUC を避けて付与する）
+	const PANELS = {
+		sidebar: {
+			attribute: 'data-sidebar-collapsed',
+			storageKey: 'sl-sidebar-collapsed',
+			labels: ['サイドバーを隠す', 'サイドバーを表示'],
+		},
+		toc: {
+			attribute: 'data-toc-collapsed',
+			storageKey: 'sl-toc-collapsed',
+			labels: ['目次を隠す', '目次を表示'],
+		},
+	} as const;
+
+	type PanelName = keyof typeof PANELS;
+
+	const isPanelName = (value: string | null): value is PanelName =>
+		value !== null && value in PANELS;
+
+	const root = document.documentElement;
+
+	function sync(button: HTMLElement, panel: PanelName) {
+		const collapsed = root.hasAttribute(PANELS[panel].attribute);
+		button.setAttribute('aria-expanded', String(!collapsed));
+		button.title = PANELS[panel].labels[collapsed ? 1 : 0]!;
+	}
+
+	for (const button of document.querySelectorAll<HTMLElement>('.panel-toggle')) {
+		const panel = button.dataset.panel ?? null;
+		if (!isPanelName(panel)) continue;
+		const { attribute, storageKey } = PANELS[panel];
+
+		sync(button, panel);
+
+		button.addEventListener('click', () => {
+			const collapsed = root.toggleAttribute(attribute);
+			try {
+				localStorage.setItem(storageKey, collapsed ? '1' : '0');
+			} catch {
+				// プライベートモード等で localStorage が使えなくても動作は継続する
+			}
+			sync(button, panel);
+		});
+	}
+</script>

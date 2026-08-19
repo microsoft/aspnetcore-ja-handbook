@@ -1,0 +1,45 @@
+# feature ブランチ用。ビルドが通るかを検証するだけで、デプロイはしない。
+# 成果物は artifact として残るので、必要ならダウンロードして手元で確認できる。
+name: 'feature: Build only (no deploy)'
+
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同じブランチで実行中のものがあればキャンセルする。
+# push と pull_request が同時に発火しても、実質1回分の実行に収まる。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Astro 7 は Node 22.12 以上が必須。20 ではインストールに失敗する。
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # 生成物を確認したいとき用。Actions の実行画面からダウンロードできる。
+      # dist/ は .gitignore 済みでリポジトリには入らない。
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-preview-${{ github.sha }}
+          path: dist/
+          retention-days: 7
