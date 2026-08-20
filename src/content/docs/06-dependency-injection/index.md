@@ -7,7 +7,7 @@ description: "DI の基本概念とコンストラクターインジェクショ
 
 1. [DI の基本概念（Interface と具象クラス）](#1-di-の基本概念interface-と具象クラス)
    - [依存性注入とは](#依存性注入とは)
-   - [インターフェースと具象クラスによる抽象化](#インターフェースと具象クラスによる抽象化)
+   - [インターフェイスと具象クラスによる抽象化](#インターフェイスと具象クラスによる抽象化)
    - [ASP.NET Core 組み込みの DI コンテナー](#aspnet-core-組み込みの-di-コンテナー)
    - [コンストラクターインジェクション](#コンストラクターインジェクション)
    - [プライマリコンストラクターによる注入（C# 12）](#プライマリコンストラクターによる注入c-12)
@@ -66,8 +66,8 @@ public class OrderController : Controller
 
 DI はこれらの問題を、以下の 3 つのステップで解決します。
 
-1. **インターフェースによる抽象化** — 依存関係をインターフェース（契約）で定義する
-2. **サービスコンテナーへの登録** — インターフェースと具象クラスの対応を DI コンテナーに登録する
+1. **インターフェイスによる抽象化** — 依存関係をインターフェイス（契約）で定義する
+2. **サービスコンテナーへの登録** — インターフェイスと具象クラスの対応を DI コンテナーに登録する
 3. **コンストラクターインジェクション** — フレームワークが依存関係のインスタンスを自動で生成し、コンストラクター経由で注入する
 
 ```mermaid
@@ -95,13 +95,13 @@ flowchart LR
 > | Django (Python) | 標準の DI コンテナーは提供されず、`settings.py` の設定とアプリレジストリで依存関係を切り替える。本格的な DI が必要な場合は `dependency-injector` などのサードパーティライブラリを利用 |
 > | Go (Gin / Echo) | 標準的な DI コンテナーは言語仕様に含まれないが、`google/wire` などのコード生成ツールや手動のコンストラクター引数渡しでパターンを実現 |
 
-### インターフェースと具象クラスによる抽象化
+### インターフェイスと具象クラスによる抽象化
 
-DI の第一歩は、依存関係を **インターフェース（抽象）** で表現することです。  
-インターフェースは「何ができるか」を定義し、具象クラスは「どのように実現するか」を定義します。
+DI の第一歩は、依存関係を **インターフェイス（抽象）** で表現することです。  
+インターフェイスは「何ができるか」を定義し、具象クラスは「どのように実現するか」を定義します。
 
 ```csharp
-// インターフェース — 「注文を取得する」という契約を定義
+// インターフェイス — 「注文を取得する」という契約を定義
 public interface IOrderService
 {
     IReadOnlyList<Order> GetAll();
@@ -111,7 +111,7 @@ public interface IOrderService
 ```
 
 ```csharp
-// 具象クラス — インターフェースの実装
+// 具象クラス — インターフェイスの実装
 public class OrderService : IOrderService
 {
     private readonly AppDbContext _dbContext;
@@ -135,7 +135,7 @@ public class OrderService : IOrderService
 }
 ```
 
-このようにインターフェースを介して依存関係を定義することで、次のような利点が得られます。
+このようにインターフェイスを介して依存関係を定義することで、次のような利点が得られます。
 
 - **疎結合**: 利用側は具象クラスの内部実装を知る必要がない
 - **テスト容易性**: テスト時にモック実装を注入できる
@@ -161,7 +161,7 @@ var app = builder.Build();
 ### コンストラクターインジェクション
 
 ASP.NET Core で最も一般的な注入方法が **コンストラクターインジェクション** です。  
-コントローラーやサービスのコンストラクターにインターフェース型のパラメーターを宣言すると、DI コンテナーが対応するインスタンスを自動的に解決し、注入します。
+コントローラーやサービスのコンストラクターにインターフェイス型のパラメーターを宣言すると、DI コンテナーが対応するインスタンスを自動的に解決し、注入します。
 
 ```csharp
 public class OrderController : Controller
@@ -364,7 +364,7 @@ builder.Services.AddSingleton<ICacheService, InMemoryCacheService>();
 以下のコードは、各ライフタイムの違いを確認するためのサンプルです。
 
 ```csharp
-// 各ライフタイムの動作確認用インターフェース
+// 各ライフタイムの動作確認用インターフェイス
 public interface IOperationTransient
 {
     Guid OperationId { get; }
@@ -496,6 +496,7 @@ builder.Services.AddSingleton<INotificationService>(sp =>
 
 ```csharp
 // 他のサービスに依存するサービスをファクトリで生成
+// （OrderService が AppDbContext と ILogger を受け取るコンストラクターを持つ場合）
 builder.Services.AddScoped<IOrderService>(sp =>
 {
     var dbContext = sp.GetRequiredService<AppDbContext>();
@@ -505,12 +506,12 @@ builder.Services.AddScoped<IOrderService>(sp =>
 ```
 
 > [!NOTE]
-> 単純にインターフェースと具象クラスを対応付ける場合（`AddScoped<IOrderService, OrderService>()`）は、コンテナーが自動的にコンストラクターの依存関係を解決するため、ファクトリデリゲートは不要です。ファクトリデリゲートは **追加の初期化ロジック** や **条件分岐** が必要な場合に使用します。
+> 単純にインターフェイスと具象クラスを対応付ける場合（`AddScoped<IOrderService, OrderService>()`）は、コンテナーが自動的にコンストラクターの依存関係を解決するため、ファクトリデリゲートは不要です。ファクトリデリゲートは **追加の初期化ロジック** や **条件分岐** が必要な場合に使用します。
 
 ### 既存インスタンスの登録（Singleton のみ）
 
 `AddSingleton` には、事前に生成したインスタンスをそのまま DI コンテナーに登録するオーバーロードがあります。  
-このパターンはインターフェースを介さず具象クラスのインスタンスを直接登録できる、**Singleton 固有** の機能です（Scoped / Transient はリクエストや要求ごとに新しいインスタンスを生成するため、この概念が成立しません）。
+このパターンはインターフェイスを介さず具象クラスのインスタンスを直接登録できる、**Singleton 固有** の機能です（Scoped / Transient はリクエストや要求ごとに新しいインスタンスを生成するため、この概念が成立しません）。
 
 ```csharp
 // 具象クラスのインスタンスをそのまま登録
@@ -519,7 +520,7 @@ builder.Services.AddSingleton(settings);
 ```
 
 ```csharp
-// インターフェース経由で既存インスタンスを登録
+// インターフェイス経由で既存インスタンスを登録
 var cache = new InMemoryCacheService();
 builder.Services.AddSingleton<ICacheService>(cache);
 ```
@@ -527,7 +528,7 @@ builder.Services.AddSingleton<ICacheService>(cache);
 このパターンは、アプリケーション起動時に構成済みのオブジェクトをそのまま DI コンテナーに渡したい場合に使用します。
 
 > [!NOTE]
-> インターフェースなしで具象クラスを登録するパターン（`AddSingleton<MyService>()`、`AddScoped<MyService>()`）は全ライフタイムで利用可能です。ただし、テスト時のモック差し替えが難しくなるため、外部依存を持つサービスにはインターフェースを定義することが推奨されます。
+> インターフェイスなしで具象クラスを登録するパターン（`AddSingleton<MyService>()`、`AddScoped<MyService>()`）は全ライフタイムで利用可能です。ただし、テスト時のモック差し替えが難しくなるため、外部依存を持つサービスにはインターフェイスを定義することが推奨されます。
 
 > [!NOTE]
 > **コラム: 条件付き登録（TryAdd）**
@@ -545,7 +546,19 @@ builder.Services.AddSingleton<ICacheService>(cache);
 
 ### キー付きサービス（Keyed Services）
 
-.NET 8 で導入された **キー付きサービス** を使うと、同じインターフェースの複数実装を **キー（名前）で区別** して登録・解決できます。
+.NET 8 で導入された **キー付きサービス** を使うと、同じインターフェイスの複数実装を **キー（名前）で区別** して登録・解決できます。
+
+```csharp
+// キャッシュの抽象と 2 つの実装
+public interface ICache
+{
+    string? Get(string key);
+    void Set(string key, string value);
+}
+
+public class RedisCache : ICache { /* 分散キャッシュの実装 */ }
+public class InMemoryCache : ICache { /* インメモリキャッシュの実装 */ }
+```
 
 ```csharp
 // キー付きサービスの登録
@@ -565,14 +578,16 @@ public class CacheController : ControllerBase
     public ActionResult<string> GetDistributed(
         [FromKeyedServices("distributed")] ICache cache)
     {
-        return cache.Get("key1");
+        var value = cache.Get("key1");
+        return value is null ? NotFound() : Ok(value);
     }
 
     [HttpGet("local")]
     public ActionResult<string> GetLocal(
         [FromKeyedServices("local")] ICache cache)
     {
-        return cache.Get("key1");
+        var value = cache.Get("key1");
+        return value is null ? NotFound() : Ok(value);
     }
 }
 ```
@@ -613,7 +628,7 @@ public class OrderProcessor(
 
 ### 複数実装の登録と解決
 
-同じインターフェースに対して複数の実装を登録し、`IEnumerable<TService>` で一括取得するパターンも利用可能です。
+同じインターフェイスに対して複数の実装を登録し、`IEnumerable<TService>` で一括取得するパターンも利用可能です。
 
 ```csharp
 // 複数実装の登録
@@ -647,6 +662,14 @@ public class NotificationService(
 `BackgroundService`（バックグラウンドタスク）のような Singleton ライフタイムで動作するクラスから Scoped サービスを利用する場合は、`IServiceScopeFactory` を使って明示的にスコープを作成します。
 
 ```csharp
+// 未処理の注文をまとめて処理する Scoped サービス
+public interface IOrderBatchProcessor
+{
+    Task ProcessPendingOrdersAsync();
+}
+```
+
+```csharp
 public sealed class OrderProcessingWorker(
     ILogger<OrderProcessingWorker> logger,
     IServiceScopeFactory serviceScopeFactory) : BackgroundService
@@ -658,9 +681,10 @@ public sealed class OrderProcessingWorker(
             // スコープを明示的に作成して Scoped サービスを安全に利用
             using (var scope = serviceScopeFactory.CreateScope())
             {
-                var orderService = scope.ServiceProvider
-                    .GetRequiredService<IOrderService>();
-                await orderService.ProcessPendingOrdersAsync();
+                var processor = scope.ServiceProvider
+                    .GetRequiredService<IOrderBatchProcessor>();
+                await processor.ProcessPendingOrdersAsync();
+                logger.LogInformation("未処理の注文をバッチ処理しました。");
             }
 
             await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
@@ -698,9 +722,9 @@ flowchart TD
 
 ### 基本的なサービス層パターン
 
-以下は、インターフェースと実装で構成される典型的なサービス層の実装例です。
+以下は、インターフェイスと実装で構成される典型的なサービス層の実装例です。
 
-**インターフェース定義**
+**インターフェイス定義**
 
 ```csharp
 public interface IProductService
@@ -813,7 +837,7 @@ public class ProductsController(IProductService productService) : ControllerBase
 規模が大きいアプリケーションでは、サービス層とデータアクセス層の間に **リポジトリ層** を挟むことで、関心をさらに分離できます。
 
 ```csharp
-// リポジトリインターフェース
+// リポジトリインターフェイス
 public interface IProductRepository
 {
     Task<IReadOnlyList<Product>> GetAllAsync();
