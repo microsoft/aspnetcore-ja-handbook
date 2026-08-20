@@ -69,7 +69,7 @@ const asPageGroup = (entry: SidebarEntry) => {
 								{items.map((heading) => (
 									<li>
 										<a href={`${page.href}#${heading.slug}`}>
-											<span set:html={heading.text} />
+											<span>{heading.text}</span>
 										</a>
 									</li>
 								))}
