@@ -1,0 +1,126 @@
+/*
+ * 左サイドバー／右サイドバー（目次）の開閉。
+ *
+ * Starlight のコンポーネント CSS はすべて @layer starlight.* に入っている。
+ * このファイルはレイヤーに属さないため、詳細度に関係なく Starlight 側より
+ * 優先される。!important は不要。
+ *
+ * レイアウトの切り替えは <html> の data-sidebar-collapsed / data-toc-collapsed
+ * だけで駆動し、JS はこの属性の付け外しと localStorage への保存しか行わない。
+ * そのためウィンドウのリサイズを JS で監視する必要がない。
+ */
+
+/* ---------------- ボタン ---------------- */
+
+.panel-toggle {
+	/* 表示は下のメディアクエリでのみ有効化する（既定は非表示） */
+	display: none;
+	align-items: center;
+	justify-content: center;
+	padding: 0.25rem;
+	border: 0;
+	border-radius: 0.25rem;
+	background-color: transparent;
+	color: var(--sl-color-gray-1);
+	line-height: 0;
+	cursor: pointer;
+}
+
+.panel-toggle:hover {
+	color: var(--sl-color-white);
+	background-color: var(--sl-color-gray-6);
+}
+
+.panel-toggle svg {
+	width: 1.25rem;
+	height: 1.25rem;
+}
+
+.panel-toggle__fill {
+	fill: currentColor;
+}
+
+/* 折りたたみ中はアイコンの塗りを消して状態を示す */
+:root[data-sidebar-collapsed] .panel-toggle[data-panel='sidebar'] .panel-toggle__fill,
+:root[data-toc-collapsed] .panel-toggle[data-panel='toc'] .panel-toggle__fill {
+	fill: none;
+}
+
+/*
+ * ボタンは「そのパネルが実際に表示される条件」でのみ出す。
+ * 50rem 未満はモバイルのドロワー、72rem 未満は本文上部のモバイル目次が
+ * 使われるため、デスクトップ用の開閉ボタンは意味を持たない。
+ */
+@media (min-width: 50rem) {
+	:root[data-has-sidebar] .panel-toggle[data-panel='sidebar'] {
+		display: flex;
+	}
+}
+
+@media (min-width: 72rem) {
+	:root[data-has-toc] .panel-toggle[data-panel='toc'] {
+		display: flex;
+	}
+}
+
+/* ---------------- 左サイドバー ---------------- */
+
+/* 50rem 以上でのみサイドバーが領域を占めるので、上書きもこの範囲に閉じる */
+@media (min-width: 50rem) {
+	:root[data-sidebar-collapsed] .sidebar-pane {
+		/* .sidebar-pane は position: fixed。属性を消すだけでは重なって残る */
+		display: none;
+	}
+
+	:root[data-sidebar-collapsed] {
+		/* .main-frame の padding-inline-start の実体 */
+		--sl-content-inline-start: 0rem;
+		/* ヘッダーのグリッド列幅計算に使われる Starlight 内部変数 */
+		--__sidebar-pad: 0rem;
+	}
+}
+
+/* ---------------- 右サイドバー（目次） ---------------- */
+
+/* 目次が領域を占めるのは 72rem 以上 */
+@media (min-width: 72rem) {
+	:root[data-toc-collapsed] .right-sidebar-container {
+		display: none;
+	}
+
+	:root[data-toc-collapsed] {
+		/* ヘッダーのグリッド列幅計算に使われる Starlight 内部変数 */
+		--__toc-width: 0rem;
+	}
+
+	:root[data-toc-collapsed] .main-pane {
+		width: 100%;
+		/* 既定は `auto 0`（右寄せ）。目次が消えたら本文を中央に戻す */
+		--sl-content-margin-inline: auto;
+	}
+}
+
+/* ---------------- 本文の最大幅 ---------------- */
+
+/*
+ * --sl-content-width は本文の最大幅（既定 45rem）。
+ * これを広げないと、パネルを閉じても左右に余白が増えるだけで
+ * 本文の幅は変わらない。閉じた枚数に応じて上限を引き上げる。
+ * （参考: Starlight 自身もサイドバーが無いページでは 67.5rem に広げている）
+ */
+@media (min-width: 50rem) {
+	:root[data-sidebar-collapsed] {
+		--sl-content-width: 60rem;
+	}
+}
+
+@media (min-width: 72rem) {
+	:root[data-toc-collapsed] {
+		--sl-content-width: 60rem;
+	}
+
+	/* 両方閉じたときは画面をほぼ使い切る */
+	:root[data-sidebar-collapsed][data-toc-collapsed] {
+		--sl-content-width: 82.5rem;
+	}
+}

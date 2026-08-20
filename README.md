@@ -1,14 +1,18 @@
 # ASP.NET Core ハンドブック
 
+> 📖 **読みやすい HTML 版はこちら → https://microsoft.github.io/aspnetcore-ja-handbook/**
+>
+> 以下は Markdown のソースです。検索・目次・ページ送りが使える公開サイトの方が快適に読めますので是非そちらをご覧ください。
+
 ## 目次
 
 | 章 | タイトル | 内容 |
-|---|---|---|
-| 第 1 章 | [開発環境セットアップ](docs/01-setup-dev-env.md) | <ol><li>.NET SDK / ランタイムとは</li><li>LTS/STS のサポート期間</li><li>OS 別セットアップ（Windows / macOS / Linux）</li><li>IDE（Visual Studio / VS Code）準備</li><li>.NET CLI 基本コマンド</li><li>初回プロジェクト作成</li><li>まとめ</li><li>参考ドキュメント</li></ol> |
-| 第 2 章 | [ソリューションとプロジェクト](docs/02-solutions-and-projects.md) | <ol><li>ソリューションとプロジェクトの違いと役割</li><li>プロジェクト参照と NuGet パッケージ参照の使い分け</li><li>複数プロジェクト構造のパターン</li><li>ビルド／実行フロー</li><li>デバッグ設定・起動構成の管理</li><li>参考ドキュメント</li></ol> |
-| 第 3 章 | [MVC Web アプリケーション / API](docs/03-mvc-web-and-api.md) | <ol><li>MVC (Model-View-Controller) 構成の基本</li><li>コントローラー／アクションの書き方</li><li>ルーティング（属性ルーティング / 規約ベースルーティング）</li><li>モデルバインディング / 入力検証 (Validation)</li><li>API を MVC コントローラーで実装する方法（ControllerBase, [ApiController] 属性）</li><li>フィルター（ActionFilter, ExceptionFilter 等）と横断処理</li><li>参考ドキュメント</li></ol> |
-| 第 4 章 | [Minimal API](docs/04-minimal-api.md) | <ol><li>Minimal API とは何か？（MVC ベースとどう違うか）</li><li>Minimal API の基本構文（MapGet, MapPost 等）</li><li>DI を使ったハンドラ注入、MapGroup・エンドポイントグループ化などの構成パターン</li><li>Minimal API の制約・注意点と MVC との比較（構造、可読性、機能面）</li><li>どのようなケースで使うかの判断基準</li><li>参考ドキュメント</li></ol> |
-| 第 5 章 | [アプリ設定 (Configuration)](docs/05-configuration.md) | <ol><li>appsettings.json / 環境別設定（Development / Production 等）</li><li>環境変数 / コマンドライン引数 / シークレット管理</li><li>IOptions&lt;T&gt; / オプションバインディング</li><li>設定のオーバーライド順序と仕組み</li><li>参考ドキュメント</li></ol> |
+| --- | --- | --- |
+| 第 1 章 | [開発環境セットアップ](src/content/docs/01-setup-dev-env/index.md) | <ol><li>.NET SDK / ランタイムとは</li><li>LTS/STS のサポート期間</li><li>OS 別セットアップ（Windows / macOS / Linux）</li><li>IDE（Visual Studio / VS Code）準備</li><li>.NET CLI 基本コマンド</li><li>初回プロジェクト作成</li><li>まとめ</li><li>参考ドキュメント</li></ol> |
+| 第 2 章 | [ソリューションとプロジェクト](src/content/docs/02-solutions-and-projects/index.md) | <ol><li>ソリューションとプロジェクトの違いと役割</li><li>プロジェクト参照と NuGet パッケージ参照の使い分け</li><li>複数プロジェクト構造のパターン</li><li>ビルド／実行フロー</li><li>デバッグ設定・起動構成の管理</li><li>参考ドキュメント</li></ol> |
+| 第 3 章 | [MVC Web アプリケーション / API](src/content/docs/03-mvc-web-and-api/index.md) | <ol><li>MVC (Model-View-Controller) 構成の基本</li><li>コントローラー／アクションの書き方</li><li>ルーティング（属性ルーティング / 規約ベースルーティング）</li><li>モデルバインディング / 入力検証 (Validation)</li><li>API を MVC コントローラーで実装する方法（ControllerBase, [ApiController] 属性）</li><li>フィルター（ActionFilter, ExceptionFilter 等）と横断処理</li><li>参考ドキュメント</li></ol> |
+| 第 4 章 | [Minimal API](src/content/docs/04-minimal-api/index.md) | <ol><li>Minimal API とは何か？（MVC ベースとどう違うか）</li><li>Minimal API の基本構文（MapGet, MapPost 等）</li><li>DI を使ったハンドラ注入、MapGroup・エンドポイントグループ化などの構成パターン</li><li>Minimal API の制約・注意点と MVC との比較（構造、可読性、機能面）</li><li>どのようなケースで使うかの判断基準</li><li>参考ドキュメント</li></ol> |
+| 第 5 章 | [アプリ設定 (Configuration)](src/content/docs/05-configuration/index.md) | <ol><li>appsettings.json / 環境別設定（Development / Production 等）</li><li>環境変数 / コマンドライン引数 / シークレット管理</li><li>IOptions&lt;T&gt; / オプションバインディング</li><li>設定のオーバーライド順序と仕組み</li><li>参考ドキュメント</li></ol> |
 | 第 6 章 | 依存性注入 (DI)（予定） | <ol><li>DI の基本概念 (Interface と具象クラス)</li><li>サービスの登録スコープ (Transient / Scoped / Singleton)</li><li>ファクトリ登録、条件付き登録、遅延注入</li><li>サービス層設計パターン</li></ol> |
 | 第 7 章 | ファイルアップロードと外部ストレージへの保存（予定） | <ol><li>ASP.NET Core におけるファイル受信（Buffered モデル / ストリーミング型アップロード）<ul><li>小さいファイル・大きいファイルの違い、ストリーミング方式のメリットなど</li></ul></li><li>Azure Blob Storage 等クラウドストレージへの保存方法<ul><li>BlobClient / BlobContainerClient 利用、ストリームアップロード、上書き制御など</li></ul></li><li>DI によるストレージクライアント注入設計<ul><li>保存先パス設計、アクセス制御（公開／非公開）、メタデータ管理</li></ul></li></ol> |
 | 第 8 章 | データベースアクセスと ORM（Entity Framework Core）（予定） | <ol><li>概要と設計方針</li><li>モデル定義と DbContext 設計</li><li>マイグレーションとスキーマ管理</li><li>クエリ操作と LINQ</li><li>更新／変更操作とトランザクション</li><li>パフォーマンス最適化</li><li>読み取り専用レプリカ (Read-Only Replica) の扱い</li><li>テスト戦略とアーキテクチャ例</li></ol> |
@@ -55,7 +59,7 @@ Razor Pages や Blazor に興味がある方は、以下の公式ドキュメン
 ### 本ガイドで扱うバージョン
 
 | コンポーネント | バージョン | サポート種別 | サポート期限 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **.NET** | 10 | LTS (Long Term Support) | 2028 年 11 月 |
 | **ASP.NET Core** | 10 | LTS | 2028 年 11 月 |
 | **EF Core** | 10 | LTS | 2028 年 11 月 |

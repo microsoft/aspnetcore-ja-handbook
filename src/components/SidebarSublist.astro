@@ -1,0 +1,219 @@
+---
+import { Icon } from '@astrojs/starlight/components';
+import SidebarRestorePoint from '@astrojs/starlight/components/SidebarRestorePoint.astro';
+import type { MarkdownHeading } from 'astro';
+import { hrefToSlug } from '../lib/page-headings';
+
+type SidebarLink = {
+	type: 'link';
+	label: string;
+	href: string;
+	isCurrent: boolean;
+	attrs: Record<string, string | number | boolean | undefined>;
+};
+type SidebarGroup = {
+	type: 'group';
+	label: string;
+	entries: SidebarEntry[];
+	collapsed: boolean;
+};
+type SidebarEntry = SidebarLink | SidebarGroup;
+
+interface Props {
+	sublist: SidebarEntry[];
+	headings: Map<string, MarkdownHeading[]>;
+	nested?: boolean;
+}
+
+const { sublist, headings, nested } = Astro.props;
+
+const flatten = (entries: SidebarEntry[]): SidebarLink[] =>
+	entries.flatMap((entry) => (entry.type === 'link' ? [entry] : flatten(entry.entries)));
+
+/**
+ * 「1 ページ = 1 フォルダ」構成では、自動生成されたグループの中身は index.md へのリンク 1 件だけになる。
+ * その形のグループを「ページグループ」として扱い、index.md の `##` 見出しを子項目に展開する。
+ */
+const asPageGroup = (entry: SidebarEntry) => {
+	if (entry.type !== 'group' || entry.entries.length !== 1) return null;
+	const page = entry.entries[0];
+	if (!page || page.type !== 'link') return null;
+	const items = headings.get(hrefToSlug(page.href)) ?? [];
+	return { page, items };
+};
+---
+
+<ul class:list={{ 'top-level': !nested }}>
+	{
+		sublist.map((entry) => {
+			const pageGroup = asPageGroup(entry);
+
+			// 見出しを持つページグループ: グループ名 = index.md の title（クリックで index.md へ）
+			if (pageGroup && pageGroup.items.length > 0) {
+				const { page, items } = pageGroup;
+				return (
+					<li>
+						<details open={page.isCurrent}>
+							<summary>
+								<a
+									class="group-link large"
+									href={page.href}
+									aria-current={page.isCurrent ? 'page' : undefined}
+								>
+									{page.label}
+								</a>
+								<Icon name="right-caret" class="caret" size="1.25rem" />
+							</summary>
+							<SidebarRestorePoint />
+							<ul>
+								{items.map((heading) => (
+									<li>
+										<a href={`${page.href}#${heading.slug}`}>
+											<span>{heading.text}</span>
+										</a>
+									</li>
+								))}
+							</ul>
+						</details>
+					</li>
+				);
+			}
+
+			// 見出しが無いページグループは折りたたまず、素のリンクにする。
+			const link = entry.type === 'link' ? entry : pageGroup?.page;
+			if (link) {
+				return (
+					<li>
+						<a
+							href={link.href}
+							aria-current={link.isCurrent ? 'page' : undefined}
+							class:list={[{ large: !nested }, link.attrs.class]}
+							{...link.attrs}
+						>
+							<span>{link.label}</span>
+						</a>
+					</li>
+				);
+			}
+
+			// 通常のグループ（入れ子ディレクトリなど）は Starlight と同じ見た目で再帰描画する。
+			const group = entry as SidebarGroup;
+			return (
+				<li>
+					<details open={flatten(group.entries).some((i) => i.isCurrent) || !group.collapsed}>
+						<summary>
+							<span class="group-label">
+								<span class="large">{group.label}</span>
+							</span>
+							<Icon name="right-caret" class="caret" size="1.25rem" />
+						</summary>
+						<SidebarRestorePoint />
+						<Astro.self sublist={group.entries} headings={headings} nested />
+					</details>
+				</li>
+			);
+		})
+	}
+</ul>
+
+<style>
+	ul {
+		--sl-sidebar-item-padding-inline: 0.5rem;
+		list-style: none;
+		padding: 0;
+	}
+
+	li {
+		overflow-wrap: anywhere;
+	}
+
+	ul ul li {
+		margin-inline-start: var(--sl-sidebar-item-padding-inline);
+		border-inline-start: 1px solid var(--sl-color-hairline-light);
+		padding-inline-start: var(--sl-sidebar-item-padding-inline);
+	}
+
+	.large {
+		font-size: var(--sl-text-lg);
+		font-weight: 600;
+		color: var(--sl-color-white);
+	}
+
+	.top-level > li + li {
+		margin-top: 0.75rem;
+	}
+
+	summary {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.25em;
+		padding: 0.2em var(--sl-sidebar-item-padding-inline);
+		line-height: 1.4;
+		cursor: pointer;
+		user-select: none;
+	}
+	summary::marker,
+	summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.caret {
+		transition: transform 0.2s ease-in-out;
+		flex-shrink: 0;
+	}
+	:global([dir='rtl']) .caret {
+		transform: rotateZ(180deg);
+	}
+	details[open] > summary .caret {
+		transform: rotateZ(90deg);
+	}
+
+	a {
+		display: block;
+		border-radius: 0.25rem;
+		text-decoration: none;
+		color: var(--sl-color-gray-2);
+		padding: 0.3em var(--sl-sidebar-item-padding-inline);
+		line-height: 1.4;
+	}
+
+	/* グループ名そのものを index.md へのリンクにする。 */
+	.group-link {
+		flex: 1;
+		min-width: 0;
+		user-select: text;
+	}
+
+	a:hover,
+	a:focus {
+		color: var(--sl-color-white);
+	}
+
+	[aria-current='page'],
+	[aria-current='page']:hover,
+	[aria-current='page']:focus {
+		font-weight: 600;
+		color: var(--sl-color-text-invert);
+		background-color: var(--sl-color-text-accent);
+	}
+
+	@media (min-width: 50rem) {
+		.top-level > li + li {
+			margin-top: 0.5rem;
+		}
+		.large {
+			font-size: var(--sl-text-base);
+		}
+		a {
+			font-size: var(--sl-text-sm);
+		}
+	}
+</style>
+
+<script>
+	// summary 内のリンクをクリックしたときに details の開閉が同時に起きないようにする。
+	document.querySelectorAll('summary > a').forEach((link) => {
+		link.addEventListener('click', (event) => event.stopPropagation());
+	});
+</script>

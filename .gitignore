@@ -1,0 +1,13 @@
+# Astro
+dist/
+.astro/
+
+# Node
+node_modules/
+
+# 環境変数
+.env
+.env.production
+
+# OS
+.DS_Store

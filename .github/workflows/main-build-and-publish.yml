@@ -1,0 +1,53 @@
+# main が更新されたとき（PR のマージを含む）に動く。
+# main の内容をビルドし直して GitHub Pages へ公開する。
+# feature 側でビルドした成果物は使わない（マージ結果とは別物になりうるため）。
+name: 'main: Build and publish to Pages'
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 公開は1本ずつ。進行中のデプロイは中断しない。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Astro 7 は Node 22.12 以上が必須。20 ではインストールに失敗する。
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # dist/ を Pages 用の artifact としてアップロードする。
+      # gh-pages ブランチは作られず、リポジトリに成果物は残らない。
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
