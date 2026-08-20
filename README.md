@@ -2,12 +2,12 @@
 
 > 📖 **読みやすい HTML 版はこちら → https://microsoft.github.io/aspnetcore-ja-handbook/**
 >
-> 以下は Markdown のソースです。検索・目次・ページ送りが使える公開サイトの方が快適に読めます。
+> 以下は Markdown のソースです。検索・目次・ページ送りが使える公開サイトの方が快適に読めますので是非そちらをご覧ください。
 
 ## 目次
 
 | 章 | タイトル | 内容 |
-|---|---|---|
+| --- | --- | --- |
 | 第 1 章 | [開発環境セットアップ](src/content/docs/01-setup-dev-env/index.md) | <ol><li>.NET SDK / ランタイムとは</li><li>LTS/STS のサポート期間</li><li>OS 別セットアップ（Windows / macOS / Linux）</li><li>IDE（Visual Studio / VS Code）準備</li><li>.NET CLI 基本コマンド</li><li>初回プロジェクト作成</li><li>まとめ</li><li>参考ドキュメント</li></ol> |
 | 第 2 章 | [ソリューションとプロジェクト](src/content/docs/02-solutions-and-projects/index.md) | <ol><li>ソリューションとプロジェクトの違いと役割</li><li>プロジェクト参照と NuGet パッケージ参照の使い分け</li><li>複数プロジェクト構造のパターン</li><li>ビルド／実行フロー</li><li>デバッグ設定・起動構成の管理</li><li>参考ドキュメント</li></ol> |
 | 第 3 章 | [MVC Web アプリケーション / API](src/content/docs/03-mvc-web-and-api/index.md) | <ol><li>MVC (Model-View-Controller) 構成の基本</li><li>コントローラー／アクションの書き方</li><li>ルーティング（属性ルーティング / 規約ベースルーティング）</li><li>モデルバインディング / 入力検証 (Validation)</li><li>API を MVC コントローラーで実装する方法（ControllerBase, [ApiController] 属性）</li><li>フィルター（ActionFilter, ExceptionFilter 等）と横断処理</li><li>参考ドキュメント</li></ol> |
@@ -59,7 +59,7 @@ Razor Pages や Blazor に興味がある方は、以下の公式ドキュメン
 ### 本ガイドで扱うバージョン
 
 | コンポーネント | バージョン | サポート種別 | サポート期限 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **.NET** | 10 | LTS (Long Term Support) | 2028 年 11 月 |
 | **ASP.NET Core** | 10 | LTS | 2028 年 11 月 |
 | **EF Core** | 10 | LTS | 2028 年 11 月 |
