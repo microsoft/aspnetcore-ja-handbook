@@ -320,7 +320,7 @@ flowchart TB
 | 設定 | 既定値 | 超過時の挙動 |
 | --- | --- | --- |
 | IIS の `maxAllowedContentLength` | 30,000,000 バイト（約 28.6 MB） | HTTP 404.13 が返る |
-| `KestrelServerLimits.MaxRequestBodySize` | 30,000,000 バイト（約 28.6 MB） | 接続がリセットされる |
+| `KestrelServerLimits.MaxRequestBodySize` | 30,000,000 バイト（約 28.6 MB） | `BadHttpRequestException` がスローされ HTTP 413 が返る。クライアントが送信を続けた場合は接続がリセットされることもある |
 | `FormOptions.MultipartBodyLengthLimit` | 134,217,728 バイト（128 MB） | `InvalidDataException` がスローされる |
 | `FormOptions.MemoryBufferThreshold` | 65,536 バイト（64 KB） | 超過分はディスク上の一時ファイルへ退避される |
 
@@ -397,13 +397,13 @@ builder.Services.Configure<IISServerOptions>(options =>
 
 つまり、IIS でホストして 100 MB のアップロードを許可したい場合、**両方** の設定が必要です。
 
-| 設定場所 | 設定項目 | 役割 |
-| --- | --- | --- |
-| `web.config` | `maxAllowedContentLength` | IIS がアプリにリクエストを渡すかどうかの判定。ここで弾かれるとアプリには一切届かない |
-| C# コード | `IISServerOptions.MaxRequestBodySize` | アプリがボディの読み取りを許可する上限 |
+| 設定場所 | 設定項目 | 役割 | 超過時の挙動 |
+| --- | --- | --- | --- |
+| `web.config` | `maxAllowedContentLength` | IIS がアプリにリクエストを渡すかどうかの判定。ここで弾かれるとアプリには一切届かない | HTTP 404.13 が返り、アプリのコードには到達しない |
+| C# コード | `IISServerOptions.MaxRequestBodySize` | アプリがボディの読み取りを許可する上限 | `BadHttpRequestException` がスローされ、HTTP 413 が返る |
 
 > [!WARNING]
-> `web.config` だけを設定しても不十分です。IIS の関門は通過しますが、その先の `IISServerOptions.MaxRequestBodySize`（既定 30,000,000 バイト）で弾かれます。逆に C# 側だけを設定した場合は、IIS の段階で HTTP 404.13 が返り、アプリのコードには到達しません。どちらか一方だけでは、より小さいほうの上限が実効値になります。
+> **どちらか一方だけを設定した場合、より小さいほうの値が実効的な上限になります。** 上限を引き上げたつもりが効いていないときは、両方の設定を確認してください。
 
 > [!NOTE]
 > `maxAllowedContentLength` は IIS 固有の設定です。Kestrel を直接公開する構成、Linux 上のコンテナー、Azure App Service の Linux プランなど IIS を経由しない環境では、この設定自体が存在しないため `web.config` は不要です。Nginx や Apache をリバースプロキシーとして使う場合は、それぞれ `client_max_body_size`、`LimitRequestBody` が対応する設定になります。
