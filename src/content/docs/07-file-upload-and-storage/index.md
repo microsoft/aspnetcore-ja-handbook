@@ -858,6 +858,7 @@ public sealed class MaxFileSizeAttribute(long maxBytes) : ValidationAttribute
 ```
 
 ```csharp
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Mvc;
 
 // ① IFormFile を単体の引数として受け取る場合
@@ -1040,6 +1041,8 @@ az role assignment create \
 Web アプリケーションでのファイルアップロードでは、いったんローカルディスクへ保存せず、受信したストリームを直接 Blob Storage へ流し込むのが基本形です。
 
 ```csharp
+using Azure.Storage.Blobs;
+
 public static async Task<Uri> UploadAsync(
     BlobContainerClient containerClient,
     IFormFile file,
@@ -1366,6 +1369,9 @@ builder.Services.AddAzureClients(clientBuilder =>
 ```
 
 ```csharp
+using Azure.Storage.Blobs;
+using Microsoft.Extensions.Azure;
+
 public sealed class ArchiveService(IAzureClientFactory<BlobServiceClient> clientFactory)
 {
     private readonly BlobServiceClient _publicClient = clientFactory.CreateClient("public");
@@ -1868,6 +1874,9 @@ public enum ScanStatus
 ### コントローラーからの利用
 
 ここまでの要素を組み合わせた完成形です。
+
+> [!NOTE]
+> 以降のコードに登場する `AppDbContext` は、Entity Framework Core の `DbContext` を継承したアプリケーション独自のクラスで、上記の `UploadedFile` を `DbSet<UploadedFile> UploadedFiles` として公開しているものとします。EF Core については本章では扱いません。
 
 ```csharp
 using System.Security.Claims;
