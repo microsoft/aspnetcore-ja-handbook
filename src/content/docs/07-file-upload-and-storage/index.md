@@ -72,7 +72,7 @@ Content-Type: image/jpeg
 ```
 
 > [!WARNING]
-> `enctype="multipart/form-data"` を指定し忘れると、ファイルは一切送信されません。この場合 `IFormFile` にバインドされる引数は `null` になります。「ファイルが `null` になる」という不具合の多くはこれが原因です。
+> `enctype="multipart/form-data"` を指定し忘れると、ファイルは一切送信されません。この場合 `IFormFile` にバインドされる引数は `null` になります。「ファイルが `null` になる」という不具合の多くはこれが原因です。なお `IFormFile` は、アップロードされたファイル 1 件を表す ASP.NET Core のインターフェイスです（詳細は [IFormFile によるバッファリング受信](#iformfile-によるバッファリング受信) で後述します）。
 
 > [!NOTE]
 > **他言語との比較**
