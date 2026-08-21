@@ -17,6 +17,7 @@ description: "IFormFile によるバッファリング受信と MultipartReader 
    - [検証すべき 5 つの観点](#検証すべき-5-つの観点)
    - [拡張子とファイルシグネチャの検証](#拡張子とファイルシグネチャの検証)
    - [ファイル名とサイズの扱い](#ファイル名とサイズの扱い)
+   - [Minimal API での検証（.NET 10 の新機能）](#minimal-api-での検証net-10-の新機能)
    - [ウイルススキャンと隔離](#ウイルススキャンと隔離)
 3. [Azure Blob Storage への保存](#3-azure-blob-storage-への保存)
    - [Blob Storage のオブジェクトモデル](#blob-storage-のオブジェクトモデル)
@@ -301,7 +302,6 @@ app.MapGet("/", (HttpContext context, IAntiforgery antiforgery) =>
 > Razor Pages や MVC の `<form>` タグヘルパーを使う場合、この hidden フィールドは自動的に挿入されます。手書きの HTML や JavaScript から送信する場合のみ、上記のように明示的な埋め込みが必要です。JavaScript の `fetch` から送る場合は、トークンを `RequestVerificationToken` ヘッダーに載せる方法もよく使われます。
 
 Cookie 認証を使わない API（Bearer トークン認証など）で、CSRF の攻撃対象にならないことが明らかなエンドポイントは、`DisableAntiforgery()` で検証を無効化できます。
-
 
 ```csharp
 app.MapPost("/api/upload", async (IFormFile file) => { /* ... */ })
@@ -605,7 +605,7 @@ public sealed class DisableFormValueModelBindingAttribute : Attribute, IResource
 | 観点 | バッファリング（`IFormFile`） | ストリーミング（`MultipartReader`） |
 | --- | --- | --- |
 | 実装の容易さ | ◎ モデルバインディングで完結 | △ 自前でセクションを解析する |
-| モデル検証との統合 | ◎ データ注釈が使える | △ 自前で実装が必要 |
+| モデル検証との統合 | ◎ データ注釈が使える（MVC・Minimal API とも） | △ 自前で実装が必要 |
 | メモリ／ディスク消費 | △ ファイルサイズと同時実行数に比例 | ◎ 一定のバッファーのみ |
 | 適したファイルサイズ | 数十 MB 程度まで | 数百 MB 以上 |
 | 適した用途 | プロフィール画像、添付書類 | 動画、バックアップ、大量データ |
@@ -736,12 +736,16 @@ var path = Path.Combine(uploadDirectory, storedName);
 ```
 
 ```csharp
+using System.ComponentModel.DataAnnotations;
+
 public class FileUploadOptions
 {
     public const string SectionName = "FileUpload";
 
+    [Range(1, 1024L * 1024 * 1024)]
     public long MaxFileSizeBytes { get; set; } = 5 * 1024 * 1024;
 
+    [Required, MinLength(1)]
     public string[] PermittedExtensions { get; set; } = [];
 }
 ```
@@ -753,6 +757,19 @@ builder.Services
     .ValidateDataAnnotations()
     .ValidateOnStart();
 ```
+
+`ValidateDataAnnotations()` は起動時に構成値を検証し、`ValidateOnStart()` と組み合わせることで、設定漏れをアプリの起動時点で失敗させられます。上記の例で `PermittedExtensions` が空のまま起動しようとすると、次のように `OptionsValidationException` で停止します。
+
+```text
+Microsoft.Extensions.Options.OptionsValidationException: DataAnnotation validation failed for
+'FileUploadOptions' members: 'PermittedExtensions' with the error:
+'The field PermittedExtensions must be a string or array type with a minimum length of '1'.'.
+```
+
+> [!WARNING]
+> `ValidateDataAnnotations()` が検証するのは、**`System.ComponentModel.DataAnnotations` の属性が付いたプロパティだけ** です。C# の `required` 修飾子は付けても検証されません。`required` はコンパイル時にオブジェクト初期化子での指定を強制する機能であり、構成バインダーはリフレクションで値を設定するため、この制約は働かないためです。
+>
+> つまり `public required string ContainerName { get; set; }` と書いても、構成に値が無ければ **例外も警告も出ないまま `null` が入った状態でアプリが起動します**。必須項目には必ず `[Required]` を付けてください。
 
 検証ロジックをサービスとしてまとめておくと、複数のエンドポイントから再利用できます。
 
@@ -803,8 +820,70 @@ public sealed class UploadValidator(IOptions<FileUploadOptions> options) : IUplo
 }
 ```
 
-### ウイルススキャンと隔離
+### Minimal API での検証（.NET 10 の新機能）
 
+MVC コントローラーでは以前からデータ注釈（`[Required]`、`[Range]` など）によるモデル検証が動作しましたが、Minimal API には同等の仕組みがなく、上記のような検証サービスを自分で呼び出す必要がありました。
+
+**ASP.NET Core 10 では、Minimal API でもデータ注釈による検証が利用できるようになりました。** `AddValidation()` を呼ぶだけで、ハンドラーの引数に付けた検証属性がフレームワークによって評価され、違反があればハンドラーに到達せず HTTP 400 と検証エラーの詳細が返ります。
+
+```csharp
+builder.Services.AddValidation();
+```
+
+ファイルサイズのように標準の属性では表現できない条件は、`ValidationAttribute` を継承したカスタム属性を作ります。`IFormFile` に対しても機能します。
+
+```csharp
+using System.ComponentModel.DataAnnotations;
+
+[AttributeUsage(AttributeTargets.Property | AttributeTargets.Parameter)]
+public sealed class MaxFileSizeAttribute(long maxBytes) : ValidationAttribute
+{
+    public override bool IsValid(object? value)
+        => value is not IFormFile file || file.Length <= maxBytes;
+
+    public override string FormatErrorMessage(string name)
+        => $"{name} は {maxBytes:N0} バイト以下にしてください。";
+}
+```
+
+```csharp
+using Microsoft.AspNetCore.Mvc;
+
+// ① IFormFile を単体の引数として受け取る場合
+app.MapPost("/upload", ([MaxFileSize(5 * 1024 * 1024)] IFormFile file) => TypedResults.Ok());
+
+// ② フォーム値とファイルをまとめた複合型で受け取る場合
+app.MapPost("/upload-with-title", ([FromForm] UploadRequest request) => TypedResults.Ok());
+
+public class UploadRequest
+{
+    [Required, StringLength(100)]
+    public string Title { get; set; } = "";
+
+    [MaxFileSize(5 * 1024 * 1024)]
+    public IFormFile? File { get; set; }
+}
+```
+
+上限を超えたファイルを送ると、次のようなレスポンスが返ります。
+
+```json
+{
+  "title": "One or more validation errors occurred.",
+  "errors": {
+    "Title": ["The field Title must be a string with a maximum length of 100."],
+    "File": ["File は 5,242,880 バイト以下にしてください。"]
+  }
+}
+```
+
+> [!NOTE]
+> `AddValidation()` はソースジェネレーターを使って、**呼び出したアセンブリ内** の検証対象の型を検出します。エンドポイントを別のアセンブリで定義している場合は、そのアセンブリ側でも `AddValidation()` を呼ぶ必要があります。特定のエンドポイントだけ検証を外したい場合は `DisableValidation()` を使います。
+
+> [!WARNING]
+> この方式で検証できるのは、**ファイルがバッファリングされた後** です。5 MB を上限にしていても、100 MB のファイルが送られてくれば、それを受信し終えてから 400 を返すことになります。悪意ある大容量アップロードを入口で遮断するには、[既定のサイズ制限と設定変更](#既定のサイズ制限と設定変更) で説明した `RequestSizeLimit` を併用してください。データ注釈による検証は業務ルールの表明、`RequestSizeLimit` は資源保護、という役割分担になります。
+
+### ウイルススキャンと隔離
 公式ドキュメントは、**アップロードされたファイルを保存する前にウイルス／マルウェアスキャナーを通すこと** を強く推奨しています。スキャンはサーバーリソースを消費するため、大量アップロードが発生するアプリケーションでは次のような非同期処理が推奨されます。
 
 ```mermaid
@@ -1336,6 +1415,7 @@ using Azure;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using Microsoft.Extensions.Options;
+using System.ComponentModel.DataAnnotations;
 
 namespace FileUploadSample.Storage;
 
@@ -1343,6 +1423,8 @@ public sealed class BlobStorageOptions
 {
     public const string SectionName = "BlobStorage";
 
+    // required だけでは構成バインド時に検証されないため [Required] を付ける
+    [Required(AllowEmptyStrings = false)]
     public required string ContainerName { get; set; }
 }
 
@@ -1699,6 +1781,9 @@ sequenceDiagram
 > [!WARNING]
 > SAS URL は **URL を知っていれば誰でもアクセスできます**。有効期限は必要最小限（数分〜数十分）にし、権限は読み取り専用に限定してください。また、SAS URL をログや外部サービスへ送信しないよう注意が必要です。
 
+> [!NOTE]
+> 上記の `UserDelegationSasProvider` はユーザー委任キーをフィールドにキャッシュしているため、**Singleton として登録してください**（`services.AddSingleton<UserDelegationSasProvider>()`）。Scoped や Transient で登録すると、リクエストのたびに新しいインスタンスが作られてキャッシュが空になり、毎回 `GetUserDelegationKeyAsync` が呼ばれてしまいます。
+
 > [!TIP]
 > アップロードにも SAS を利用できます。書き込み権限 (`BlobSasPermissions.Write`) を持つ SAS URL をクライアントへ発行すれば、大容量ファイルをアプリケーションサーバーを経由せずに直接 Blob Storage へアップロードできます（ダイレクトアップロード）。この場合、サーバー側では検証を行えないため、アップロード完了後にバックグラウンドで検証する設計が必要です。
 
@@ -1896,6 +1981,7 @@ flowchart TB
 - [ASP.NET Core でファイルをアップロードする | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/mvc/models/file-uploads?view=aspnetcore-10.0)
 - [Minimal API アプリでのパラメーターバインド | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis/parameter-binding?view=aspnetcore-10.0)
 - [ASP.NET Core でのクロスサイト リクエスト フォージェリ攻撃の防止 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/anti-request-forgery?view=aspnetcore-10.0)
+- [ASP.NET Core での検証 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/validation?view=aspnetcore-10.0)
 - [ASP.NET Core の Kestrel Web サーバーのオプション | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/servers/kestrel/options?view=aspnetcore-10.0)
 - [クイックスタート: .NET 用 Azure Blob Storage クライアント ライブラリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-quickstart-blobs-dotnet)
 - [.NET を使用して BLOB をアップロードする | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-blob-upload)
