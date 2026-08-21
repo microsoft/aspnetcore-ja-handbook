@@ -433,7 +433,7 @@ public class LifetimeController(
 
 ### スコープバリデーション
 
-ASP.NET Core は **Development 環境** でスコープバリデーションをデフォルトで有効化しています。  
+ASP.NET Core は **Development 環境** でスコープバリデーションを既定で有効化しています。  
 この機能は以下を検証し、違反時に例外をスローします。
 
 - Scoped サービスがルートサービスプロバイダーから解決されていないこと
@@ -472,7 +472,28 @@ System.AggregateException: Some services are not able to be constructed
 この検証により、ライフタイムの不整合を開発段階で早期発見できます。
 
 > [!WARNING]
-> この検証が有効なのは **Development 環境のみ** です。Production 環境では同じ登録内容でも例外は発生せず、不整合が検出されないまま動作します。ライフタイムの問題は必ず Development 環境で確認してください。
+> この検証が **既定で** 有効なのは **Development 環境のみ** です。Production 環境では同じ登録内容でも例外は発生せず、不整合が検出されないまま動作します。ライフタイムの問題は必ず Development 環境で確認してください。
+
+なお、この挙動はあくまで既定値であり、`UseDefaultServiceProvider` で明示的に設定すれば **Production 環境でも検証を有効化** できます。
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+// 環境によらず常にスコープバリデーションを行う
+builder.Host.UseDefaultServiceProvider(options =>
+{
+    options.ValidateScopes = true;   // 解決時にライフタイムの整合性を検証
+    options.ValidateOnBuild = true;  // Build() 時にすべての登録を事前検証
+});
+```
+
+| オプション | 役割 | 既定値 |
+| --- | --- | --- |
+| `ValidateScopes` | Scoped サービスがルートから解決されていないか、Singleton に注入されていないかを検証 | Development のみ `true` |
+| `ValidateOnBuild` | `Build()` の時点ですべてのサービス登録を事前検証（起動時に失敗させる） | Development のみ `true` |
+
+> [!TIP]
+> ステージング環境など、本番に近い構成で問題を早期に検出したい場合は、上記のように明示的に有効化する方法が有効です。ただし `ValidateOnBuild` は登録済みサービスをすべて検証するため、起動時間がわずかに増加します。
 
 ---
 
@@ -983,10 +1004,21 @@ flowchart TD
 > - ✅ Transient → Scoped / Singleton（OK）
 > - ✅ Scoped → Singleton（OK）
 > - ❌ Singleton → Scoped（NG — スコープバリデーションで検出される）
-> - ❌ Singleton → Transient（NG — **スコープバリデーションでは検出されない**）
-> - ❌ Scoped → Transient で状態を保持（意図しない動作の可能性）
+> - ⚠️ Singleton → Transient（**スコープバリデーションでは検出されない**ため要注意）
+> - ⚠️ Scoped → Transient で状態を保持（意図しない動作の可能性）
 >
-> スコープバリデーションが検出するのは「Scoped サービスが Singleton に注入されていないこと」だけです。Singleton から Transient への依存は検証をすり抜けて起動し、Transient サービスが実質的に Singleton へ昇格したまま動作します。この組み合わせは自分で気付く必要があります。
+> Singleton から Scoped への依存だけは、スコープバリデーションが起動時に検出してくれます。一方 **Singleton から Transient への依存は検証をすり抜けます**。Transient サービスは Singleton の生成時に一度だけ解決され、以降はその 1 インスタンスが使い回されるため、実質的に Singleton へ昇格します。
+>
+> この組み合わせが問題になるかどうかは、Transient サービスの性質によって決まります。
+>
+> | Transient サービスの性質 | Singleton への注入 |
+> | --- | --- |
+> | ステートレスかつスレッドセーフ | 実用上は問題ない（毎回生成されないだけ） |
+> | 状態を持つ | ❌ 状態がアプリケーション全体で共有され、不正な動作の原因になる |
+> | スレッドセーフでない | ❌ 複数スレッドから同時アクセスされ、競合状態が発生する |
+> | `IDisposable` を実装 | ❌ アプリケーション終了まで破棄されず、リソースを保持し続ける |
+>
+> 判断に迷う場合や、リクエストごとに新しいインスタンスが必要な場合は、`IServiceScopeFactory` でスコープを作成してから解決してください。
 
 ---
 
