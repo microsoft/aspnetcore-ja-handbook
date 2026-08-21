@@ -769,7 +769,16 @@ Microsoft.Extensions.Options.OptionsValidationException: DataAnnotation validati
 > [!WARNING]
 > `ValidateDataAnnotations()` が検証するのは、**`System.ComponentModel.DataAnnotations` の属性が付いたプロパティだけ** です。C# の `required` 修飾子は付けても検証されません。`required` はコンパイル時にオブジェクト初期化子での指定を強制する機能であり、構成バインダーはリフレクションで値を設定するため、この制約は働かないためです。
 >
-> つまり `public required string ContainerName { get; set; }` と書いても、構成に値が無ければ **例外も警告も出ないまま `null` が入った状態でアプリが起動します**。必須項目には必ず `[Required]` を付けてください。
+> ```csharp
+> // ❌ 検証されない。構成に値が無くても起動は成功し、null が入ったままになる
+> public required string[] PermittedExtensions { get; set; }
+>
+> // ✅ 検証される。値が無ければ起動時に OptionsValidationException で停止する
+> [Required, MinLength(1)]
+> public string[] PermittedExtensions { get; set; } = [];
+> ```
+>
+> ❌ の書き方をして構成の記述を忘れると、次項の `UploadValidator` で使っている `PermittedExtensions.Contains(extension)` が常に `false` を返すため、**例外も出ないまま、すべてのファイルが「拡張子が許可されていません」として拒否される** という、原因の分かりにくい不具合になります。必須項目には必ず `[Required]` を付けてください。
 
 検証ロジックをサービスとしてまとめておくと、複数のエンドポイントから再利用できます。
 
