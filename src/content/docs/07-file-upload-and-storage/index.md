@@ -1,6 +1,6 @@
 ---
 title: "第7章：ファイルアップロードと外部ストレージへの保存"
-description: "IFormFile によるバッファリング受信と MultipartReader によるストリーミング受信の違い、アップロードファイルの検証、Azure Blob Storage への保存、DI によるストレージクライアント注入設計を解説します。"
+description: "IFormFile によるバッファリング受信と MultipartReader によるストリーミング受信の違い、アップロードファイルの検証、Azure Blob Storage への保存、そして Blob Storage クライアントの DI 設計を解説します。"
 ---
 
 ## 目次
@@ -25,7 +25,7 @@ description: "IFormFile によるバッファリング受信と MultipartReader 
    - [Content-Type とメタデータの設定](#content-type-とメタデータの設定)
    - [上書き制御](#上書き制御)
    - [Azurite によるローカル開発](#azurite-によるローカル開発)
-4. [DI によるストレージクライアント注入設計](#4-di-によるストレージクライアント注入設計)
+4. [Blob Storage クライアントの DI 設計とアプリケーションへの組み込み](#4-blob-storage-クライアントの-di-設計とアプリケーションへの組み込み)
    - [AddAzureClients によるクライアント登録](#addazureclients-によるクライアント登録)
    - [ストレージ抽象化インターフェイスの設計](#ストレージ抽象化インターフェイスの設計)
    - [Blob Storage 実装](#blob-storage-実装)
@@ -93,6 +93,8 @@ ASP.NET Core には、ファイルを受信する方法が 2 つあります。
 | **バッファリング (Buffering)** | リクエスト全体をフレームワークが解析し、ファイル 1 件を `IFormFile` として組み立てる。モデルバインディングで受け取る | `IFormFile` / `IFormFileCollection` |
 | **ストリーミング (Streaming)** | multipart のセクションを順に読み進め、ファイルの中身を直接保存先へ流し込む | `MultipartReader` |
 
+ここで登場する `IFormFile` は、**アップロードされた 1 件のファイルを表す ASP.NET Core 標準のインターフェイス**（名前空間 `Microsoft.AspNetCore.Http`）です。フレームワークが multipart のパートを解析し終えた結果として作られるオブジェクトで、ファイル名・サイズ・MIME タイプといったメタデータと、中身を読み取るためのストリームをひとまとめにして公開します。他言語のフレームワークにある「アップロードファイルオブジェクト」に相当するもので、Spring Boot の `MultipartFile`、Django の `UploadedFile`、Laravel の `Illuminate\Http\UploadedFile`、NestJS (Express) の `Express.Multer.File` と同じ役割です。詳細は次の項で説明します。
+
 バッファリングでは、フレームワークがファイル全体を **メモリまたはディスク上の一時ファイル** にいったん保持します。既定では **64 KB (`MemoryBufferThreshold`)** を超えたファイルはメモリからディスクの一時ファイルへ移されます。一時ファイルの出力先は環境変数 `ASPNETCORE_TEMP` で指定でき、未設定の場合は実行ユーザーの一時フォルダーが使われます。
 
 ```mermaid
@@ -116,7 +118,9 @@ flowchart TB
 
 ### IFormFile によるバッファリング受信
 
-小さなファイルを受け取る場合は `IFormFile` を使います。MVC コントローラーでは、フォームフィールド名と一致する名前の引数を宣言するだけでモデルバインディングが機能します。
+小さなファイルを受け取る場合は `IFormFile` を使います。前項で触れたとおり、`IFormFile` はアップロードされたファイル 1 件を表すインターフェイスで、実体はフレームワークが用意する `FormFile` クラスです。ファイルの中身はメモリまたはディスク上の一時ファイルに保持されており、`IFormFile` はそこへのアクセス手段を提供しているにすぎません。したがって、**リクエストが完了した後に `IFormFile` を保持しても中身は読めなくなる** 点に注意してください。読み取りや保存は、必ずリクエスト処理中に行います。
+
+MVC コントローラーでは、フォームフィールド名と一致する名前の引数を宣言するだけでモデルバインディングが機能します。
 
 ```csharp
 using Microsoft.AspNetCore.Mvc;
@@ -210,15 +214,43 @@ public async Task<IActionResult> PostWithMetadata(
 
 Minimal API でも `IFormFile` / `IFormFileCollection` をハンドラーの引数に宣言できます。ただし **フォームからのバインドには非フォージェリトークン (antiforgery token) の検証が必須** である点が MVC と異なります。
 
+#### 非フォージェリトークンとは
+
+非フォージェリトークン（antiforgery token、アンチフォージェリトークンとも呼ばれます）は、**クロスサイトリクエストフォージェリ (CSRF) 攻撃** を防ぐための仕組みです。
+
+CSRF とは、利用者が正規サイトにログインした状態のまま攻撃者のページを開くと、そのページに仕込まれたフォームが利用者の Cookie を伴って正規サイトへ送信されてしまう、という攻撃です。ブラウザーは送信先のドメインに紐づく Cookie を自動的に付けるため、サーバーからは正規の利用者による操作と見分けが付きません。ファイルアップロードのエンドポイントがこれを許すと、意図しないファイルを勝手にアップロードされる恐れがあります。
+
+これを防ぐため、ASP.NET Core は次の 2 つの値をペアで発行します。
+
+| 値 | 送信経路 | 役割 |
+| --- | --- | --- |
+| Cookie トークン | Cookie | ブラウザーが自動的に送信する |
+| リクエストトークン | フォームの hidden フィールド、または `RequestVerificationToken` ヘッダー | アプリが明示的に埋め込む |
+
+攻撃者のページは正規サイトの HTML を読み取れないため、**リクエストトークンの値を知り得ません**。サーバーは 2 つの値が対になっているかを検証し、対になっていなければリクエストを HTTP 400 で拒否します。
+
+他言語のフレームワークにも同じ仕組みがあります。Django の `{% csrf_token %}` と `CsrfViewMiddleware`、Laravel の `@csrf` と `VerifyCsrfToken` ミドルウェア、Spring Security の `CsrfToken` に相当します。
+
+ASP.NET Core では、`AddAntiforgery()` でサービスを登録し、`UseAntiforgery()` ミドルウェアをパイプラインに追加することで有効になります。Minimal API では、このミドルウェアが `IFormFile` や `[FromForm]` にバインドするエンドポイントを自動的に検証対象とするため、**アプリ側に検証コードを書く必要はありません**。
+
 ```csharp
 using Microsoft.AspNetCore.Antiforgery;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// (1) 非フォージェリトークンの生成・検証を行うサービスを登録する
 builder.Services.AddAntiforgery();
 
 var app = builder.Build();
+
+// (2) このミドルウェアが検証を実行する。
+//     IFormFile / [FromForm] にバインドするエンドポイントは自動的に検証対象となり、
+//     トークンが無い、または不正な場合はハンドラーに到達せず HTTP 400 が返る。
+//     エンドポイントのマッピングより前に置くこと。
 app.UseAntiforgery();
 
+// (3) ハンドラー自身には検証コードを書かない。
+//     ここに処理が到達している時点で、検証は (2) で成功済み。
 app.MapPost("/upload", async (IFormFile file, CancellationToken cancellationToken) =>
 {
     var safeFileName = $"{Guid.NewGuid():N}{Path.GetExtension(file.FileName).ToLowerInvariant()}";
@@ -233,16 +265,19 @@ app.MapPost("/upload", async (IFormFile file, CancellationToken cancellationToke
 app.Run();
 ```
 
-ブラウザーのフォームから送信する場合は、`IAntiforgery` で生成したトークンを hidden フィールドとして埋め込みます。
+ブラウザーのフォームから送信する場合は、`IAntiforgery` で生成したリクエストトークンを hidden フィールドとして埋め込みます。これが上記 (2) で検証される値です。
 
 ```csharp
 app.MapGet("/", (HttpContext context, IAntiforgery antiforgery) =>
 {
+    // Cookie トークンをレスポンスの Cookie に書き込み、対になるリクエストトークンを取得する
     var token = antiforgery.GetAndStoreTokens(context);
     var html = $"""
       <html>
         <body>
           <form action="/upload" method="post" enctype="multipart/form-data">
+            <!-- token.FormFieldName は既定で "__RequestVerificationToken"。
+                 この hidden フィールドが無いと POST は HTTP 400 で拒否される -->
             <input name="{token.FormFieldName}" type="hidden" value="{token.RequestToken}" />
             <input type="file" name="file" accept=".jpg,.jpeg,.png" />
             <input type="submit" value="アップロード" />
@@ -255,7 +290,11 @@ app.MapGet("/", (HttpContext context, IAntiforgery antiforgery) =>
 });
 ```
 
+> [!TIP]
+> Razor Pages や MVC の `<form>` タグヘルパーを使う場合、この hidden フィールドは自動的に挿入されます。手書きの HTML や JavaScript から送信する場合のみ、上記のように明示的な埋め込みが必要です。JavaScript の `fetch` から送る場合は、トークンを `RequestVerificationToken` ヘッダーに載せる方法もよく使われます。
+
 Cookie 認証を使わない API（Bearer トークン認証など）で、CSRF の攻撃対象にならないことが明らかなエンドポイントは、`DisableAntiforgery()` で検証を無効化できます。
+
 
 ```csharp
 app.MapPost("/api/upload", async (IFormFile file) => { /* ... */ })
@@ -280,10 +319,10 @@ flowchart TB
 
 | 設定 | 既定値 | 超過時の挙動 |
 | --- | --- | --- |
+| IIS の `maxAllowedContentLength` | 30,000,000 バイト（約 28.6 MB） | HTTP 404.13 が返る |
 | `KestrelServerLimits.MaxRequestBodySize` | 30,000,000 バイト（約 28.6 MB） | 接続がリセットされる |
 | `FormOptions.MultipartBodyLengthLimit` | 134,217,728 バイト（128 MB） | `InvalidDataException` がスローされる |
 | `FormOptions.MemoryBufferThreshold` | 65,536 バイト（64 KB） | 超過分はディスク上の一時ファイルへ退避される |
-| IIS の `maxAllowedContentLength` | 30,000,000 バイト（約 28.6 MB） | HTTP 404.13 が返る |
 
 アプリケーション全体で上限を変更する場合は `Program.cs` で設定します。
 
@@ -332,18 +371,51 @@ app.MapPost("/upload-large", async (HttpContext context, IFormFile file) =>
 });
 ```
 
-IIS でホストする場合は、`web.config` にも設定が必要です。
+#### IIS でホストする場合の設定
+
+IIS でホストする場合、上記のコードによる設定だけでは不十分です。**`maxAllowedContentLength` は C# のコードからは変更できません**。この値は IIS の要求フィルタリングモジュールが、リクエストが ASP.NET Core アプリに渡される **前** に評価する IIS 自身の設定であり、アプリのコードが実行される時点ではすでに判定が終わっています。そのため、変更するには `web.config`（またはサーバー全体の `applicationHost.config`）に記述するしかありません。
 
 ```xml
 <system.webServer>
   <security>
     <requestFiltering>
-      <!-- 100 MB -->
+      <!-- 100 MB。この値は C# のコードからは変更できない -->
       <requestLimits maxAllowedContentLength="104857600" />
     </requestFiltering>
   </security>
 </system.webServer>
 ```
+
+一方、IIS でホストする場合の **アプリ側** のボディ上限は、Kestrel ではなく `IISServerOptions.MaxRequestBodySize`（既定 30,000,000 バイト）で制御します。IIS の既定のホスティングモデルであるインプロセスホスティングでは、Kestrel ではなく IIS HTTP サーバーがリクエストを処理するため、`KestrelServerLimits.MaxRequestBodySize` は効きません。
+
+```csharp
+builder.Services.Configure<IISServerOptions>(options =>
+{
+    options.MaxRequestBodySize = 100 * 1024 * 1024;
+});
+```
+
+つまり、IIS でホストして 100 MB のアップロードを許可したい場合、**両方** の設定が必要です。
+
+| 設定場所 | 設定項目 | 役割 |
+| --- | --- | --- |
+| `web.config` | `maxAllowedContentLength` | IIS がアプリにリクエストを渡すかどうかの判定。ここで弾かれるとアプリには一切届かない |
+| C# コード | `IISServerOptions.MaxRequestBodySize` | アプリがボディの読み取りを許可する上限 |
+
+> [!WARNING]
+> `web.config` だけを設定しても不十分です。IIS の関門は通過しますが、その先の `IISServerOptions.MaxRequestBodySize`（既定 30,000,000 バイト）で弾かれます。逆に C# 側だけを設定した場合は、IIS の段階で HTTP 404.13 が返り、アプリのコードには到達しません。どちらか一方だけでは、より小さいほうの上限が実効値になります。
+
+> [!NOTE]
+> `maxAllowedContentLength` は IIS 固有の設定です。Kestrel を直接公開する構成、Linux 上のコンテナー、Azure App Service の Linux プランなど IIS を経由しない環境では、この設定自体が存在しないため `web.config` は不要です。Nginx や Apache をリバースプロキシーとして使う場合は、それぞれ `client_max_body_size`、`LimitRequestBody` が対応する設定になります。
+
+`<requestLimits>` 要素では、`maxAllowedContentLength` のほかに次の設定も指定できます。ファイルアップロードで直接必要になることは多くありませんが、同じ要素にまとまっているため把握しておくとよいでしょう。
+
+| 属性 / 子要素 | 既定値 | 説明 |
+| --- | --- | --- |
+| `maxAllowedContentLength` | 30,000,000 | リクエストボディの最大長（バイト） |
+| `maxUrl` | 4,096 | URL の最大長（バイト） |
+| `maxQueryString` | 2,048 | クエリ文字列の最大長（バイト） |
+| `<headerLimits>` | なし | 個々の HTTP ヘッダーごとの最大長を指定する子要素 |
 
 > [!WARNING]
 > 上限を安易に大きくすると、**サービス拒否 (Denial of Service: DoS) 攻撃** のリスクが高まります。業務上必要な最小限の値に設定し、あわせて認証・レート制限を組み合わせてください。
@@ -728,6 +800,48 @@ var serviceClient = new BlobServiceClient(
 > [!IMPORTANT]
 > Microsoft Entra ID で BLOB データを操作するには、**Azure RBAC ロールの割り当てが必要** です。`所有者 (Owner)` や `共同作成者 (Contributor)` といった管理プレーンのロールでは、BLOB データへのアクセス権は付与されません。データ操作には **ストレージ BLOB データ共同作成者 (Storage Blob Data Contributor)** などのデータプレーン用ロールを割り当ててください。
 
+「ロールを割り当てる」と言われても、**誰に** 割り当てればよいのかが分かりにくいところです。割り当て先は `DefaultAzureCredential` が実際に使用する ID であり、それは実行環境ごとに異なります。
+
+| 実行環境 | ロールの割り当て先（セキュリティプリンシパル） | 準備作業 |
+| --- | --- | --- |
+| ローカル開発 | **開発者本人の Microsoft Entra ID アカウント**（`az login` でサインインしたユーザー） | 開発者のアカウントに対象ストレージアカウントへのロールを割り当てる。チーム開発では、開発者を Entra ID のグループにまとめ、グループに割り当てると管理しやすい |
+| Azure App Service | App Service の **マネージド ID** | App Service で「ID」→「システム割り当て済み」を「オン」にすると ID が発行される。その ID に対してロールを割り当てる |
+| Azure Container Apps / Azure Functions / Azure VM | 各リソースの **マネージド ID** | App Service と同様に、リソース側でマネージド ID を有効化してからロールを割り当てる |
+| GitHub Actions などの CI/CD | **サービスプリンシパル**（アプリ登録）またはフェデレーション ID | Entra ID にアプリを登録し、そのサービスプリンシパルにロールを割り当てる |
+
+割り当てのスコープ（適用範囲）は、**必要最小限にすることが重要** です。サブスクリプション全体ではなく、対象のストレージアカウント、可能であればコンテナー単位まで絞り込んでください。
+
+```bash
+# 例 1: ローカル開発。サインイン中の開発者アカウントに、
+#       特定のストレージアカウントに対する読み書き権限を与える
+az role assignment create \
+  --assignee "$(az ad signed-in-user show --query id -o tsv)" \
+  --role "Storage Blob Data Contributor" \
+  --scope "/subscriptions/<サブスクリプション ID>/resourceGroups/<リソースグループ名>/providers/Microsoft.Storage/storageAccounts/<ストレージアカウント名>"
+
+# 例 2: Azure App Service。まずシステム割り当てマネージド ID を有効化し、
+#       発行されたプリンシパル ID にロールを割り当てる
+PRINCIPAL_ID=$(az webapp identity assign \
+  --name <アプリ名> --resource-group <リソースグループ名> \
+  --query principalId -o tsv)
+
+az role assignment create \
+  --assignee "$PRINCIPAL_ID" \
+  --role "Storage Blob Data Contributor" \
+  --scope "/subscriptions/<サブスクリプション ID>/resourceGroups/<リソースグループ名>/providers/Microsoft.Storage/storageAccounts/<ストレージアカウント名>"
+```
+
+用途に応じて、次のようにロールを使い分けます。
+
+| ロール | 権限 | 主な用途 |
+| --- | --- | --- |
+| ストレージ BLOB データ閲覧者 (Storage Blob Data Reader) | 読み取りのみ | ファイルの配信だけを行うアプリ |
+| ストレージ BLOB データ共同作成者 (Storage Blob Data Contributor) | 読み取り・書き込み・削除 | アップロード機能を持つアプリ。本章の例はこれを想定 |
+| ストレージ BLOB 委任者 (Storage Blob Delegator) | ユーザー委任キーの取得 | 後述のユーザー委任 SAS を発行するアプリ。データ用ロールと併せて割り当てる |
+
+> [!TIP]
+> ロールの割り当てが反映されるまで数分かかることがあります。設定直後に `403 Forbidden` が返る場合は、少し待ってから再試行してください。ローカル開発で権限設定が煩雑な場合は、後述の Azurite を使うとロール割り当て自体が不要になります。
+
 ### ストリームをそのままアップロードする
 
 Web アプリケーションでのファイルアップロードでは、いったんローカルディスクへ保存せず、受信したストリームを直接 Blob Storage へ流し込むのが基本形です。
@@ -853,8 +967,48 @@ Console.WriteLine(properties.ContentType);
 Console.WriteLine(properties.Metadata["scanStatus"]);
 ```
 
+#### メタデータでは「検索」ができない
+
+ここで重要な制約があります。**メタデータは、値を指定して BLOB を検索するための手段としては使えません**。
+
+Blob Storage には BLOB を一覧・検索する手段がいくつかありますが、それぞれ役割が異なります。
+
+| 手段 | できること | メタデータで絞り込めるか |
+| --- | --- | --- |
+| プレフィックス指定の一覧取得 (`GetBlobsAsync(prefix:)`) | 名前が特定の文字列で始まる BLOB を列挙する | できない |
+| **BLOB インデックスタグ** (`Tags`) | キーと値の条件式で BLOB を横断的に検索する（例: `"scanStatus" = 'clean'`） | — （タグが検索対象） |
+| Azure AI Search などの外部検索サービス | 全文検索や高度な条件検索を行う | 別途インデックスを構築すれば可能 |
+
+このうち **BLOB インデックスタグ** は、Blob Storage が標準で提供する検索用の索引機能です。タグとして設定したキーと値は Blob Storage 側で索引化され、`FindBlobsByTagsAsync` で「タグの値がこの条件に一致する BLOB」をコンテナーをまたいで探し出せます。「スキャン未完了のファイルを全部拾いたい」「特定のテナントのファイルだけ集めたい」といった用途がこれにあたります。
+
+一方、メタデータには索引が作られません。メタデータの値で BLOB を探そうとすると、全 BLOB を列挙して 1 件ずつ `GetPropertiesAsync` で中身を確認することになり、件数が増えると現実的ではなくなります。メタデータはあくまで、**BLOB のパスが既に分かっている状態で、その BLOB に付随する補足情報を取り出す** ための機能だと理解してください。
+
+```csharp
+// 検索したい属性はタグとして設定する（1 BLOB あたり最大 10 個）
+var uploadOptions = new BlobUploadOptions
+{
+    Tags = new Dictionary<string, string>
+    {
+        ["scanStatus"] = "pending",
+        ["tenantId"] = tenantId,
+    },
+};
+
+await blobClient.UploadAsync(stream, uploadOptions, cancellationToken);
+
+// タグを条件に BLOB を検索する
+await foreach (TaggedBlobItem item in
+    serviceClient.FindBlobsByTagsAsync("\"scanStatus\" = 'pending'", cancellationToken))
+{
+    Console.WriteLine($"{item.BlobContainerName}/{item.BlobName}");
+}
+```
+
 > [!NOTE]
-> メタデータは検索インデックスの対象になりません。検索したい属性は **BLOB インデックスタグ (`BlobUploadOptions.Tags`)** を使うか、後述のようにデータベースで管理します。また、`SetHttpHeadersAsync` はすべてのヘッダーを置き換えるため、更新しないプロパティも `GetPropertiesAsync` で取得した値で埋め直す必要があります。
+> タグにも制約があります。1 つの BLOB に付けられるタグは最大 10 個で、キーと値には英数字とごく限られた記号しか使えません（日本語は不可）。また、タグの索引化は非同期に行われるため、設定した直後の検索結果には反映されないことがあります。業務要件として確実な検索や結合が必要な場合は、後述する **リレーショナルデータベースでのメタデータ管理** を選ぶのが現実的です。
+
+> [!WARNING]
+> `SetMetadataAsync` および `SetHttpHeadersAsync` は、指定した内容で **すべて置き換え** ます（部分更新ではありません）。一部の項目だけを変更したい場合も、`GetPropertiesAsync` で現在の値を取得し、変更しない項目を埋め直したうえで呼び出す必要があります。
 
 ### 上書き制御
 
@@ -962,7 +1116,9 @@ Azurite は既知の開発用アカウントキーを持つため、開発環境
 
 ---
 
-## 4. DI によるストレージクライアント注入設計
+## 4. Blob Storage クライアントの DI 設計とアプリケーションへの組み込み
+
+「[3. Azure Blob Storage への保存](#3-azure-blob-storage-への保存)」では `BlobServiceClient` を直接 `new` して Blob Storage を操作しました。しかし実際のアプリケーションでは、クライアントを DI コンテナーで管理し、アプリのコードからは抽象化されたインターフェイス越しに使うのが定石です。ここでは、前節で扱った Blob Storage の操作を、そのまま実運用に耐える形へ組み立て直していきます。
 
 ### AddAzureClients によるクライアント登録
 
