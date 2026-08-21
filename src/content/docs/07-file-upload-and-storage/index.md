@@ -166,6 +166,8 @@ public class UploadsController : ControllerBase
 複数ファイルを受け取る場合は `IFormFileCollection` または `List<IFormFile>` を使います。
 
 ```csharp
+// フォーム側も <input type="file" name="files" multiple /> のように
+// 引数名 files と一致させる必要がある
 [HttpPost("multiple")]
 public async Task<IActionResult> PostMultiple(
     IFormFileCollection files,
@@ -184,6 +186,11 @@ public async Task<IActionResult> PostMultiple(
     return Ok(results);
 }
 ```
+
+> [!WARNING]
+> MVC コントローラーの `IFormFileCollection` は、**引数名と一致するフィールド名で送られたファイルだけ** を集めます。名前が食い違うと、例外も検証エラーも起きずに **空のコレクション** がバインドされるため、原因に気付きにくい不具合になります。
+>
+> 一方 Minimal API の `IFormFileCollection` は、フィールド名にかかわらず **リクエスト内のすべてのファイル** を返します。同じ型でも挙動が違う点に注意してください。
 
 ファイル以外のフォーム値と組み合わせる場合は、モデルクラスにまとめると読みやすくなります。
 
@@ -353,23 +360,42 @@ builder.Services.Configure<FormOptions>(options =>
 public async Task<IActionResult> PostLarge(IFormFile file) { /* ... */ }
 ```
 
-Minimal API やミドルウェアでリクエストごとに変更する場合は `IHttpMaxRequestBodySizeFeature` を使います。
+Minimal API には属性を付ける場所がないため、同じ `RequestSizeLimitAttribute` を **エンドポイントのメタデータとして** 付与します。
+
+```csharp
+using Microsoft.AspNetCore.Mvc;
+
+app.MapPost("/upload-large", async (IFormFile file) => { /* ... */ })
+   .WithMetadata(new RequestSizeLimitAttribute(100 * 1024 * 1024));
+
+// 上限を撤廃する場合（本当に必要かをよく検討してください）
+app.MapPost("/upload-huge", async (IFormFile file) => { /* ... */ })
+   .WithMetadata(new DisableRequestSizeLimitAttribute());
+```
+
+条件によって上限を変えたい場合は `IHttpMaxRequestBodySizeFeature` を使いますが、**設定できるのはリクエストボディの読み取りが始まる前だけ** です。読み取りが始まった後は `IsReadOnly` が `true` になり、代入すると例外がスローされます。
 
 ```csharp
 using Microsoft.AspNetCore.Http.Features;
 
-app.MapPost("/upload-large", async (HttpContext context, IFormFile file) =>
+// ルーティングより前に置く。ここではまだボディを読んでいない
+app.Use(async (context, next) =>
 {
-    // 実際にボディの読み取りが始まる前に設定する必要がある
-    var feature = context.Features.Get<IHttpMaxRequestBodySizeFeature>();
-    if (feature is { IsReadOnly: false })
+    if (context.Request.Path.StartsWithSegments("/upload-large"))
     {
-        feature.MaxRequestBodySize = 100 * 1024 * 1024;
+        var feature = context.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (feature is { IsReadOnly: false })
+        {
+            feature.MaxRequestBodySize = 100 * 1024 * 1024;
+        }
     }
 
-    // ...
+    await next();
 });
 ```
+
+> [!WARNING]
+> この設定を **エンドポイントのハンドラーの中** で行っても効果はありません。ハンドラーが呼び出される時点で `IFormFile` へのバインドは完了しており、ボディはすでに読み取られているためです。このとき `IsReadOnly` は `true` になっているので、上記のような `if (feature is { IsReadOnly: false })` という書き方をすると、**エラーも警告も出ないまま設定が黙って無視されます**。同じ理由で、エンドポイントフィルター (`AddEndpointFilter`) も手遅れです。フィルターはパラメーターのバインドが終わった後に実行されます。
 
 #### IIS でホストする場合の設定
 
@@ -470,8 +496,32 @@ app.MapPost("/upload-stream", async (HttpContext context, CancellationToken canc
     }
 
     return Results.Ok();
-}).DisableAntiforgery();
+});
 ```
+
+> [!WARNING]
+> このエンドポイントには、**非フォージェリトークンの検証が一切かかりません**。`UseAntiforgery()` を追加していても同じです。ミドルウェアは `IFormFile` や `[FromForm]` にバインドするエンドポイントだけを検証対象とするため、`HttpContext` から自力でボディを読むこのハンドラーは対象外と判断されます（したがって `DisableAntiforgery()` を呼ぶ必要もありません）。
+>
+> Cookie 認証を使うアプリでは、これは CSRF の穴になります。自分で `IAntiforgery.ValidateRequestAsync` を呼んでください。このときトークンは **`RequestVerificationToken` ヘッダー** で受け取るようにします。フォームの hidden フィールドで送ると、検証のためにフォーム全体の読み取りが発生し、ストリーミングの意味がなくなるためです。
+>
+> ```csharp
+> using Microsoft.AspNetCore.Antiforgery;
+>
+> app.MapPost("/upload-stream", async (HttpContext context, IAntiforgery antiforgery, CancellationToken cancellationToken) =>
+> {
+>     // ボディを読む前に、ヘッダーのトークンだけで検証する
+>     try
+>     {
+>         await antiforgery.ValidateRequestAsync(context);
+>     }
+>     catch (AntiforgeryValidationException)
+>     {
+>         return Results.BadRequest("トークンが不正です。");
+>     }
+>
+>     // 以降は上記と同じストリーミング処理
+> });
+> ```
 
 ファイル以外のフォーム値も受け取る場合は、`IsFormDisposition()` の分岐を追加します。
 
@@ -922,9 +972,10 @@ var options = new BlobUploadOptions
 {
     TransferOptions = new StorageTransferOptions
     {
-        // 1 ブロックあたりのサイズ
+        // これ以下のサイズなら 1 回のリクエストでアップロードする閾値
         InitialTransferSize = 8 * 1024 * 1024,
-        MaximumTransferSize = 8 * 1024 * 1024,
+        // 分割する場合の 1 ブロックあたりの最大サイズ
+        MaximumTransferSize = 4 * 1024 * 1024,
         // 並列アップロード数
         MaximumConcurrency = 4,
     },
@@ -951,7 +1002,7 @@ while ((section = await reader.ReadNextSectionAsync(cancellationToken)) is not n
 ```
 
 > [!TIP]
-> Blob Storage 側にストリームを開いて少しずつ書き込みたい場合は、`BlockBlobClient.OpenWriteAsync` を使用します。ZIP アーカイブを組み立てながらアップロードするようなシナリオで有用です。ただし、オブジェクトレプリケーションやコンテナー化されたバックアップを有効にしている場合、書き込みのたびに新しいバージョンが作成されコストが増大する点に注意してください。
+> Blob Storage 側にストリームを開いて少しずつ書き込みたい場合は、`BlockBlobClient.OpenWriteAsync` を使用します。ZIP アーカイブを組み立てながらアップロードするようなシナリオで有用です。ただし、オブジェクトレプリケーションのポリシーを有効にしている場合、**ストリームへ書き込むたびに新しいバージョンが作成され、そのすべてがコピー先アカウントへ複製される** ため、コストが大きく膨らむ点に注意してください。Azure Blob の保管型バックアップ (vaulted backup) も内部でオブジェクトレプリケーションを使うため、同じ問題が起こります。
 
 ### Content-Type とメタデータの設定
 
@@ -1425,7 +1476,13 @@ BLOB 名（保存先パス）の設計は、後からの変更が困難です。
 ```text
 {用途}/{テナントID}/{yyyy}/{MM}/{一意なID}{拡張子}
 
-例: avatars/tenant-a1b2/2026/08/01K3XQ9F7ZP2M4N8T6VR5C0.jpg
+例: avatars/tenant-a1b2/2026/08/0198f3c17a5b7c2e9d4f6a8b0c1d2e3f.jpg
+
+  用途      : avatars
+  テナントID : tenant-a1b2
+  年/月     : 2026/08
+  一意なID   : 0198f3c17a5b7c2e9d4f6a8b0c1d2e3f （Guid.CreateVersion7() の "N" 書式）
+  拡張子     : .jpg
 ```
 
 ```csharp
@@ -1523,7 +1580,6 @@ SAS には主に 2 種類あります。
 ```csharp
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
-using Azure.Storage.Blobs.Specialized;
 using Azure.Storage.Sas;
 
 public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, TimeProvider timeProvider)
@@ -1561,9 +1617,7 @@ public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, T
 
         var uriBuilder = new BlobUriBuilder(blobClient.Uri)
         {
-            Sas = sasBuilder.ToSasQueryParameters(
-                key,
-                blobClient.GetParentBlobContainerClient().GetParentBlobServiceClient().AccountName),
+            Sas = sasBuilder.ToSasQueryParameters(key, blobClient.AccountName),
         };
 
         return uriBuilder.ToUri();
@@ -1712,6 +1766,7 @@ public enum ScanStatus
 ここまでの要素を組み合わせた完成形です。
 
 ```csharp
+using System.Security.Claims;
 using FileUploadSample.Storage;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -1748,7 +1803,8 @@ public class FilesController(
             return BadRequest(validation.ErrorMessage);
         }
 
-        var ownerId = User.FindFirst("sub")?.Value ?? throw new InvalidOperationException();
+        var ownerId = User.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? throw new InvalidOperationException("ユーザー ID を特定できません。");
         var storagePath = pathBuilder.Build("uploads", ownerId, file.FileName);
         var contentType = ResolveContentType(file.FileName);
 
@@ -1793,7 +1849,7 @@ public class FilesController(
     {
         var record = await dbContext.UploadedFiles.FindAsync([id], cancellationToken);
 
-        if (record is null || record.OwnerId != User.FindFirst("sub")?.Value)
+        if (record is null || record.OwnerId != User.FindFirstValue(ClaimTypes.NameIdentifier))
         {
             // 存在の有無を漏らさないよう、権限がない場合も 404 を返す
             return NotFound();
