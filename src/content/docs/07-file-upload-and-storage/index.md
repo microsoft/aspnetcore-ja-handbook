@@ -422,7 +422,25 @@ builder.Services.Configure<IISServerOptions>(options =>
 
 ### MultipartReader によるストリーミング受信
 
-大きなファイルを扱う場合は、`MultipartReader` を使って multipart のセクションを直接読み取ります。フレームワークによるバッファリングを経由しないため、メモリとディスクの消費を最小限に抑えられます。
+ストリーミング受信のコードは、`IFormFile` に比べると確かに長くなります。ただしこれは「ASP.NET Core がストリーミングをサポートしていない」ということではありません。`MultipartReader` はフレームワークが標準で提供する公式のユーティリティであり、公式ドキュメントでもストリーミングの推奨手段として案内されています。
+
+長くなる理由は、**モデルバインディングによる自動化と、バッファリングを避けることが原理的に両立しないため** です。モデルバインディングが `IFormFile` という「値」を引数に渡すためには、その時点でファイルの中身がどこかに確保されていなければなりません。バッファリングを避けるということは、フレームワークがボディを読み終える前にアプリのコードへ制御を渡すということであり、その結果「どのセクションをどこへ流すか」の判断はアプリ側の責務になります。
+
+ASP.NET Core がファイル受信のために提供している手段は、抽象度の順に次の 4 つです。
+
+| 手段 | 手書きの解析 | リクエストボディの扱い | 主な用途 |
+| --- | --- | --- | --- |
+| モデルバインディング (`IFormFile`) | 不要 | 64 KB を超えるとディスク上の一時ファイルへ全量を退避 | 既定の選択肢 |
+| `HttpRequest.ReadFormAsync()` | 不要 | 上と同じ（`IFormFile` の内部で使われている API） | フィルターやミドルウェアで動的にフォームを読みたい場合 |
+| **`MultipartReader`** | 必要（十数行） | 一時ファイルを作らず、保存先へ直接転送する | 大きなファイル |
+| `HttpRequest.BodyReader` | 必要 | `PipeReader` による最も低レベルの読み取り | 特殊な最適化が要る場合 |
+
+つまり自動化を求めるなら選択肢はあり、上 2 つを使えば手書きの解析は不要です。ただしそれらは一時ファイルへの退避を伴います。**ストリーミングの目的はまさにこの一時ファイルの往復をなくすこと** なので、自動化と目的が両立しない、というのが実態です。
+
+> [!NOTE]
+> 100 MB のファイルをアップロードして実測すると、`ReadFormAsync()` はマネージドヒープの割り当てを数 MB に抑える一方で、ディスク上に 100 MB の一時ファイルを作成します。つまり「メモリは節約されるがディスク I/O は 2 往復する」状態です。`MultipartReader` はこの一時ファイルを作らないため、ディスク I/O が 1 回で済みます。
+
+最小構成は次のとおりです。この程度であれば、実装コストはさほど高くありません。
 
 ```csharp
 using Microsoft.AspNetCore.WebUtilities;
@@ -430,22 +448,11 @@ using Microsoft.Net.Http.Headers;
 
 app.MapPost("/upload-stream", async (HttpContext context, CancellationToken cancellationToken) =>
 {
-    // Content-Type が multipart であることを確認する
-    if (!MediaTypeHeaderValue.TryParse(context.Request.ContentType, out var mediaType)
-        || !mediaType.MediaType.HasValue
-        || !mediaType.MediaType.Value!.StartsWith("multipart/", StringComparison.OrdinalIgnoreCase))
-    {
-        return Results.BadRequest("multipart/form-data で送信してください。");
-    }
-
     // Content-Type ヘッダーから境界文字列を取り出す
-    var boundary = HeaderUtilities.RemoveQuotes(mediaType.Boundary).Value;
-    if (string.IsNullOrEmpty(boundary))
-    {
-        return Results.BadRequest("boundary が指定されていません。");
-    }
+    var boundary = HeaderUtilities.RemoveQuotes(
+        MediaTypeHeaderValue.Parse(context.Request.ContentType!).Boundary).Value;
 
-    var reader = new MultipartReader(boundary, context.Request.Body);
+    var reader = new MultipartReader(boundary!, context.Request.Body);
     MultipartSection? section;
 
     while ((section = await reader.ReadNextSectionAsync(cancellationToken)) is not null)
@@ -454,25 +461,68 @@ app.MapPost("/upload-stream", async (HttpContext context, CancellationToken canc
 
         if (contentDisposition is not null && contentDisposition.IsFileDisposition())
         {
-            var safeFileName = $"{Guid.NewGuid():N}.bin";
-            var savePath = Path.Combine(Path.GetTempPath(), safeFileName);
+            var savePath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.bin");
 
-            // セクションの本体を保存先へ直接流し込む
+            // セクションの本体を保存先へ直接流し込む（一時ファイルを経由しない）
             await using var destination = File.Create(savePath);
             await section.Body.CopyToAsync(destination, cancellationToken);
-        }
-        else if (contentDisposition is not null && contentDisposition.IsFormDisposition())
-        {
-            // 通常のフォーム値
-            using var streamReader = new StreamReader(section.Body);
-            var value = await streamReader.ReadToEndAsync(cancellationToken);
-            // 必要に応じて利用する
         }
     }
 
     return Results.Ok();
 }).DisableAntiforgery();
 ```
+
+ファイル以外のフォーム値も受け取る場合は、`IsFormDisposition()` の分岐を追加します。
+
+```csharp
+else if (contentDisposition is not null && contentDisposition.IsFormDisposition())
+{
+    var name = contentDisposition.Name.Value;
+    using var streamReader = new StreamReader(section.Body);
+    var value = await streamReader.ReadToEndAsync(cancellationToken);
+    // 必要に応じて辞書などへ蓄積し、すべて読み終えてからモデルへ詰め替える
+}
+```
+
+実運用では、境界文字列の妥当性チェックも加えます。`MultipartReader` は境界文字列の長さを検証しないため、不正に長い値を送り付けられないよう自前で確認します。
+
+```csharp
+if (!MediaTypeHeaderValue.TryParse(context.Request.ContentType, out var mediaType)
+    || string.IsNullOrEmpty(mediaType.Boundary.Value)
+    || mediaType.Boundary.Value!.Length > 128)   // FormOptions.MultipartBoundaryLengthLimit の既定値
+{
+    return Results.BadRequest("multipart/form-data で送信してください。");
+}
+```
+
+> [!TIP]
+> そもそもクライアントがフォーム値を一緒に送る必要がないなら、**multipart を使わない** という選択肢もあります。`PUT /files/{id}` のようにファイルの中身だけをリクエストボディとして送ってもらえば、`Request.Body` がそのままファイルのストリームになるため、解析は一切不要です。ファイル名などのメタデータは URL やヘッダーで渡します。ブラウザーのフォームからではなく、SPA やモバイルアプリ、他システムからのアップロードであれば、この方式が最も単純です。
+>
+> ```csharp
+> app.MapPut("/files/{id}", async (string id, HttpContext context, CancellationToken cancellationToken) =>
+> {
+>     await using var destination = File.Create(Path.Combine(Path.GetTempPath(), $"{id}.bin"));
+>     await context.Request.Body.CopyToAsync(destination, cancellationToken);
+>     return Results.Ok();
+> });
+> ```
+
+#### 保存先が Azure Blob Storage の場合
+
+ここまでの例では保存先をローカルのファイルシステムにしていますが、**保存先が Azure Blob Storage であれば、実装はさらに短くなります**。Azure SDK の `BlobClient.UploadAsync` が `Stream` を直接受け取り、内部でチャンク分割やブロックの並列アップロードまで面倒を見てくれるためです。`section.Body` をそのまま渡すだけで、ローカルディスクに一切書き込むことなく BLOB へ転送できます。
+
+```csharp
+if (contentDisposition is not null && contentDisposition.IsFileDisposition())
+{
+    var blobClient = containerClient.GetBlobClient($"{Guid.NewGuid():N}.bin");
+
+    // 受信ストリームを、そのまま Blob Storage へ流し込む
+    await blobClient.UploadAsync(section.Body, cancellationToken);
+}
+```
+
+同じことは `IFormFile` でも `file.OpenReadStream()` を渡すだけで実現できます。詳しくは [ストリームをそのままアップロードする](#ストリームをそのままアップロードする) で扱います。
 
 MVC コントローラーでストリーミングを行う場合は、フォームのモデルバインディングが先にリクエストボディを読み切ってしまわないよう、フォーム値のバインドを無効化するリソースフィルターを適用します。
 
