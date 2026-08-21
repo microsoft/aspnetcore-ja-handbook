@@ -783,6 +783,8 @@ Microsoft.Extensions.Options.OptionsValidationException: DataAnnotation validati
 検証ロジックをサービスとしてまとめておくと、複数のエンドポイントから再利用できます。
 
 ```csharp
+using Microsoft.Extensions.Options;
+
 public interface IUploadValidator
 {
     ValidationResult Validate(IFormFile file);
@@ -862,9 +864,9 @@ using Microsoft.AspNetCore.Mvc;
 app.MapPost("/upload", ([MaxFileSize(5 * 1024 * 1024)] IFormFile file) => TypedResults.Ok());
 
 // ② フォーム値とファイルをまとめた複合型で受け取る場合
-app.MapPost("/upload-with-title", ([FromForm] UploadRequest request) => TypedResults.Ok());
+app.MapPost("/upload-with-title", ([FromForm] ValidatedUploadRequest request) => TypedResults.Ok());
 
-public class UploadRequest
+public class ValidatedUploadRequest
 {
     [Required, StringLength(100)]
     public string Title { get; set; } = "";
@@ -874,7 +876,7 @@ public class UploadRequest
 }
 ```
 
-上限を超えたファイルを送ると、次のようなレスポンスが返ります。
+② のエンドポイントに、100 文字を超えるタイトルと上限を超えたファイルを送ると、次のようなレスポンスが返ります。
 
 ```json
 {
@@ -887,12 +889,15 @@ public class UploadRequest
 ```
 
 > [!NOTE]
-> `AddValidation()` はソースジェネレーターを使って、**呼び出したアセンブリ内** の検証対象の型を検出します。エンドポイントを別のアセンブリで定義している場合は、そのアセンブリ側でも `AddValidation()` を呼ぶ必要があります。特定のエンドポイントだけ検証を外したい場合は `DisableValidation()` を使います。
+> `AddValidation()` はソースジェネレーターを使って、**呼び出したアセンブリ内** の検証対象の型を検出します。そのため、Minimal API のエンドポイントを別のアセンブリ（クラスライブラリなど）で定義している場合、ホスト側で `AddValidation()` を呼ぶだけでは検証が実行されず、不正なリクエストがそのまま処理されて 400 ではなく 200 が返ります。この場合は、**エンドポイントを定義しているアセンブリ側に `AddValidation()` を呼ぶ拡張メソッドを作り、それをホストアプリから呼び出します**（ホスト側の `AddValidation()` も併せて呼びます）。そのアセンブリが `Microsoft.NET.Sdk.Web` ベースでない素のクラスライブラリの場合は、`Microsoft.Extensions.Validation` パッケージの参照も追加します。
+>
+> 特定のエンドポイントだけ検証を外したい場合は `DisableValidation()` を使います。
 
 > [!WARNING]
 > この方式で検証できるのは、**ファイルがバッファリングされた後** です。5 MB を上限にしていても、100 MB のファイルが送られてくれば、それを受信し終えてから 400 を返すことになります。悪意ある大容量アップロードを入口で遮断するには、[既定のサイズ制限と設定変更](#既定のサイズ制限と設定変更) で説明した `RequestSizeLimit` を併用してください。データ注釈による検証は業務ルールの表明、`RequestSizeLimit` は資源保護、という役割分担になります。
 
 ### ウイルススキャンと隔離
+
 公式ドキュメントは、**アップロードされたファイルを保存する前にウイルス／マルウェアスキャナーを通すこと** を強く推奨しています。スキャンはサーバーリソースを消費するため、大量アップロードが発生するアプリケーションでは次のような非同期処理が推奨されます。
 
 ```mermaid
@@ -1104,6 +1109,7 @@ BLOB には **システムプロパティ** と **ユーザー定義メタデー
 `Content-Type` を設定しないと、ブラウザーが BLOB の URL を直接開いたときに `application/octet-stream` として扱われ、画像が表示されずダウンロードされてしまいます。アップロード時に `BlobUploadOptions.HttpHeaders` で指定します。
 
 ```csharp
+using System.Text;
 using Azure.Storage.Blobs.Models;
 
 var uploadOptions = new BlobUploadOptions
@@ -1669,6 +1675,7 @@ SAS には主に 2 種類あります。
 ユーザー委任 SAS は、`BlobServiceClient.GetUserDelegationKeyAsync` で取得したキーで署名します。キーの有効期間は最大 7 日間です。
 
 ```csharp
+using Azure;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using Azure.Storage.Sas;
@@ -1861,6 +1868,7 @@ public enum ScanStatus
 
 ```csharp
 using System.Security.Claims;
+using FileUploadSample.Models;
 using FileUploadSample.Storage;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
