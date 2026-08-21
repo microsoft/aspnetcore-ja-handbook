@@ -1036,6 +1036,50 @@ az role assignment create \
 > [!TIP]
 > ロールの割り当てが反映されるまで数分かかることがあります。設定直後に `403 Forbidden` が返る場合は、少し待ってから再試行してください。ローカル開発で権限設定が煩雑な場合は、後述の Azurite を使うとロール割り当て自体が不要になります。
 
+#### 本番環境では資格情報を明示する
+
+`DefaultAzureCredential` は「環境に合わせて自動で切り替わる」点が便利な一方、**どの資格情報が採用されるかを事前に保証できません**。これは本番環境では次のような問題を招きます。
+
+たとえば、マネージド ID で稼働していた本番サーバーに、誰かが調査目的で Azure CLI をインストールして `az login` したとします。その後にマネージド ID 側の認証が何らかの理由で失敗すると、`DefaultAzureCredential` は失敗した資格情報を黙って読み飛ばし、次の候補である Azure CLI の資格情報を使い始めます。結果として、意図しない権限でアプリが動き続けることになります。
+
+このため Microsoft は、**本番環境では `DefaultAzureCredential` を使わず、`ManagedIdentityCredential` のように決定的な資格情報へ置き換えること** を推奨しています。開発環境では引き続き利便性を優先し、`ChainedTokenCredential` で候補を明示的に列挙します。
+
+```csharp
+using Azure.Core;
+using Azure.Identity;
+using Microsoft.Extensions.Azure;
+
+builder.Services.AddAzureClients(clientBuilder =>
+{
+    clientBuilder.AddBlobServiceClient(
+        new Uri("https://mystorageaccount.blob.core.windows.net"));
+
+    TokenCredential credential;
+    if (builder.Environment.IsProduction() || builder.Environment.IsStaging())
+    {
+        // 本番・ステージング: マネージド ID だけを使う（フォールバックしない）
+        // システム割り当て ID なら new ManagedIdentityCredential() で足りる
+        var clientId = builder.Configuration["UserAssignedClientId"];
+        credential = new ManagedIdentityCredential(
+            ManagedIdentityId.FromUserAssignedClientId(clientId));
+    }
+    else
+    {
+        // ローカル開発: 使う可能性のある資格情報だけを明示的に列挙する
+        credential = new ChainedTokenCredential(
+            new AzureCliCredential(),
+            new AzureDeveloperCliCredential());
+    }
+
+    clientBuilder.UseCredential(credential);
+});
+```
+
+> [!TIP]
+> `TokenCredential` は `Azure.Core` 名前空間にある、すべての資格情報クラスの基底型です。上記のように変数の型を `TokenCredential` にしておくことで、分岐の両方の結果を 1 つの変数で受け取れます。
+
+本章の以降のコード例では、説明を簡潔にするために `DefaultAzureCredential` を使用します。実際に本番環境へデプロイする際は、上記のように資格情報を明示してください。
+
 ### ストリームをそのままアップロードする
 
 Web アプリケーションでのファイルアップロードでは、いったんローカルディスクへ保存せず、受信したストリームを直接 Blob Storage へ流し込むのが基本形です。
@@ -1134,7 +1178,9 @@ var uploadOptions = new BlobUploadOptions
 await blobClient.UploadAsync(stream, uploadOptions, cancellationToken);
 ```
 
-`Content-Type` の判定には、`Microsoft.AspNetCore.StaticFiles` パッケージに含まれる `FileExtensionContentTypeProvider` を利用できます。
+`Content-Type` の判定には、`FileExtensionContentTypeProvider` を利用できます。このクラスは `Microsoft.AspNetCore.StaticFiles` アセンブリにありますが、ASP.NET Core の共有フレームワークに同梱されているため、**NuGet パッケージを追加する必要はありません**（同名のパッケージが NuGet に存在しますが、Web アプリケーションで追加すると `NU1510` 警告が出ます）。
+
+拡張子から MIME タイプを引くだけの単純な仕組みで、未知の拡張子では `false` を返します。その場合は汎用の `application/octet-stream` にフォールバックさせます。
 
 ```csharp
 using Microsoft.AspNetCore.StaticFiles;
@@ -2022,5 +2068,7 @@ flowchart TB
 - [.NET を使用してサービス SAS を作成する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/sas-service-create-dotnet)
 - [依存関係の挿入を使用した Azure クライアントの登録 | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/azure/sdk/dependency-injection)
 - [Azure でホストされる .NET アプリの認証 | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/azure/sdk/authentication/)
+- [.NET 用 Azure Identity ライブラリの認証のベストプラクティス | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/azure/sdk/authentication/best-practices)
+- [.NET 用 Azure Identity ライブラリの資格情報チェーン | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/azure/sdk/authentication/credential-chains)
 - [ローカルでの Azure Storage 開発に Azurite エミュレーターを使用する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/common/storage-use-azurite)
 - [Unrestricted File Upload | OWASP](https://owasp.org/www-community/vulnerabilities/Unrestricted_File_Upload)
