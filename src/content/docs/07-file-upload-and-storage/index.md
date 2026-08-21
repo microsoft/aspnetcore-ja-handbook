@@ -1,0 +1,1648 @@
+---
+title: "第7章：ファイルアップロードと外部ストレージへの保存"
+description: "IFormFile によるバッファリング受信と MultipartReader によるストリーミング受信の違い、アップロードファイルの検証、Azure Blob Storage への保存、DI によるストレージクライアント注入設計を解説します。"
+---
+
+## 目次
+
+1. [ファイル受信の仕組み](#1-ファイル受信の仕組み)
+   - [multipart/form-data の基本](#multipartform-data-の基本)
+   - [バッファリングとストリーミング](#バッファリングとストリーミング)
+   - [IFormFile によるバッファリング受信](#iformfile-によるバッファリング受信)
+   - [Minimal API でのファイル受信](#minimal-api-でのファイル受信)
+   - [既定のサイズ制限と設定変更](#既定のサイズ制限と設定変更)
+   - [MultipartReader によるストリーミング受信](#multipartreader-によるストリーミング受信)
+   - [受信方式の選択指針](#受信方式の選択指針)
+2. [アップロードファイルの検証](#2-アップロードファイルの検証)
+   - [検証すべき 5 つの観点](#検証すべき-5-つの観点)
+   - [拡張子とファイルシグネチャの検証](#拡張子とファイルシグネチャの検証)
+   - [ファイル名とサイズの扱い](#ファイル名とサイズの扱い)
+   - [ウイルススキャンと隔離](#ウイルススキャンと隔離)
+3. [Azure Blob Storage への保存](#3-azure-blob-storage-への保存)
+   - [Blob Storage のオブジェクトモデル](#blob-storage-のオブジェクトモデル)
+   - [パッケージの追加と認証](#パッケージの追加と認証)
+   - [ストリームをそのままアップロードする](#ストリームをそのままアップロードする)
+   - [Content-Type とメタデータの設定](#content-type-とメタデータの設定)
+   - [上書き制御](#上書き制御)
+   - [Azurite によるローカル開発](#azurite-によるローカル開発)
+4. [DI によるストレージクライアント注入設計](#4-di-によるストレージクライアント注入設計)
+   - [AddAzureClients によるクライアント登録](#addazureclients-によるクライアント登録)
+   - [ストレージ抽象化インターフェイスの設計](#ストレージ抽象化インターフェイスの設計)
+   - [Blob Storage 実装](#blob-storage-実装)
+   - [保存先パスの設計](#保存先パスの設計)
+   - [公開と非公開のアクセス制御](#公開と非公開のアクセス制御)
+   - [SAS による一時的なアクセス許可](#sas-による一時的なアクセス許可)
+   - [メタデータ管理とデータベース連携](#メタデータ管理とデータベース連携)
+   - [コントローラーからの利用](#コントローラーからの利用)
+5. [参考ドキュメント](#5-参考ドキュメント)
+
+---
+
+## 1. ファイル受信の仕組み
+
+### multipart/form-data の基本
+
+Web ブラウザーからファイルを送信する場合、HTML フォームの `enctype` 属性に `multipart/form-data` を指定します。  
+このとき HTTP リクエストのボディは、**境界文字列 (boundary)** で区切られた複数の **セクション (section)** の並びになります。各セクションは `Content-Disposition` ヘッダーを持ち、通常のフォーム値かファイルかを判別できます。
+
+```html
+<form action="/upload" method="post" enctype="multipart/form-data">
+    <input type="text" name="title" />
+    <input type="file" name="file" />
+    <button type="submit">アップロード</button>
+</form>
+```
+
+上記フォームが送信するリクエストボディは、概念的には次のような構造になります。
+
+```text
+POST /upload HTTP/1.1
+Content-Type: multipart/form-data; boundary=----Boundary1234
+
+------Boundary1234
+Content-Disposition: form-data; name="title"
+
+サンプル画像
+------Boundary1234
+Content-Disposition: form-data; name="file"; filename="photo.jpg"
+Content-Type: image/jpeg
+
+（ここにファイルのバイナリデータ）
+------Boundary1234--
+```
+
+> [!WARNING]
+> `enctype="multipart/form-data"` を指定し忘れると、ファイルは一切送信されません。この場合 `IFormFile` にバインドされる引数は `null` になります。「ファイルが `null` になる」という不具合の多くはこれが原因です。
+
+> [!NOTE]
+> **他言語との比較**
+> - Spring Boot (Java): `MultipartFile` インターフェイス（`@RequestParam("file") MultipartFile file`）
+> - Django (Python): `request.FILES['file']`（`UploadedFile` オブジェクト）
+> - NestJS (TypeScript): `FileInterceptor` と `@UploadedFile()` デコレーター（内部で multer を使用）
+> - Laravel (PHP): `$request->file('file')`（`UploadedFile` オブジェクト）
+> - Gin (Go): `c.FormFile("file")`（`*multipart.FileHeader`）
+>
+> いずれも「multipart のセクションをフレームワークが解析し、ファイルオブジェクトとして渡す」という点は共通しています。ASP.NET Core の `IFormFile` もこれに相当します。
+
+### バッファリングとストリーミング
+
+ASP.NET Core には、ファイルを受信する方法が 2 つあります。
+
+| 方式 | 概要 | 代表的な API |
+| --- | --- | --- |
+| **バッファリング (Buffering)** | リクエスト全体をフレームワークが解析し、ファイル 1 件を `IFormFile` として組み立てる。モデルバインディングで受け取る | `IFormFile` / `IFormFileCollection` |
+| **ストリーミング (Streaming)** | multipart のセクションを順に読み進め、ファイルの中身を直接保存先へ流し込む | `MultipartReader` |
+
+バッファリングでは、フレームワークがファイル全体を **メモリまたはディスク上の一時ファイル** にいったん保持します。既定では **64 KB (`MemoryBufferThreshold`)** を超えたファイルはメモリからディスクの一時ファイルへ移されます。一時ファイルの出力先は環境変数 `ASPNETCORE_TEMP` で指定でき、未設定の場合は実行ユーザーの一時フォルダーが使われます。
+
+```mermaid
+flowchart TB
+    subgraph buffered ["バッファリング（IFormFile）"]
+        direction LR
+        BReq["HTTP リクエスト\n(multipart/form-data)"] --> BFw["フレームワークが\n全体を解析"]
+        BFw --> BBuf["メモリ or ディスクの\n一時ファイル"]
+        BBuf --> BApp["IFormFile として\nアクション引数に渡る"]
+        BApp --> BDest["保存先\n(ファイル / DB / Blob)"]
+    end
+    subgraph streamed ["ストリーミング（MultipartReader）"]
+        direction LR
+        SReq["HTTP リクエスト\n(multipart/form-data)"] --> SRead["MultipartReader が\nセクション単位で読み取り"]
+        SRead --> SDest["保存先へ直接\nCopyToAsync"]
+    end
+```
+
+> [!IMPORTANT]
+> ストリーミングは **スループットを大きく改善するものではありません**。公式ドキュメントでも「ストリーミングによってパフォーマンスが大幅に向上することはない」と明記されています。ストリーミングの目的は、**アップロード時のメモリ／ディスク消費量を削減すること** です。同時アップロードが多い、あるいは 1 ファイルが大きいアプリケーションで、バッファリングによってサーバーのリソースが枯渇するのを防ぎます。
+
+### IFormFile によるバッファリング受信
+
+小さなファイルを受け取る場合は `IFormFile` を使います。MVC コントローラーでは、フォームフィールド名と一致する名前の引数を宣言するだけでモデルバインディングが機能します。
+
+```csharp
+using Microsoft.AspNetCore.Mvc;
+
+namespace FileUploadSample.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class UploadsController : ControllerBase
+{
+    // フォームの <input name="file"> と引数名 file を一致させる
+    [HttpPost]
+    public async Task<IActionResult> Post(IFormFile file, CancellationToken cancellationToken)
+    {
+        if (file is null || file.Length == 0)
+        {
+            return BadRequest("ファイルが選択されていません。");
+        }
+
+        // クライアントが送ってきたファイル名は信用しない（後述）
+        var safeFileName = $"{Guid.NewGuid():N}{Path.GetExtension(file.FileName).ToLowerInvariant()}";
+        var savePath = Path.Combine(Path.GetTempPath(), safeFileName);
+
+        await using var destination = System.IO.File.Create(savePath);
+        await file.CopyToAsync(destination, cancellationToken);
+
+        return Ok(new { savedAs = safeFileName, size = file.Length });
+    }
+}
+```
+
+`IFormFile` が公開する主なメンバーは次のとおりです。
+
+| メンバー | 説明 |
+| --- | --- |
+| `FileName` | クライアントが送信したファイル名。**信用してはいけない値** |
+| `Length` | ファイルサイズ（バイト） |
+| `ContentType` | クライアントが申告した MIME タイプ。これも信用してはいけない |
+| `Name` | フォームフィールド名 |
+| `OpenReadStream()` | 内容を読み取る `Stream` を取得する |
+| `CopyToAsync(Stream)` | 内容を指定したストリームへコピーする |
+
+複数ファイルを受け取る場合は `IFormFileCollection` または `List<IFormFile>` を使います。
+
+```csharp
+[HttpPost("multiple")]
+public async Task<IActionResult> PostMultiple(
+    IFormFileCollection files,
+    CancellationToken cancellationToken)
+{
+    var results = new List<string>();
+
+    foreach (var file in files)
+    {
+        var safeFileName = $"{Guid.NewGuid():N}{Path.GetExtension(file.FileName).ToLowerInvariant()}";
+        await using var destination = System.IO.File.Create(Path.Combine(Path.GetTempPath(), safeFileName));
+        await file.CopyToAsync(destination, cancellationToken);
+        results.Add(safeFileName);
+    }
+
+    return Ok(results);
+}
+```
+
+ファイル以外のフォーム値と組み合わせる場合は、モデルクラスにまとめると読みやすくなります。
+
+```csharp
+public class UploadRequest
+{
+    public required string Title { get; init; }
+
+    public string? Description { get; init; }
+
+    public required IFormFile File { get; init; }
+}
+
+[HttpPost("with-metadata")]
+public async Task<IActionResult> PostWithMetadata(
+    [FromForm] UploadRequest request,
+    CancellationToken cancellationToken)
+{
+    // request.Title, request.File などにバインドされる
+    return Ok();
+}
+```
+
+> [!TIP]
+> HTML フォームを使わず JavaScript の `FormData` から送信する場合も、`FormData.append()` の第 1 引数（フィールド名）とサーバー側の引数名を一致させる必要があります。名前が食い違うとバインドされず `null` になります。
+
+### Minimal API でのファイル受信
+
+Minimal API でも `IFormFile` / `IFormFileCollection` をハンドラーの引数に宣言できます。ただし **フォームからのバインドには非フォージェリトークン (antiforgery token) の検証が必須** である点が MVC と異なります。
+
+```csharp
+using Microsoft.AspNetCore.Antiforgery;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddAntiforgery();
+
+var app = builder.Build();
+app.UseAntiforgery();
+
+app.MapPost("/upload", async (IFormFile file, CancellationToken cancellationToken) =>
+{
+    var safeFileName = $"{Guid.NewGuid():N}{Path.GetExtension(file.FileName).ToLowerInvariant()}";
+    var savePath = Path.Combine(Path.GetTempPath(), safeFileName);
+
+    await using var destination = File.Create(savePath);
+    await file.CopyToAsync(destination, cancellationToken);
+
+    return TypedResults.Ok(new { savedAs = safeFileName, size = file.Length });
+});
+
+app.Run();
+```
+
+ブラウザーのフォームから送信する場合は、`IAntiforgery` で生成したトークンを hidden フィールドとして埋め込みます。
+
+```csharp
+app.MapGet("/", (HttpContext context, IAntiforgery antiforgery) =>
+{
+    var token = antiforgery.GetAndStoreTokens(context);
+    var html = $"""
+      <html>
+        <body>
+          <form action="/upload" method="post" enctype="multipart/form-data">
+            <input name="{token.FormFieldName}" type="hidden" value="{token.RequestToken}" />
+            <input type="file" name="file" accept=".jpg,.jpeg,.png" />
+            <input type="submit" value="アップロード" />
+          </form>
+        </body>
+      </html>
+    """;
+
+    return Results.Content(html, "text/html");
+});
+```
+
+Cookie 認証を使わない API（Bearer トークン認証など）で、CSRF の攻撃対象にならないことが明らかなエンドポイントは、`DisableAntiforgery()` で検証を無効化できます。
+
+```csharp
+app.MapPost("/api/upload", async (IFormFile file) => { /* ... */ })
+   .RequireAuthorization()
+   .DisableAntiforgery();
+```
+
+> [!WARNING]
+> `DisableAntiforgery()` は CSRF 保護そのものを無効化します。ブラウザーから Cookie 認証で到達できるエンドポイントには **絶対に使用しないでください**。Bearer トークンやクライアント証明書のように、ブラウザーが自動送信しない資格情報でのみ保護されているエンドポイントに限って使用します。
+
+### 既定のサイズ制限と設定変更
+
+ファイルアップロードでは、複数のレイヤーにサイズ制限が存在します。どこで弾かれているのかを把握しておくことが重要です。
+
+```mermaid
+flowchart TB
+    C["クライアント"] --> R["リバースプロキシ / IIS\nmaxAllowedContentLength\n既定 30,000,000 バイト（約 28.6 MB）"]
+    R --> K["Kestrel\nLimits.MaxRequestBodySize\n既定 30,000,000 バイト（約 28.6 MB）"]
+    K --> F["FormOptions\nMultipartBodyLengthLimit\n既定 134,217,728 バイト（128 MB）"]
+    F --> A["アプリケーションの検証ロジック\n（業務要件に応じた上限）"]
+```
+
+| 設定 | 既定値 | 超過時の挙動 |
+| --- | --- | --- |
+| `KestrelServerLimits.MaxRequestBodySize` | 30,000,000 バイト（約 28.6 MB） | 接続がリセットされる |
+| `FormOptions.MultipartBodyLengthLimit` | 134,217,728 バイト（128 MB） | `InvalidDataException` がスローされる |
+| `FormOptions.MemoryBufferThreshold` | 65,536 バイト（64 KB） | 超過分はディスク上の一時ファイルへ退避される |
+| IIS の `maxAllowedContentLength` | 30,000,000 バイト（約 28.6 MB） | HTTP 404.13 が返る |
+
+アプリケーション全体で上限を変更する場合は `Program.cs` で設定します。
+
+```csharp
+using Microsoft.AspNetCore.Http.Features;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Kestrel のリクエストボディ上限を 100 MB に変更
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxRequestBodySize = 100 * 1024 * 1024;
+});
+
+// multipart の各セクションの上限を 100 MB に変更
+builder.Services.Configure<FormOptions>(options =>
+{
+    options.MultipartBodyLengthLimit = 100 * 1024 * 1024;
+});
+```
+
+特定のアクションだけ緩和したい場合は、属性で個別に指定します。
+
+```csharp
+[HttpPost("large")]
+[RequestSizeLimit(100 * 1024 * 1024)]              // Kestrel のボディ上限
+[RequestFormLimits(MultipartBodyLengthLimit = 100 * 1024 * 1024)]  // multipart の上限
+public async Task<IActionResult> PostLarge(IFormFile file) { /* ... */ }
+```
+
+Minimal API やミドルウェアでリクエストごとに変更する場合は `IHttpMaxRequestBodySizeFeature` を使います。
+
+```csharp
+using Microsoft.AspNetCore.Http.Features;
+
+app.MapPost("/upload-large", async (HttpContext context, IFormFile file) =>
+{
+    // 実際にボディの読み取りが始まる前に設定する必要がある
+    var feature = context.Features.Get<IHttpMaxRequestBodySizeFeature>();
+    if (feature is { IsReadOnly: false })
+    {
+        feature.MaxRequestBodySize = 100 * 1024 * 1024;
+    }
+
+    // ...
+});
+```
+
+IIS でホストする場合は、`web.config` にも設定が必要です。
+
+```xml
+<system.webServer>
+  <security>
+    <requestFiltering>
+      <!-- 100 MB -->
+      <requestLimits maxAllowedContentLength="104857600" />
+    </requestFiltering>
+  </security>
+</system.webServer>
+```
+
+> [!WARNING]
+> 上限を安易に大きくすると、**サービス拒否 (Denial of Service: DoS) 攻撃** のリスクが高まります。業務上必要な最小限の値に設定し、あわせて認証・レート制限を組み合わせてください。
+
+### MultipartReader によるストリーミング受信
+
+大きなファイルを扱う場合は、`MultipartReader` を使って multipart のセクションを直接読み取ります。フレームワークによるバッファリングを経由しないため、メモリとディスクの消費を最小限に抑えられます。
+
+```csharp
+using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Net.Http.Headers;
+
+app.MapPost("/upload-stream", async (HttpContext context, CancellationToken cancellationToken) =>
+{
+    // Content-Type が multipart であることを確認する
+    if (!MediaTypeHeaderValue.TryParse(context.Request.ContentType, out var mediaType)
+        || !mediaType.MediaType.HasValue
+        || !mediaType.MediaType.Value!.StartsWith("multipart/", StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.BadRequest("multipart/form-data で送信してください。");
+    }
+
+    // Content-Type ヘッダーから境界文字列を取り出す
+    var boundary = HeaderUtilities.RemoveQuotes(mediaType.Boundary).Value;
+    if (string.IsNullOrEmpty(boundary))
+    {
+        return Results.BadRequest("boundary が指定されていません。");
+    }
+
+    var reader = new MultipartReader(boundary, context.Request.Body);
+    MultipartSection? section;
+
+    while ((section = await reader.ReadNextSectionAsync(cancellationToken)) is not null)
+    {
+        var contentDisposition = section.GetContentDispositionHeader();
+
+        if (contentDisposition is not null && contentDisposition.IsFileDisposition())
+        {
+            var safeFileName = $"{Guid.NewGuid():N}.bin";
+            var savePath = Path.Combine(Path.GetTempPath(), safeFileName);
+
+            // セクションの本体を保存先へ直接流し込む
+            await using var destination = File.Create(savePath);
+            await section.Body.CopyToAsync(destination, cancellationToken);
+        }
+        else if (contentDisposition is not null && contentDisposition.IsFormDisposition())
+        {
+            // 通常のフォーム値
+            using var streamReader = new StreamReader(section.Body);
+            var value = await streamReader.ReadToEndAsync(cancellationToken);
+            // 必要に応じて利用する
+        }
+    }
+
+    return Results.Ok();
+}).DisableAntiforgery();
+```
+
+MVC コントローラーでストリーミングを行う場合は、フォームのモデルバインディングが先にリクエストボディを読み切ってしまわないよう、フォーム値のバインドを無効化するリソースフィルターを適用します。
+
+```csharp
+using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
+
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
+public sealed class DisableFormValueModelBindingAttribute : Attribute, IResourceFilter
+{
+    public void OnResourceExecuting(ResourceExecutingContext context)
+    {
+        var factories = context.ValueProviderFactories;
+        factories.RemoveType<FormValueProviderFactory>();
+        factories.RemoveType<FormFileValueProviderFactory>();
+        factories.RemoveType<JQueryFormValueProviderFactory>();
+    }
+
+    public void OnResourceExecuted(ResourceExecutedContext context)
+    {
+    }
+}
+```
+
+> [!NOTE]
+> `Request.Form` や `IFormFile` にアクセスした時点でフレームワークがボディ全体を読み込んでしまうため、ストリーミングを行うアクションではこれらに触れてはいけません。フォーム値が必要な場合は、`MultipartReader` で読み取ったセクションから自前で組み立てます。
+
+### 受信方式の選択指針
+
+| 観点 | バッファリング（`IFormFile`） | ストリーミング（`MultipartReader`） |
+| --- | --- | --- |
+| 実装の容易さ | ◎ モデルバインディングで完結 | △ 自前でセクションを解析する |
+| モデル検証との統合 | ◎ データ注釈が使える | △ 自前で実装が必要 |
+| メモリ／ディスク消費 | △ ファイルサイズと同時実行数に比例 | ◎ 一定のバッファーのみ |
+| 適したファイルサイズ | 数十 MB 程度まで | 数百 MB 以上 |
+| 適した用途 | プロフィール画像、添付書類 | 動画、バックアップ、大量データ |
+
+> [!TIP]
+> 最初は `IFormFile` で実装し、ベンチマークでメモリやディスクが問題になった時点でストリーミングへ移行するのが現実的です。公式ドキュメントも「小さい／大きいの境界は環境依存であり、想定サイズでベンチマークすべき」としています。
+
+---
+
+## 2. アップロードファイルの検証
+
+### 検証すべき 5 つの観点
+
+ファイルアップロードは、攻撃者にとって **サーバーへ任意のデータを送り込める入口** です。最低限、次の観点で検証します。
+
+| 観点 | 内容 |
+| --- | --- |
+| **サイズ** | 業務要件に応じた上限を設け、超過したら拒否する |
+| **拡張子** | 許可リスト（ホワイトリスト）方式で判定する |
+| **ファイルシグネチャ** | 先頭バイト列を検査し、拡張子と内容の整合を確認する |
+| **ファイル名** | クライアント由来の名前をそのまま保存パスに使わない |
+| **内容** | ウイルス／マルウェアスキャンを実施する |
+
+> [!WARNING]
+> クライアント側（JavaScript）の検証はユーザー体験の向上のためのものであり、**簡単に迂回できます**。必ずサーバー側で同じ検証を実施してください。
+
+### 拡張子とファイルシグネチャの検証
+
+拡張子は許可リストで判定します。禁止リスト（ブラックリスト）方式は漏れが生じやすいため使用しません。
+
+```csharp
+private static readonly string[] PermittedExtensions = [".jpg", ".jpeg", ".png", ".pdf"];
+
+private static bool IsPermittedExtension(string fileName)
+{
+    var extension = Path.GetExtension(fileName).ToLowerInvariant();
+    return !string.IsNullOrEmpty(extension) && PermittedExtensions.Contains(extension);
+}
+```
+
+拡張子はいくらでも詐称できるため、**ファイルの先頭数バイト（ファイルシグネチャ／マジックナンバー）** も検査します。
+
+```csharp
+using System.Buffers;
+
+public static class FileSignatureValidator
+{
+    private static readonly Dictionary<string, byte[][]> Signatures = new()
+    {
+        [".jpg"] =
+        [
+            [0xFF, 0xD8, 0xFF, 0xE0],
+            [0xFF, 0xD8, 0xFF, 0xE1],
+            [0xFF, 0xD8, 0xFF, 0xE8],
+        ],
+        [".png"] = [[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]],
+        [".pdf"] = [[0x25, 0x50, 0x44, 0x46]],
+    };
+
+    public static bool IsValidSignature(Stream stream, string extension)
+    {
+        extension = extension.ToLowerInvariant();
+        // .jpeg は .jpg と同じシグネチャで判定する
+        var key = extension == ".jpeg" ? ".jpg" : extension;
+
+        if (!Signatures.TryGetValue(key, out var candidates))
+        {
+            return false;
+        }
+
+        var maxLength = candidates.Max(signature => signature.Length);
+        var buffer = ArrayPool<byte>.Shared.Rent(maxLength);
+
+        try
+        {
+            var read = stream.ReadAtLeast(buffer.AsSpan(0, maxLength), maxLength, throwOnEndOfStream: false);
+            ReadOnlySpan<byte> header = buffer.AsSpan(0, read);
+
+            // Span はラムダ式の中で使えないため、foreach で判定する
+            foreach (var signature in candidates)
+            {
+                if (header.Length >= signature.Length
+                    && header[..signature.Length].SequenceEqual(signature))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+            stream.Position = 0;  // 後続の保存処理のために巻き戻す
+        }
+    }
+}
+```
+
+> [!NOTE]
+> シグネチャ検証は「拡張子と中身が一致するか」を確かめるだけであり、**ファイルが安全であることを保証しません**。正しい JPEG ヘッダーを持つ悪意あるファイルは作成可能です。ウイルススキャンと併用してください。
+
+### ファイル名とサイズの扱い
+
+クライアントが送ってきたファイル名を、そのまま保存パスの構築に使ってはいけません。`../../etc/passwd` のようなパストラバーサル攻撃や、既存ファイルの上書きにつながります。
+
+```csharp
+// ❌ 危険: クライアント由来の名前をそのまま使用
+var path = Path.Combine(uploadDirectory, file.FileName);
+
+// ✅ 安全: アプリケーションが生成した名前を使用し、拡張子だけを引き継ぐ
+var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+var storedName = $"{Guid.NewGuid():N}{extension}";
+var path = Path.Combine(uploadDirectory, storedName);
+```
+
+元のファイル名を画面に表示したい場合は、**表示用の名前としてデータベースに保持** し、表示時に HTML エンコードします。Razor は既定で出力を HTML エンコードするため安全ですが、Razor 以外で出力する場合は `WebUtility.HtmlEncode` を明示的に呼び出します。
+
+サイズ上限は構成から読み込み、`IOptions<T>` で注入するのが定石です（構成の詳細は[第5章：アプリ設定 (Configuration)](../05-configuration/index.md)、DI の詳細は[第6章：依存性注入 (DI)](../06-dependency-injection/index.md)を参照）。
+
+```json
+{
+  "FileUpload": {
+    "MaxFileSizeBytes": 5242880,
+    "PermittedExtensions": [ ".jpg", ".jpeg", ".png", ".pdf" ]
+  }
+}
+```
+
+```csharp
+public class FileUploadOptions
+{
+    public const string SectionName = "FileUpload";
+
+    public long MaxFileSizeBytes { get; set; } = 5 * 1024 * 1024;
+
+    public string[] PermittedExtensions { get; set; } = [];
+}
+```
+
+```csharp
+builder.Services
+    .AddOptions<FileUploadOptions>()
+    .Bind(builder.Configuration.GetSection(FileUploadOptions.SectionName))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+```
+
+検証ロジックをサービスとしてまとめておくと、複数のエンドポイントから再利用できます。
+
+```csharp
+public interface IUploadValidator
+{
+    ValidationResult Validate(IFormFile file);
+}
+
+public sealed record ValidationResult(bool IsValid, string? ErrorMessage)
+{
+    public static ValidationResult Success { get; } = new(true, null);
+
+    public static ValidationResult Failure(string message) => new(false, message);
+}
+
+public sealed class UploadValidator(IOptions<FileUploadOptions> options) : IUploadValidator
+{
+    private readonly FileUploadOptions _options = options.Value;
+
+    public ValidationResult Validate(IFormFile file)
+    {
+        if (file.Length == 0)
+        {
+            return ValidationResult.Failure("ファイルが空です。");
+        }
+
+        if (file.Length > _options.MaxFileSizeBytes)
+        {
+            return ValidationResult.Failure(
+                $"ファイルサイズが上限（{_options.MaxFileSizeBytes:N0} バイト）を超えています。");
+        }
+
+        var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+        if (string.IsNullOrEmpty(extension) || !_options.PermittedExtensions.Contains(extension))
+        {
+            return ValidationResult.Failure($"拡張子 '{extension}' は許可されていません。");
+        }
+
+        using var stream = file.OpenReadStream();
+        if (!FileSignatureValidator.IsValidSignature(stream, extension))
+        {
+            return ValidationResult.Failure("ファイルの内容が拡張子と一致しません。");
+        }
+
+        return ValidationResult.Success;
+    }
+}
+```
+
+### ウイルススキャンと隔離
+
+公式ドキュメントは、**アップロードされたファイルを保存する前にウイルス／マルウェアスキャナーを通すこと** を強く推奨しています。スキャンはサーバーリソースを消費するため、大量アップロードが発生するアプリケーションでは次のような非同期処理が推奨されます。
+
+```mermaid
+flowchart LR
+    U["クライアント"] --> API["アップロード API"]
+    API --> Q["隔離コンテナー\n(quarantine)"]
+    API --> DB[("メタデータ DB\nステータス: 検査中")]
+    Q --> W["バックグラウンドサービス\n（ウイルススキャン）"]
+    W -->|合格| P["公開コンテナー\n(files)"]
+    W -->|不合格| X["削除 / 監査ログ"]
+    W --> DB
+```
+
+1. アップロードされたファイルは、まず **隔離用のコンテナー** に保存する
+2. データベースには「検査中」というステータスでレコードを作成する
+3. バックグラウンドサービス（`BackgroundService`）がスキャナー API を呼び出す
+4. 合格したファイルのみを通常のコンテナーへ移動し、ステータスを更新する
+
+> [!TIP]
+> `BackgroundService` は Singleton として動作するため、内部で Scoped サービス（`DbContext` など）を使う場合は `IServiceScopeFactory` でスコープを作成します。詳細は[第6章：依存性注入 (DI)](../06-dependency-injection/index.md)を参照してください。
+
+---
+
+## 3. Azure Blob Storage への保存
+
+### Blob Storage のオブジェクトモデル
+
+Azure Blob Storage は、大量の非構造化データ（画像、動画、ログ、バックアップなど）を保存するためのオブジェクトストレージサービスです。データは 3 階層で構成されます。
+
+```mermaid
+flowchart TB
+    SA["ストレージアカウント\nhttps://{account}.blob.core.windows.net"]
+    SA --> C1["コンテナー: images"]
+    SA --> C2["コンテナー: documents"]
+    C1 --> B1["BLOB: 2026/08/abc123.jpg"]
+    C1 --> B2["BLOB: 2026/08/def456.png"]
+    C2 --> B3["BLOB: contracts/xyz789.pdf"]
+```
+
+.NET クライアントライブラリ `Azure.Storage.Blobs` は、この階層に対応する 3 つのクライアントクラスを提供します。
+
+| クラス | 対応するリソース | 主な役割 |
+| --- | --- | --- |
+| `BlobServiceClient` | ストレージアカウント | コンテナーの一覧・作成、ユーザー委任キーの取得 |
+| `BlobContainerClient` | コンテナー | コンテナー内の BLOB の一覧・作成・削除 |
+| `BlobClient` | 個別の BLOB | アップロード、ダウンロード、プロパティ／メタデータの操作 |
+
+```csharp
+BlobServiceClient serviceClient = /* DI から取得 */;
+BlobContainerClient containerClient = serviceClient.GetBlobContainerClient("images");
+BlobClient blobClient = containerClient.GetBlobClient("2026/08/abc123.jpg");
+```
+
+> [!NOTE]
+> Blob Storage には「フォルダー」という概念がありません。`2026/08/abc123.jpg` のようにスラッシュを含む名前は、単に BLOB 名の一部として扱われます。ただし Azure ポータルや `GetBlobsByHierarchyAsync` では、スラッシュを区切りとした階層構造として表示・列挙できます。
+
+### パッケージの追加と認証
+
+必要なパッケージを追加します。
+
+```bash
+dotnet add package Azure.Storage.Blobs
+dotnet add package Azure.Identity
+dotnet add package Microsoft.Extensions.Azure
+```
+
+| パッケージ | 用途 |
+| --- | --- |
+| `Azure.Storage.Blobs` | Blob Storage クライアントライブラリ |
+| `Azure.Identity` | Microsoft Entra ID による認証（`DefaultAzureCredential` など） |
+| `Microsoft.Extensions.Azure` | DI コンテナーへの Azure クライアント登録（`AddAzureClients`） |
+
+認証方式には、接続文字列（アカウントキー）を使う方法と、Microsoft Entra ID を使う方法があります。**アカウントキーはストレージアカウント全体への完全な権限を持つため、Microsoft Entra ID による認証を推奨します**。
+
+```csharp
+using Azure.Identity;
+using Azure.Storage.Blobs;
+
+// 推奨: Microsoft Entra ID による認証
+var serviceClient = new BlobServiceClient(
+    new Uri("https://mystorageaccount.blob.core.windows.net"),
+    new DefaultAzureCredential());
+```
+
+`DefaultAzureCredential` は、実行環境に応じて資格情報を自動的に切り替えます。
+
+| 実行環境 | 使用される資格情報 |
+| --- | --- |
+| ローカル開発 | Azure CLI (`az login`)、Visual Studio、Azure Developer CLI のサインイン情報 |
+| Azure App Service / Container Apps / VM | マネージド ID (Managed Identity) |
+| CI/CD | 環境変数に設定されたサービスプリンシパル |
+
+> [!IMPORTANT]
+> Microsoft Entra ID で BLOB データを操作するには、**Azure RBAC ロールの割り当てが必要** です。`所有者 (Owner)` や `共同作成者 (Contributor)` といった管理プレーンのロールでは、BLOB データへのアクセス権は付与されません。データ操作には **ストレージ BLOB データ共同作成者 (Storage Blob Data Contributor)** などのデータプレーン用ロールを割り当ててください。
+
+### ストリームをそのままアップロードする
+
+Web アプリケーションでのファイルアップロードでは、いったんローカルディスクへ保存せず、受信したストリームを直接 Blob Storage へ流し込むのが基本形です。
+
+```csharp
+public static async Task<Uri> UploadAsync(
+    BlobContainerClient containerClient,
+    IFormFile file,
+    string blobName,
+    CancellationToken cancellationToken)
+{
+    var blobClient = containerClient.GetBlobClient(blobName);
+
+    await using var stream = file.OpenReadStream();
+    await blobClient.UploadAsync(stream, overwrite: false, cancellationToken);
+
+    return blobClient.Uri;
+}
+```
+
+`UploadAsync` は、データサイズと転送オプションに応じて、単一の `Put Blob` 操作を行うか、`Put Block` を複数回実行してから `Put Block List` でコミットするかを自動的に選択します。大きなファイルの並列転送を制御したい場合は `StorageTransferOptions` を指定します。
+
+```csharp
+using Azure.Storage;
+using Azure.Storage.Blobs.Models;
+
+var options = new BlobUploadOptions
+{
+    TransferOptions = new StorageTransferOptions
+    {
+        // 1 ブロックあたりのサイズ
+        InitialTransferSize = 8 * 1024 * 1024,
+        MaximumTransferSize = 8 * 1024 * 1024,
+        // 並列アップロード数
+        MaximumConcurrency = 4,
+    },
+};
+
+await blobClient.UploadAsync(stream, options, cancellationToken);
+```
+
+ストリーミング受信（`MultipartReader`）と組み合わせれば、大きなファイルをメモリに載せずに Blob Storage へ転送できます。
+
+```csharp
+while ((section = await reader.ReadNextSectionAsync(cancellationToken)) is not null)
+{
+    var contentDisposition = section.GetContentDispositionHeader();
+
+    if (contentDisposition is not null && contentDisposition.IsFileDisposition())
+    {
+        var blobClient = containerClient.GetBlobClient($"{Guid.NewGuid():N}.bin");
+
+        // multipart のセクションから Blob Storage へ直接ストリーム転送
+        await blobClient.UploadAsync(section.Body, overwrite: false, cancellationToken);
+    }
+}
+```
+
+> [!TIP]
+> Blob Storage 側にストリームを開いて少しずつ書き込みたい場合は、`BlockBlobClient.OpenWriteAsync` を使用します。ZIP アーカイブを組み立てながらアップロードするようなシナリオで有用です。ただし、オブジェクトレプリケーションやコンテナー化されたバックアップを有効にしている場合、書き込みのたびに新しいバージョンが作成されコストが増大する点に注意してください。
+
+### Content-Type とメタデータの設定
+
+BLOB には **システムプロパティ** と **ユーザー定義メタデータ** を設定できます。
+
+| 種別 | 説明 | 例 |
+| --- | --- | --- |
+| システムプロパティ | HTTP ヘッダーに対応する既定のプロパティ | `ContentType`、`CacheControl`、`ContentDisposition` |
+| ユーザー定義メタデータ | 任意の名前と値のペア | `uploadedBy`、`originalFileName` |
+
+`Content-Type` を設定しないと、ブラウザーが BLOB の URL を直接開いたときに `application/octet-stream` として扱われ、画像が表示されずダウンロードされてしまいます。アップロード時に `BlobUploadOptions.HttpHeaders` で指定します。
+
+```csharp
+using Azure.Storage.Blobs.Models;
+
+var uploadOptions = new BlobUploadOptions
+{
+    HttpHeaders = new BlobHttpHeaders
+    {
+        // クライアント申告値をそのまま使わず、拡張子から判定した値を設定する
+        ContentType = ResolveContentType(blobName),
+        CacheControl = "public, max-age=31536000",
+    },
+    Metadata = new Dictionary<string, string>
+    {
+        ["originalFileName"] = Convert.ToBase64String(Encoding.UTF8.GetBytes(file.FileName)),
+        ["uploadedBy"] = userId,
+        ["uploadedAt"] = DateTimeOffset.UtcNow.ToString("O"),
+    },
+};
+
+await blobClient.UploadAsync(stream, uploadOptions, cancellationToken);
+```
+
+`Content-Type` の判定には、`Microsoft.AspNetCore.StaticFiles` パッケージに含まれる `FileExtensionContentTypeProvider` を利用できます。
+
+```csharp
+using Microsoft.AspNetCore.StaticFiles;
+
+private static readonly FileExtensionContentTypeProvider ContentTypeProvider = new();
+
+private static string ResolveContentType(string fileName)
+    => ContentTypeProvider.TryGetContentType(fileName, out var contentType)
+        ? contentType
+        : "application/octet-stream";
+```
+
+> [!WARNING]
+> メタデータの名前と値は **有効な HTTP ヘッダー** である必要があります。ASCII 以外の文字（日本語のファイル名など）をそのまま設定すると、リクエストが失敗したり文字化けしたりします。上記の例のように Base64 エンコードするか、日本語を含む情報はデータベース側で管理してください。
+
+アップロード後にメタデータを更新したり読み取ったりする場合は、`SetMetadataAsync` と `GetPropertiesAsync` を使います。
+
+```csharp
+// メタデータの更新（既存のメタデータは置き換えられる）
+await blobClient.SetMetadataAsync(new Dictionary<string, string>
+{
+    ["scanStatus"] = "clean",
+}, cancellationToken: cancellationToken);
+
+// プロパティとメタデータの取得
+BlobProperties properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
+Console.WriteLine(properties.ContentType);
+Console.WriteLine(properties.Metadata["scanStatus"]);
+```
+
+> [!NOTE]
+> メタデータは検索インデックスの対象になりません。検索したい属性は **BLOB インデックスタグ (`BlobUploadOptions.Tags`)** を使うか、後述のようにデータベースで管理します。また、`SetHttpHeadersAsync` はすべてのヘッダーを置き換えるため、更新しないプロパティも `GetPropertiesAsync` で取得した値で埋め直す必要があります。
+
+### 上書き制御
+
+同名の BLOB が既に存在する場合の挙動は、明示的に制御する必要があります。
+
+```csharp
+// ① 常に上書きする
+await blobClient.UploadAsync(stream, overwrite: true, cancellationToken);
+
+// ② 既存の場合は失敗させる（既定の動作）
+//    既に存在すると RequestFailedException（HTTP 409 BlobAlreadyExists）がスローされる
+await blobClient.UploadAsync(stream, overwrite: false, cancellationToken);
+```
+
+より細かく制御する場合は、`BlobRequestConditions` に条件付きヘッダーを指定します。
+
+```csharp
+using Azure;
+using Azure.Storage.Blobs.Models;
+
+// 新規作成のみを許可する（If-None-Match: *）
+var createOnly = new BlobUploadOptions
+{
+    Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All },
+};
+
+try
+{
+    await blobClient.UploadAsync(stream, createOnly, cancellationToken);
+}
+catch (RequestFailedException ex) when (ex.Status == StatusCodes.Status409Conflict)
+{
+    // 同名の BLOB が既に存在する
+}
+```
+
+既存 BLOB の更新時に、取得してから更新するまでの間に他のプロセスが変更していないことを保証するには、**楽観的同時実行制御 (Optimistic Concurrency)** を使います。ダウンロード時に取得した `ETag` を `IfMatch` に指定すると、値が一致しない場合に HTTP 412 (Precondition Failed) が返ります。
+
+```csharp
+// 現在の内容と ETag を取得する
+Response<BlobDownloadResult> response = await blobClient.DownloadContentAsync(cancellationToken);
+ETag originalETag = response.Value.Details.ETag;
+
+var conditionalUpdate = new BlobUploadOptions
+{
+    Conditions = new BlobRequestConditions { IfMatch = originalETag },
+};
+
+try
+{
+    await blobClient.UploadAsync(updatedContent, conditionalUpdate, cancellationToken);
+}
+catch (RequestFailedException ex) when (ex.Status == StatusCodes.Status412PreconditionFailed)
+{
+    // 取得後に他のプロセスが BLOB を更新した。再取得してやり直す
+}
+```
+
+> [!WARNING]
+> Azure Storage のクライアントライブラリは、**同一 BLOB への同時書き込みをサポートしていません**。複数のプロセスが同じ BLOB に書き込む可能性がある場合は、上記の楽観的同時実行制御か、BLOB リースによる悲観的同時実行制御を実装してください。
+
+| 制御方式 | 条件ヘッダー | 用途 |
+| --- | --- | --- |
+| 常に上書き | なし | 冪等なアップロード、キャッシュ的な用途 |
+| 新規作成のみ | `IfNoneMatch = ETag.All` | 一意な名前を生成して保存する通常のアップロード |
+| 楽観的同時実行制御 | `IfMatch = originalETag` | 既存ファイルの更新 |
+| 悲観的同時実行制御 | BLOB リース | 長時間の排他が必要なバッチ処理 |
+
+### Azurite によるローカル開発
+
+ローカル開発では、Azure Storage のエミュレーターである **Azurite** を使うと、実際のストレージアカウントを作らずに動作を確認できます。
+
+```bash
+# Docker で起動する場合
+docker run -p 10000:10000 -p 10001:10001 -p 10002:10002 \
+    mcr.microsoft.com/azure-storage/azurite
+
+# npm でインストールして起動する場合
+npm install -g azurite
+azurite --silent --location ./azurite-data
+```
+
+Azurite は既知の開発用アカウントキーを持つため、開発環境では接続文字列 `UseDevelopmentStorage=true` を使用します。
+
+```json
+// appsettings.Development.json
+{
+  "Storage": {
+    "ConnectionString": "UseDevelopmentStorage=true"
+  }
+}
+```
+
+```json
+// appsettings.json（本番環境）
+{
+  "Storage": {
+    "ServiceUri": "https://mystorageaccount.blob.core.windows.net"
+  }
+}
+```
+
+> [!TIP]
+> `AddBlobServiceClient` は、構成セクションに `ConnectionString` があれば接続文字列で、`ServiceUri` があれば URI と資格情報でクライアントを生成します。上記のように環境別の JSON ファイルで使い分ければ、コードを変えずに開発環境と本番環境を切り替えられます。構成ファイルの優先順位については[第5章：アプリ設定 (Configuration)](../05-configuration/index.md)を参照してください。
+
+---
+
+## 4. DI によるストレージクライアント注入設計
+
+### AddAzureClients によるクライアント登録
+
+`BlobServiceClient` は **スレッドセーフであり、再利用が推奨されるクライアント** です。リクエストのたびに `new` すると、コネクションプールの枯渇や認証トークン取得のオーバーヘッドを招きます。`Microsoft.Extensions.Azure` パッケージの `AddAzureClients` を使って、DI コンテナーに Singleton として登録します。
+
+```csharp
+using Azure.Identity;
+using Microsoft.Extensions.Azure;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddAzureClients(clientBuilder =>
+{
+    // 構成セクションからクライアントを生成する
+    clientBuilder.AddBlobServiceClient(builder.Configuration.GetSection("Storage"));
+
+    // すべてのクライアントで共有する資格情報を設定する
+    clientBuilder.UseCredential(new DefaultAzureCredential());
+
+    // 再試行などの既定の動作を構成する
+    clientBuilder.ConfigureDefaults(builder.Configuration.GetSection("AzureDefaults"));
+});
+```
+
+```json
+{
+  "AzureDefaults": {
+    "Retry": {
+      "MaxRetries": 3,
+      "Mode": "Exponential"
+    }
+  },
+  "Storage": {
+    "ServiceUri": "https://mystorageaccount.blob.core.windows.net"
+  }
+}
+```
+
+複数のストレージアカウントを使い分ける場合は、`WithName` で名前を付けて登録し、`IAzureClientFactory<T>` から取り出します。
+
+```csharp
+builder.Services.AddAzureClients(clientBuilder =>
+{
+    clientBuilder.AddBlobServiceClient(builder.Configuration.GetSection("PublicStorage"))
+                 .WithName("public");
+    clientBuilder.AddBlobServiceClient(builder.Configuration.GetSection("PrivateStorage"))
+                 .WithName("private");
+    clientBuilder.UseCredential(new DefaultAzureCredential());
+});
+```
+
+```csharp
+public sealed class ArchiveService(IAzureClientFactory<BlobServiceClient> clientFactory)
+{
+    private readonly BlobServiceClient _publicClient = clientFactory.CreateClient("public");
+    private readonly BlobServiceClient _privateClient = clientFactory.CreateClient("private");
+}
+```
+
+> [!NOTE]
+> **他言語との比較**
+> - Spring Boot (Java): `spring-cloud-azure-starter-storage-blob` が `BlobServiceClient` を Bean として自動構成する
+> - NestJS (TypeScript): カスタムプロバイダーで `BlobServiceClient` を登録し、`@Inject()` で注入する
+> - Django (Python): `django-storages` の `STORAGES` 設定でストレージバックエンドを差し替える
+>
+> いずれも「クライアントを 1 度だけ生成して共有する」という考え方は共通です。
+
+### ストレージ抽象化インターフェイスの設計
+
+アプリケーションのビジネスロジックが `BlobClient` に直接依存すると、ローカルファイルシステムや別のクラウドストレージへ差し替えづらくなり、単体テストも困難になります。**保存先に依存しないインターフェイス** を定義しましょう。
+
+```mermaid
+flowchart LR
+    C["UploadsController"] --> I["IFileStorage\n（抽象）"]
+    I -.実装.-> B["BlobFileStorage\n(Azure Blob Storage)"]
+    I -.実装.-> L["LocalFileStorage\n(ローカルファイルシステム)"]
+    I -.実装.-> M["InMemoryFileStorage\n(テスト用)"]
+```
+
+```csharp
+namespace FileUploadSample.Storage;
+
+/// <summary>ファイルの保存先を抽象化するインターフェイス。</summary>
+public interface IFileStorage
+{
+    Task<StoredFile> SaveAsync(FileUploadDescriptor descriptor, CancellationToken cancellationToken = default);
+
+    Task<Stream?> OpenReadAsync(string storagePath, CancellationToken cancellationToken = default);
+
+    Task<bool> DeleteAsync(string storagePath, CancellationToken cancellationToken = default);
+
+    Task<Uri> CreateReadUrlAsync(string storagePath, TimeSpan lifetime, CancellationToken cancellationToken = default);
+}
+
+/// <summary>保存要求を表すレコード。</summary>
+public sealed record FileUploadDescriptor(
+    Stream Content,
+    string StoragePath,
+    string ContentType,
+    IReadOnlyDictionary<string, string>? Metadata = null,
+    bool AllowOverwrite = false);
+
+/// <summary>保存結果を表すレコード。</summary>
+public sealed record StoredFile(string StoragePath, long Length, string ETag);
+```
+
+> [!TIP]
+> インターフェイスからは `BlobClient` や `Stream` 以外の Azure 固有の型を排除します。こうすることで、上位のサービス層は Azure SDK への参照を持たずに済み、テストではインメモリ実装に差し替えられます。
+
+### Blob Storage 実装
+
+```csharp
+using Azure;
+using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
+using Microsoft.Extensions.Options;
+
+namespace FileUploadSample.Storage;
+
+public sealed class BlobStorageOptions
+{
+    public const string SectionName = "BlobStorage";
+
+    public required string ContainerName { get; set; }
+}
+
+public sealed class BlobFileStorage(
+    BlobServiceClient serviceClient,
+    IOptions<BlobStorageOptions> options,
+    ILogger<BlobFileStorage> logger) : IFileStorage
+{
+    private readonly BlobContainerClient _container =
+        serviceClient.GetBlobContainerClient(options.Value.ContainerName);
+
+    public async Task<StoredFile> SaveAsync(
+        FileUploadDescriptor descriptor,
+        CancellationToken cancellationToken = default)
+    {
+        var blobClient = _container.GetBlobClient(descriptor.StoragePath);
+
+        var uploadOptions = new BlobUploadOptions
+        {
+            HttpHeaders = new BlobHttpHeaders { ContentType = descriptor.ContentType },
+            Metadata = descriptor.Metadata?.ToDictionary(pair => pair.Key, pair => pair.Value),
+            Conditions = descriptor.AllowOverwrite
+                ? null
+                : new BlobRequestConditions { IfNoneMatch = ETag.All },
+        };
+
+        try
+        {
+            Response<BlobContentInfo> response =
+                await blobClient.UploadAsync(descriptor.Content, uploadOptions, cancellationToken);
+
+            return new StoredFile(
+                descriptor.StoragePath,
+                descriptor.Content.CanSeek ? descriptor.Content.Length : 0,
+                response.Value.ETag.ToString());
+        }
+        catch (RequestFailedException ex) when (ex.Status == StatusCodes.Status409Conflict)
+        {
+            logger.LogWarning("BLOB {StoragePath} は既に存在します。", descriptor.StoragePath);
+            throw new InvalidOperationException($"'{descriptor.StoragePath}' は既に存在します。", ex);
+        }
+    }
+
+    public async Task<Stream?> OpenReadAsync(
+        string storagePath,
+        CancellationToken cancellationToken = default)
+    {
+        var blobClient = _container.GetBlobClient(storagePath);
+
+        try
+        {
+            return await blobClient.OpenReadAsync(cancellationToken: cancellationToken);
+        }
+        catch (RequestFailedException ex) when (ex.Status == StatusCodes.Status404NotFound)
+        {
+            return null;
+        }
+    }
+
+    public async Task<bool> DeleteAsync(
+        string storagePath,
+        CancellationToken cancellationToken = default)
+    {
+        var blobClient = _container.GetBlobClient(storagePath);
+        Response<bool> response = await blobClient.DeleteIfExistsAsync(
+            cancellationToken: cancellationToken);
+
+        return response.Value;
+    }
+
+    public Task<Uri> CreateReadUrlAsync(
+        string storagePath,
+        TimeSpan lifetime,
+        CancellationToken cancellationToken = default)
+    {
+        // 実装は「SAS による一時的なアクセス許可」を参照
+        throw new NotImplementedException();
+    }
+}
+```
+
+登録はサービス登録用の拡張メソッドにまとめると、`Program.cs` が読みやすくなります。
+
+```csharp
+namespace FileUploadSample.Storage;
+
+public static class StorageServiceCollectionExtensions
+{
+    public static IServiceCollection AddBlobFileStorage(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddAzureClients(clientBuilder =>
+        {
+            clientBuilder.AddBlobServiceClient(configuration.GetSection("Storage"));
+            clientBuilder.UseCredential(new DefaultAzureCredential());
+        });
+
+        services.AddOptions<BlobStorageOptions>()
+                .Bind(configuration.GetSection(BlobStorageOptions.SectionName))
+                .ValidateDataAnnotations()
+                .ValidateOnStart();
+
+        // BlobServiceClient は Singleton、ラッパーは Scoped で登録する
+        services.AddScoped<IFileStorage, BlobFileStorage>();
+
+        return services;
+    }
+}
+```
+
+```csharp
+builder.Services.AddBlobFileStorage(builder.Configuration);
+```
+
+> [!NOTE]
+> `AddAzureClients` が登録する `BlobServiceClient` は **Singleton** です。`BlobFileStorage` を Scoped で登録しても、Singleton である `BlobServiceClient` に依存するだけなので Captive Dependency にはなりません（短いライフタイムから長いライフタイムへの依存は問題ありません）。ライフタイムの依存方向については[第6章：依存性注入 (DI)](../06-dependency-injection/index.md)を参照してください。
+
+### 保存先パスの設計
+
+BLOB 名（保存先パス）の設計は、後からの変更が困難です。次の観点を考慮して決めます。
+
+| 観点 | 指針 |
+| --- | --- |
+| **一意性** | GUID や ULID を含め、衝突しない名前にする |
+| **推測困難性** | 連番は避ける。URL を推測して他人のファイルを取得されるリスクを減らす |
+| **分散** | 先頭に日付やハッシュを置き、名前が特定のプレフィックスに集中しないようにする |
+| **論理的な区分** | テナント ID、ユーザー ID、用途を階層に含めて運用しやすくする |
+| **ライフサイクル管理** | 日付をパスに含めると、有効期限に基づく削除ポリシーを適用しやすい |
+
+```text
+{用途}/{テナントID}/{yyyy}/{MM}/{一意なID}{拡張子}
+
+例: avatars/tenant-a1b2/2026/08/01K3XQ9F7ZP2M4N8T6VR5C0.jpg
+```
+
+```csharp
+namespace FileUploadSample.Storage;
+
+public interface IStoragePathBuilder
+{
+    string Build(string category, string tenantId, string originalFileName);
+}
+
+public sealed class StoragePathBuilder(TimeProvider timeProvider) : IStoragePathBuilder
+{
+    public string Build(string category, string tenantId, string originalFileName)
+    {
+        var now = timeProvider.GetUtcNow();
+        var extension = Path.GetExtension(originalFileName).ToLowerInvariant();
+        var id = Guid.CreateVersion7().ToString("N");
+
+        // BLOB 名にクライアント由来の文字列を含めない
+        return $"{category}/{tenantId}/{now:yyyy}/{now:MM}/{id}{extension}";
+    }
+}
+```
+
+> [!TIP]
+> .NET 9 以降では `Guid.CreateVersion7()` が利用できます。UUID v7 は生成時刻順にソート可能なため、時系列に沿った BLOB 名になり、一覧取得やライフサイクル管理と相性が良くなります。`TimeProvider` を注入しておくと、テストで時刻を固定できます。
+
+> [!WARNING]
+> BLOB 名にクライアント由来のファイル名を含めてはいけません。パス区切り文字やパーセントエンコーディングを悪用され、意図しない場所へ書き込まれる可能性があります。元のファイル名はメタデータやデータベースに保持し、ダウンロード時に `Content-Disposition` ヘッダーで返します。
+
+### 公開と非公開のアクセス制御
+
+Blob Storage への匿名アクセス（公開読み取り）は、既定で **無効** です。有効化するには、ストレージアカウントとコンテナーの両方で設定を変更する必要があります。
+
+| ストレージアカウントの設定 | コンテナーのアクセスレベル | 結果 |
+| --- | --- | --- |
+| 匿名アクセスを許可しない | 任意 | すべて非公開。アカウント設定が優先される |
+| 匿名アクセスを許可する | プライベート（既定） | 非公開 |
+| 匿名アクセスを許可する | BLOB | BLOB は匿名で読めるが、一覧は取得できない |
+| 匿名アクセスを許可する | コンテナー | BLOB の読み取りと一覧取得が匿名で可能 |
+
+> [!WARNING]
+> Microsoft は **匿名アクセスを許可しないこと** を推奨しています。公開が必要なファイルであっても、次のいずれかの方式を検討してください。
+>
+> 1. Azure CDN や Azure Front Door 経由で配信し、オリジンへの直接アクセスは遮断する
+> 2. アプリケーションがプロキシとして配信し、認可を適用する
+> 3. 有効期限付きの SAS URL を発行する
+
+アプリケーションがプロキシとして配信する実装は次のようになります。認可チェックを挟めるため、非公開ファイルの配信に適しています。
+
+```csharp
+[HttpGet("{id:guid}/content")]
+public async Task<IActionResult> Download(Guid id, CancellationToken cancellationToken)
+{
+    var record = await _dbContext.UploadedFiles.FindAsync([id], cancellationToken);
+    if (record is null)
+    {
+        return NotFound();
+    }
+
+    // 認可チェック（所有者またはアクセス権を持つユーザーのみ）
+    var authorization = await _authorizationService.AuthorizeAsync(User, record, "FileAccess");
+    if (!authorization.Succeeded)
+    {
+        return Forbid();
+    }
+
+    var stream = await _fileStorage.OpenReadAsync(record.StoragePath, cancellationToken);
+    if (stream is null)
+    {
+        return NotFound();
+    }
+
+    // 元のファイル名でダウンロードさせる
+    return File(stream, record.ContentType, record.OriginalFileName);
+}
+```
+
+> [!NOTE]
+> プロキシ方式では、すべてのトラフィックがアプリケーションサーバーを経由します。大きなファイルや高頻度のダウンロードでは、帯域とサーバー負荷がボトルネックになります。その場合は次に説明する SAS URL へのリダイレクトが有効です。
+
+### SAS による一時的なアクセス許可
+
+**共有アクセス署名 (Shared Access Signature: SAS)** は、有効期限と権限を限定した URL を発行する仕組みです。クライアントはこの URL で Blob Storage へ直接アクセスできるため、アプリケーションサーバーを経由せずに済みます。
+
+SAS には主に 2 種類あります。
+
+| 種別 | 署名に使う鍵 | 特徴 |
+| --- | --- | --- |
+| **サービス SAS** | ストレージアカウントキー | アカウントキーをアプリケーションが保持する必要がある |
+| **ユーザー委任 SAS** | ユーザー委任キー（Microsoft Entra ID 由来） | アカウントキーが不要。**推奨** |
+
+ユーザー委任 SAS は、`BlobServiceClient.GetUserDelegationKeyAsync` で取得したキーで署名します。キーの有効期間は最大 7 日間です。
+
+```csharp
+using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
+using Azure.Storage.Blobs.Specialized;
+using Azure.Storage.Sas;
+
+public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, TimeProvider timeProvider)
+{
+    private UserDelegationKey? _cachedKey;
+    private DateTimeOffset _cachedKeyExpiresOn;
+    private readonly SemaphoreSlim _semaphore = new(1, 1);
+
+    public async Task<Uri> CreateReadUrlAsync(
+        BlobClient blobClient,
+        TimeSpan lifetime,
+        string? downloadFileName = null,
+        CancellationToken cancellationToken = default)
+    {
+        var key = await GetUserDelegationKeyAsync(cancellationToken);
+        var now = timeProvider.GetUtcNow();
+
+        var sasBuilder = new BlobSasBuilder
+        {
+            BlobContainerName = blobClient.BlobContainerName,
+            BlobName = blobClient.Name,
+            Resource = "b",
+            // 時計のずれを考慮して開始時刻を少し前倒しする
+            StartsOn = now.AddMinutes(-5),
+            ExpiresOn = now.Add(lifetime),
+        };
+
+        // 読み取り専用の権限のみを付与する
+        sasBuilder.SetPermissions(BlobSasPermissions.Read);
+
+        if (downloadFileName is not null)
+        {
+            sasBuilder.ContentDisposition = $"attachment; filename=\"{downloadFileName}\"";
+        }
+
+        var uriBuilder = new BlobUriBuilder(blobClient.Uri)
+        {
+            Sas = sasBuilder.ToSasQueryParameters(
+                key,
+                blobClient.GetParentBlobContainerClient().GetParentBlobServiceClient().AccountName),
+        };
+
+        return uriBuilder.ToUri();
+    }
+
+    private async Task<UserDelegationKey> GetUserDelegationKeyAsync(CancellationToken cancellationToken)
+    {
+        var now = timeProvider.GetUtcNow();
+
+        if (_cachedKey is not null && _cachedKeyExpiresOn > now.AddMinutes(5))
+        {
+            return _cachedKey;
+        }
+
+        await _semaphore.WaitAsync(cancellationToken);
+        try
+        {
+            if (_cachedKey is not null && _cachedKeyExpiresOn > now.AddMinutes(5))
+            {
+                return _cachedKey;
+            }
+
+            var expiresOn = now.AddHours(1);
+            Response<UserDelegationKey> response = await serviceClient.GetUserDelegationKeyAsync(
+                now.AddMinutes(-5), expiresOn, cancellationToken);
+
+            _cachedKey = response.Value;
+            _cachedKeyExpiresOn = expiresOn;
+
+            return _cachedKey;
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
+    }
+}
+```
+
+コントローラーからは、SAS URL へのリダイレクトを返します。
+
+```csharp
+[HttpGet("{id:guid}/download")]
+public async Task<IActionResult> Download(Guid id, CancellationToken cancellationToken)
+{
+    var record = await _dbContext.UploadedFiles.FindAsync([id], cancellationToken);
+    if (record is null)
+    {
+        return NotFound();
+    }
+
+    // 認可はアプリケーション側で実施し、通過した場合のみ短命な URL を発行する
+    var url = await _fileStorage.CreateReadUrlAsync(
+        record.StoragePath, TimeSpan.FromMinutes(10), cancellationToken);
+
+    return Redirect(url.ToString());
+}
+```
+
+```mermaid
+sequenceDiagram
+    participant C as クライアント
+    participant A as ASP.NET Core アプリ
+    participant E as Microsoft Entra ID
+    participant B as Blob Storage
+
+    C->>A: GET /files/{id}/download
+    A->>A: 認証・認可チェック
+    A->>E: マネージド ID でトークン取得
+    E-->>A: アクセストークン
+    A->>B: GetUserDelegationKeyAsync
+    B-->>A: ユーザー委任キー
+    A->>A: SAS URL を生成（読み取り専用 / 10 分）
+    A-->>C: 302 Redirect（SAS URL）
+    C->>B: GET SAS URL
+    B-->>C: ファイルの内容
+```
+
+> [!WARNING]
+> SAS URL は **URL を知っていれば誰でもアクセスできます**。有効期限は必要最小限（数分〜数十分）にし、権限は読み取り専用に限定してください。また、SAS URL をログや外部サービスへ送信しないよう注意が必要です。
+
+> [!TIP]
+> アップロードにも SAS を利用できます。書き込み権限 (`BlobSasPermissions.Write`) を持つ SAS URL をクライアントへ発行すれば、大容量ファイルをアプリケーションサーバーを経由せずに直接 Blob Storage へアップロードできます（ダイレクトアップロード）。この場合、サーバー側では検証を行えないため、アップロード完了後にバックグラウンドで検証する設計が必要です。
+
+### メタデータ管理とデータベース連携
+
+BLOB のメタデータは HTTP ヘッダーの制約を受け、検索もできません。実運用では **ファイルの属性はデータベースで管理し、BLOB は実体の保存にのみ使う** 構成が基本です。
+
+```mermaid
+flowchart LR
+    subgraph db ["リレーショナルデータベース"]
+        T["UploadedFiles テーブル\n・Id\n・OriginalFileName\n・ContentType\n・Length\n・StoragePath\n・OwnerId\n・ScanStatus\n・CreatedAt"]
+    end
+    subgraph blob ["Azure Blob Storage"]
+        B["BLOB 実体\navatars/tenant-a1b2/2026/08/....jpg"]
+    end
+    T -->|StoragePath で参照| B
+```
+
+```csharp
+namespace FileUploadSample.Models;
+
+public class UploadedFile
+{
+    public Guid Id { get; set; }
+
+    /// <summary>表示用の元ファイル名。出力時は必ず HTML エンコードする。</summary>
+    public required string OriginalFileName { get; set; }
+
+    /// <summary>サーバー側で判定した MIME タイプ。</summary>
+    public required string ContentType { get; set; }
+
+    public long Length { get; set; }
+
+    /// <summary>BLOB 名（コンテナー内のパス）。</summary>
+    public required string StoragePath { get; set; }
+
+    public required string OwnerId { get; set; }
+
+    public ScanStatus ScanStatus { get; set; } = ScanStatus.Pending;
+
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+public enum ScanStatus
+{
+    Pending,
+    Clean,
+    Infected,
+}
+```
+
+> [!IMPORTANT]
+> BLOB への保存とデータベースへの登録は、**トランザクションで一体化できません**。次のような不整合が起こり得ます。
+>
+> | 状況 | 結果 | 対策 |
+> | --- | --- | --- |
+> | BLOB 保存後、DB 登録前に失敗 | 参照されない BLOB（孤児）が残る | 定期的なクリーンアップジョブ、またはライフサイクル管理ポリシー |
+> | DB 登録後、BLOB 保存前に失敗 | 実体のないレコードが残る | 先に BLOB を保存し、成功後に DB へ登録する順序にする |
+> | DB のレコード削除後、BLOB 削除前に失敗 | 孤児 BLOB が残る | 論理削除 + バックグラウンド削除にする |
+>
+> 一般的には「**先に BLOB を保存し、成功したらデータベースへ登録する**」順序とし、孤児 BLOB は許容したうえでクリーンアップジョブで回収します。
+
+### コントローラーからの利用
+
+ここまでの要素を組み合わせた完成形です。
+
+```csharp
+using FileUploadSample.Storage;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.StaticFiles;
+
+namespace FileUploadSample.Controllers;
+
+[ApiController]
+[Authorize]
+[Route("api/files")]
+public class FilesController(
+    IFileStorage fileStorage,
+    IUploadValidator validator,
+    IStoragePathBuilder pathBuilder,
+    AppDbContext dbContext,
+    TimeProvider timeProvider,
+    ILogger<FilesController> logger) : ControllerBase
+{
+    private static readonly FileExtensionContentTypeProvider ContentTypeProvider = new();
+
+    [HttpPost]
+    [RequestSizeLimit(10 * 1024 * 1024)]
+    public async Task<IActionResult> Upload(IFormFile file, CancellationToken cancellationToken)
+    {
+        if (file is null || file.Length == 0)
+        {
+            return BadRequest("ファイルが選択されていません。");
+        }
+
+        // ① 検証
+        var validation = validator.Validate(file);
+        if (!validation.IsValid)
+        {
+            return BadRequest(validation.ErrorMessage);
+        }
+
+        var ownerId = User.FindFirst("sub")?.Value ?? throw new InvalidOperationException();
+        var storagePath = pathBuilder.Build("uploads", ownerId, file.FileName);
+        var contentType = ResolveContentType(file.FileName);
+
+        // ② BLOB へ保存（受信ストリームをそのまま転送）
+        await using var content = file.OpenReadStream();
+        var descriptor = new FileUploadDescriptor(
+            Content: content,
+            StoragePath: storagePath,
+            ContentType: contentType,
+            Metadata: new Dictionary<string, string>
+            {
+                ["ownerId"] = ownerId,
+                ["uploadedAt"] = timeProvider.GetUtcNow().ToString("O"),
+            },
+            AllowOverwrite: false);
+
+        var stored = await fileStorage.SaveAsync(descriptor, cancellationToken);
+
+        // ③ メタデータをデータベースへ登録
+        var record = new UploadedFile
+        {
+            Id = Guid.CreateVersion7(),
+            OriginalFileName = file.FileName,
+            ContentType = contentType,
+            Length = file.Length,
+            StoragePath = stored.StoragePath,
+            OwnerId = ownerId,
+            ScanStatus = ScanStatus.Pending,
+            CreatedAt = timeProvider.GetUtcNow(),
+        };
+
+        dbContext.UploadedFiles.Add(record);
+        await dbContext.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation("ファイル {FileId} を {StoragePath} へ保存しました。", record.Id, stored.StoragePath);
+
+        return CreatedAtAction(nameof(GetDownloadUrl), new { id = record.Id }, new { id = record.Id });
+    }
+
+    [HttpGet("{id:guid}/download-url")]
+    public async Task<IActionResult> GetDownloadUrl(Guid id, CancellationToken cancellationToken)
+    {
+        var record = await dbContext.UploadedFiles.FindAsync([id], cancellationToken);
+
+        if (record is null || record.OwnerId != User.FindFirst("sub")?.Value)
+        {
+            // 存在の有無を漏らさないよう、権限がない場合も 404 を返す
+            return NotFound();
+        }
+
+        if (record.ScanStatus != ScanStatus.Clean)
+        {
+            return StatusCode(StatusCodes.Status409Conflict, "ウイルススキャンが完了していません。");
+        }
+
+        var url = await fileStorage.CreateReadUrlAsync(
+            record.StoragePath, TimeSpan.FromMinutes(10), cancellationToken);
+
+        return Ok(new { url, expiresInSeconds = 600 });
+    }
+
+    private static string ResolveContentType(string fileName)
+        => ContentTypeProvider.TryGetContentType(fileName, out var contentType)
+            ? contentType
+            : "application/octet-stream";
+}
+```
+
+処理の流れは次のとおりです。
+
+```mermaid
+flowchart TB
+    S["リクエスト受信\n(multipart/form-data)"] --> V{"検証\nサイズ / 拡張子 / シグネチャ"}
+    V -->|NG| E["400 Bad Request"]
+    V -->|OK| P["保存先パスの生成\nGUID v7 + 日付階層"]
+    P --> B["Blob Storage へ\nストリーム転送"]
+    B --> D["データベースへ\nメタデータ登録"]
+    D --> Q["スキャン待ちキューへ"]
+    D --> R["201 Created"]
+```
+
+> [!TIP]
+> `IFileStorage` を抽象化しておけば、単体テストではインメモリ実装に差し替えられ、Azure への接続なしでコントローラーのロジックを検証できます。統合テストでは Azurite を起動して実際の Blob Storage API に対して検証すると、より高い信頼性が得られます。
+
+---
+
+## 5. 参考ドキュメント
+
+- [ASP.NET Core でファイルをアップロードする | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/mvc/models/file-uploads?view=aspnetcore-10.0)
+- [Minimal API アプリでのパラメーターバインド | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis/parameter-binding?view=aspnetcore-10.0)
+- [ASP.NET Core でのクロスサイト リクエスト フォージェリ攻撃の防止 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/anti-request-forgery?view=aspnetcore-10.0)
+- [ASP.NET Core の Kestrel Web サーバーのオプション | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/servers/kestrel/options?view=aspnetcore-10.0)
+- [クイックスタート: .NET 用 Azure Blob Storage クライアント ライブラリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-quickstart-blobs-dotnet)
+- [.NET を使用して BLOB をアップロードする | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-blob-upload)
+- [.NET を使用して BLOB のプロパティとメタデータを管理する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-blob-properties-metadata)
+- [Blob Storage での同時実行の管理 | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/concurrency-manage)
+- [コンテナーと BLOB に対する匿名読み取りアクセスを構成する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/anonymous-read-access-configure)
+- [.NET を使用してユーザー委任 SAS を作成する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-blob-user-delegation-sas-create-dotnet)
+- [.NET を使用してサービス SAS を作成する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/sas-service-create-dotnet)
+- [依存関係の挿入を使用した Azure クライアントの登録 | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/azure/sdk/dependency-injection)
+- [Azure でホストされる .NET アプリの認証 | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/azure/sdk/authentication/)
+- [ローカルでの Azure Storage 開発に Azurite エミュレーターを使用する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/common/storage-use-azurite)
+- [Unrestricted File Upload | OWASP](https://owasp.org/www-community/vulnerabilities/Unrestricted_File_Upload)
