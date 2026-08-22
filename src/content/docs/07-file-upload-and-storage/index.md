@@ -1,6 +1,6 @@
 ---
 title: "第7章：ファイルアップロードと外部ストレージへの保存"
-description: "IFormFile によるバッファリング受信と MultipartReader によるストリーミング受信の違い、アップロードファイルの検証、Azure Blob Storage への保存、そして Blob Storage クライアントの DI 設計を解説します。"
+description: "IFormFile によるバッファリング受信と MultipartReader によるストリーミング受信、アップロードファイルの検証、Azure Blob Storage への保存と SAS、ストレージクライアントの DI 設計を解説します。"
 ---
 
 ## 目次
