@@ -1140,6 +1140,17 @@ public static async Task<Uri> UploadAsync(
 >
 > リクエストのたびに `CreateIfNotExistsAsync` を呼ぶのは避けてください。毎回 `Get Container Properties` 相当のラウンドトリップが増えるうえ、コンテナー作成の権限（`Storage Blob Data Contributor` 以上）を実行時ずっと持ち続けることになります。
 
+コンテナー名には、BLOB 名よりも厳しい命名規則があります。構成ファイルから読み込む値も、この規則を満たしていなければなりません。
+
+| 規則 | ✅ 有効な例 | ❌ 無効な例 |
+| --- | --- | --- |
+| 使える文字は英小文字・数字・ハイフンのみ | `uploads`／`user-files` | `Uploads`（大文字）／`user_files`（アンダースコア）／`my.files`（ピリオド） |
+| 長さは 3 文字以上 63 文字以下 | `img` | `up`（2 文字） |
+| 先頭と末尾は英小文字か数字 | `a-b` | `-uploads`／`uploads-` |
+| ハイフンを連続させない | `up-loads` | `a--b` |
+
+規則に反する名前を指定すると、コンテナー作成の時点で `RequestFailedException`（`Status: 400`、`ErrorCode: InvalidResourceName` または `OutOfRangeInput`）が発生します。BLOB 名では大文字もスラッシュも使えるため、コンテナー名だけ規則が異なる点に注意してください。
+
 ```csharp
 using Azure.Storage;
 using Azure.Storage.Blobs.Models;
