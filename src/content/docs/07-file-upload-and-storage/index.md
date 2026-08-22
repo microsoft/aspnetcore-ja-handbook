@@ -1923,6 +1923,8 @@ Blob Storage への匿名アクセス（公開読み取り）は、既定で **�
 
 アプリケーションがプロキシとして配信する実装は次のようになります。認可チェックを挟めるため、非公開ファイルの配信に適しています。
 
+以降のコード例に出てくる `_dbContext.UploadedFiles` は、アップロード時に BLOB 名や元のファイル名を記録しておくテーブルです。BLOB 名だけでは元のファイル名や所有者が分からないため、こうした情報はデータベース側に持ちます。具体的な設計は[メタデータ管理とデータベース連携](#メタデータ管理とデータベース連携)で扱います。
+
 ```csharp
 [HttpGet("{id:guid}/content")]
 public async Task<IActionResult> Download(Guid id, CancellationToken cancellationToken)
