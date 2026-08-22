@@ -870,7 +870,7 @@ Microsoft.Extensions.Options.OptionsValidationException: DataAnnotation validati
 > public string[] PermittedExtensions { get; set; } = [];
 > ```
 >
-> ❌ の書き方をして構成の記述を忘れると、次項の `UploadValidator` で使っている `PermittedExtensions.Contains(extension)` が常に `false` を返すため、**例外も出ないまま、すべてのファイルが「拡張子が許可されていません」として拒否される** という、原因の分かりにくい不具合になります。必須項目には必ず `[Required]` を付けてください。
+> ❌ の書き方をして構成の記述を忘れると、次項の `UploadValidator` で使っている `PermittedExtensions.Contains(extension)` が常に `false` を返すため、**例外も出ないまま、すべてのファイルが「拡張子が許可されていません」として拒否される** という、原因の分かりにくい不具合になります。必須項目には必ず `[Required]` を付けてください。構成の検証方法の全体像は[第5章：アプリ設定 (Configuration)](../05-configuration/index.md)を参照してください。
 
 検証ロジックをサービスとしてまとめておくと、複数のエンドポイントから再利用できます。
 
@@ -2054,6 +2054,16 @@ sequenceDiagram
 
 > [!NOTE]
 > `UserDelegationSasProvider` はユーザー委任キーをフィールドにキャッシュしているため、**Singleton として登録します**（前掲の `AddBlobFileStorage` に含めてあります）。Scoped や Transient で登録すると、リクエストのたびに新しいインスタンスが作られてキャッシュが空になり、毎回 `GetUserDelegationKeyAsync` が呼ばれてしまいます。
+
+> [!NOTE]
+> SAS URL をクライアントへ渡す方法には、次の 2 通りがあります。
+>
+> | 方法 | 応答 | 向いている場面 | 注意点 |
+> | --- | --- | --- | --- |
+> | リダイレクト（上の例） | 302 + `Location` ヘッダー | `<a href>` や `<img src>` から直接参照する場合。ブラウザーが自動で追跡する | SAS URL が `Location` ヘッダーに載るため、**リバースプロキシやアクセスログに記録されやすい** |
+> | JSON で返す | 200 + `{ "url": "..." }` | SPA やモバイルアプリから `fetch` で取得する場合 | クライアント側で URL を扱うコードが必要 |
+>
+> 本章の最後に示す完成形のコントローラーでは、API としての利用を想定して後者（JSON で返す）を採用しています。認可チェックの実装を含む全体像は[コントローラーからの利用](#コントローラーからの利用)を参照してください。
 
 > [!TIP]
 > アップロードにも SAS を利用できます。書き込み権限 (`BlobSasPermissions.Write`) を持つ SAS URL をクライアントへ発行すれば、大容量ファイルをアプリケーションサーバーを経由せずに直接 Blob Storage へアップロードできます（ダイレクトアップロード）。この場合、サーバー側では検証を行えないため、アップロード完了後にバックグラウンドで検証する設計が必要です。
