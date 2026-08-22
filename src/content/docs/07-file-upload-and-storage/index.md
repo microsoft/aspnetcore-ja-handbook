@@ -561,6 +561,7 @@ app.MapPost("/upload-stream", async (HttpContext context, CancellationToken canc
 ファイル以外のフォーム値も受け取る場合は、`IsFormDisposition()` の分岐を追加します。
 
 ```csharp
+// 前掲の if (contentDisposition.IsFileDisposition()) { ... } に続けて記述する
 else if (contentDisposition is not null && contentDisposition.IsFormDisposition())
 {
     var name = contentDisposition.Name.Value;
@@ -1805,6 +1806,23 @@ public static class StorageServiceCollectionExtensions
 
 ```csharp
 builder.Services.AddBlobFileStorage(builder.Configuration);
+```
+
+この拡張メソッドは 3 つの構成セクションを読み込みます。`ValidateOnStart()` を付けているため、いずれかが欠けていると起動時に `OptionsValidationException` で停止します。
+
+```json
+{
+  "Storage": {
+    "ServiceUri": "https://mystorageaccount.blob.core.windows.net"
+  },
+  "BlobStorage": {
+    "ContainerName": "uploads"
+  },
+  "FileUpload": {
+    "MaxFileSizeBytes": 5242880,
+    "PermittedExtensions": [ ".jpg", ".jpeg", ".png", ".pdf" ]
+  }
+}
 ```
 
 > [!NOTE]
