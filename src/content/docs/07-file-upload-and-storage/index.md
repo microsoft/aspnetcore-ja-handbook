@@ -1511,7 +1511,7 @@ public sealed class ArchiveService(IAzureClientFactory<BlobServiceClient> client
 
 ```mermaid
 flowchart LR
-    C["UploadsController"] --> I["IFileStorage\n（抽象）"]
+    C["FilesController"] --> I["IFileStorage\n（抽象）"]
     I -.実装.-> B["BlobFileStorage\n(Azure Blob Storage)"]
     I -.実装.-> L["LocalFileStorage\n(ローカルファイルシステム)"]
     I -.実装.-> M["InMemoryFileStorage\n(テスト用)"]
@@ -1569,6 +1569,7 @@ public sealed class BlobStorageOptions
 
 public sealed class BlobFileStorage(
     BlobServiceClient serviceClient,
+    UserDelegationSasProvider sasProvider,
     IOptions<BlobStorageOptions> options,
     ILogger<BlobFileStorage> logger) : IFileStorage
 {
@@ -1640,8 +1641,12 @@ public sealed class BlobFileStorage(
         string? downloadFileName = null,
         CancellationToken cancellationToken = default)
     {
+        // SAS の生成は UserDelegationSasProvider へ委譲する。
         // 実装は「SAS による一時的なアクセス許可」を参照
-        throw new NotImplementedException();
+        var blobClient = _container.GetBlobClient(storagePath);
+
+        return sasProvider.CreateReadUrlAsync(
+            blobClient, lifetime, downloadFileName, cancellationToken);
     }
 }
 ```
@@ -1682,6 +1687,9 @@ public static class StorageServiceCollectionExtensions
         // BlobServiceClient は Singleton、ラッパーは Scoped で登録する
         services.AddScoped<IFileStorage, BlobFileStorage>();
         services.AddScoped<IUploadValidator, UploadValidator>();
+
+        // ユーザー委任キーをキャッシュするため Singleton で登録する
+        services.AddSingleton<UserDelegationSasProvider>();
 
         // TimeProvider は既定では登録されていないため、明示的に登録する
         services.TryAddSingleton(TimeProvider.System);
@@ -1984,7 +1992,7 @@ sequenceDiagram
 > SAS URL は **URL を知っていれば誰でもアクセスできます**。有効期限は必要最小限（数分〜数十分）にし、権限は読み取り専用に限定してください。また、SAS URL をログや外部サービスへ送信しないよう注意が必要です。
 
 > [!NOTE]
-> 上記の `UserDelegationSasProvider` はユーザー委任キーをフィールドにキャッシュしているため、**Singleton として登録してください**（`services.AddSingleton<UserDelegationSasProvider>()`）。Scoped や Transient で登録すると、リクエストのたびに新しいインスタンスが作られてキャッシュが空になり、毎回 `GetUserDelegationKeyAsync` が呼ばれてしまいます。
+> `UserDelegationSasProvider` はユーザー委任キーをフィールドにキャッシュしているため、**Singleton として登録します**（前掲の `AddBlobFileStorage` に含めてあります）。Scoped や Transient で登録すると、リクエストのたびに新しいインスタンスが作られてキャッシュが空になり、毎回 `GetUserDelegationKeyAsync` が呼ばれてしまいます。
 
 > [!TIP]
 > アップロードにも SAS を利用できます。書き込み権限 (`BlobSasPermissions.Write`) を持つ SAS URL をクライアントへ発行すれば、大容量ファイルをアプリケーションサーバーを経由せずに直接 Blob Storage へアップロードできます（ダイレクトアップロード）。この場合、サーバー側では検証を行えないため、アップロード完了後にバックグラウンドで検証する設計が必要です。
@@ -2174,7 +2182,7 @@ flowchart TB
     V -->|OK| P["保存先パスの生成\nGUID v7 + 日付階層"]
     P --> B["Blob Storage へ\nストリーム転送"]
     B --> D["データベースへ\nメタデータ登録"]
-    D --> Q["スキャン待ちキューへ"]
+    D --> Q["スキャン待ち\n(ScanStatus = Pending)"]
     D --> R["201 Created"]
 ```
 
