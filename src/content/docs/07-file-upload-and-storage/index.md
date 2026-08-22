@@ -79,7 +79,7 @@ Content-Type: image/jpeg
 > **他言語との比較**
 > - Spring Boot (Java): `MultipartFile` インターフェイス（`@RequestParam("file") MultipartFile file`）
 > - Django (Python): `request.FILES['file']`（`UploadedFile` オブジェクト）
-> - NestJS (TypeScript): `FileInterceptor` と `@UploadedFile()` デコレータ（内部で multer を使用）
+> - NestJS (TypeScript): `FileInterceptor` と `@UploadedFile()` デコレータ（内部で multer を使用。multer は Express アダプター専用で、Fastify アダプターでは別のライブラリが必要）
 > - Laravel (PHP): `$request->file('file')`（`UploadedFile` オブジェクト）
 > - Gin (Go): `c.FormFile("file")`（`*multipart.FileHeader`）
 >
@@ -248,7 +248,7 @@ CSRF とは、利用者が正規サイトにログインした状態のまま攻
 
 攻撃者のページは正規サイトの HTML を読み取れないため、**リクエストトークンの値を知り得ません**。サーバーは 2 つの値が対になっているかを検証し、対になっていなければリクエストを HTTP 400 で拒否します。
 
-他言語のフレームワークにも同じ仕組みがあります。Django の `{% csrf_token %}` と `CsrfViewMiddleware`、Laravel の `@csrf` と CSRF 対策ミドルウェア（Laravel 13 の `PreventRequestForgery`、12 以前の `ValidateCsrfToken`）、Spring Security の `CsrfToken` に相当します。
+他言語のフレームワークにも同じ仕組みがあります。Django の `{% csrf_token %}` と `CsrfViewMiddleware`、Laravel の `@csrf` と CSRF 対策ミドルウェア（Laravel 13 の `PreventRequestForgery`、11・12 の `ValidateCsrfToken`、10 以前の `VerifyCsrfToken`）、Spring Security の `CsrfFilter` と `CsrfToken` に相当します。
 
 ASP.NET Core では、`AddAntiforgery()` でサービスを登録し、`UseAntiforgery()` ミドルウェアをパイプラインに追加することで有効になります。Minimal API では、このミドルウェアが `IFormFile` や `[FromForm]` にバインドするエンドポイントを自動的に検証対象とするため、**アプリ側に検証コードを書く必要はありません**。
 
@@ -829,7 +829,7 @@ var path = Path.Combine(uploadDirectory, storedName);
 | `../../etc/cron.d/job` | `/uploads/../../etc/cron.d/job`（`..` は解決されず、OS が解釈して `/etc/cron.d/job` に到達する） |
 | `/etc/cron.d/job` | `/etc/cron.d/job`（**第 2 引数が絶対パスだと、第 1 引数は捨てられる**） |
 
-`Path.Combine` の第 2 引数が絶対パスだったときに第 1 引数を無視するのは、Python の `os.path.join` や Node.js の `path.resolve` と同じ挙動です。いずれの言語でも「結合先のディレクトリに収まることを保証する関数」ではないため、保存先の安全性は呼び出し側で担保しなければなりません。前掲の ✅ の例のように、アプリケーションが生成した名前だけを使えばこれらの問題はまとめて回避できます。
+`Path.Combine` の第 2 引数が絶対パスだったときに第 1 引数を無視するのは、Python の `os.path.join` や Node.js の `path.resolve` と同じ挙動です（名前の似た Node.js の `path.join` は、後続の引数が絶対パスでも前の引数を捨てないため、挙動が異なります）。いずれの言語でも「結合先のディレクトリに収まることを保証する関数」ではないため、保存先の安全性は呼び出し側で担保しなければなりません。前掲の ✅ の例のように、アプリケーションが生成した名前だけを使えばこれらの問題はまとめて回避できます。
 
 ファイル名だけでなく、**保存先ディレクトリの選び方** も重要です。アップロードされたファイルは、`wwwroot` の配下に置いてはいけません。`wwwroot` は `UseStaticFiles()` によって誰でもダウンロードできる公開領域だからです。
 
@@ -1647,7 +1647,7 @@ public sealed class ArchiveService(IAzureClientFactory<BlobServiceClient> client
 > - NestJS (TypeScript): カスタムプロバイダーで `BlobServiceClient` を登録し、`@Inject()` で注入する
 > - Django (Python): `django-storages` の `STORAGES` 設定でストレージバックエンドを差し替える
 >
-> いずれも「クライアントを 1 度だけ生成して共有する」という考え方は共通です。
+> いずれも「クライアントの生成と再利用をフレームワーク側に任せ、利用側は注入されたものを使う」という考え方は共通です。
 
 ### ストレージ抽象化インターフェイスの設計
 
@@ -2306,12 +2306,7 @@ public class FilesController(
     [RequestSizeLimit(10 * 1024 * 1024)]
     public async Task<IActionResult> Upload(IFormFile file, CancellationToken cancellationToken)
     {
-        if (file.Length == 0)
-        {
-            return BadRequest("ファイルが空です。");
-        }
-
-        // ① 検証
+        // ① 検証（空ファイル・サイズ・拡張子・シグネチャをまとめて確認する）
         var validation = validator.Validate(file);
         if (!validation.IsValid)
         {
@@ -2411,21 +2406,21 @@ flowchart TB
 ## 5. 参考ドキュメント
 
 - [ASP.NET Core でファイルをアップロードする | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/mvc/models/file-uploads?view=aspnetcore-10.0)
-- [Minimal API アプリでのパラメーターバインド | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis/parameter-binding?view=aspnetcore-10.0)
-- [ASP.NET Core でのクロスサイト リクエスト フォージェリ攻撃の防止 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/anti-request-forgery?view=aspnetcore-10.0)
+- [Minimal API アプリケーションでのパラメーター バインド | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/minimal-apis/parameter-binding?view=aspnetcore-10.0)
+- [ASP.NET Core でクロスサイト リクエスト フォージェリ (XSRF/CSRF) 攻撃を防止する | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/anti-request-forgery?view=aspnetcore-10.0)
 - [ASP.NET Core での検証 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/validation?view=aspnetcore-10.0)
-- [ASP.NET Core の Kestrel Web サーバーのオプション | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/servers/kestrel/options?view=aspnetcore-10.0)
-- [クイックスタート: .NET 用 Azure Blob Storage クライアント ライブラリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-quickstart-blobs-dotnet)
+- [ASP.NET Core Kestrel Web サーバーのオプションを構成する | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/servers/kestrel/options?view=aspnetcore-10.0)
+- [クイック スタート: .NET 用 Azure Blob Storage クライアント ライブラリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-quickstart-blobs-dotnet)
 - [.NET を使用して BLOB をアップロードする | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-blob-upload)
 - [.NET を使用して BLOB のプロパティとメタデータを管理する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-blob-properties-metadata)
-- [BLOB インデックスタグを使用してデータを管理および検索する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-manage-find-blobs)
-- [Blob Storage での同時実行の管理 | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/concurrency-manage)
-- [コンテナーと BLOB に対する匿名読み取りアクセスを構成する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/anonymous-read-access-configure)
-- [.NET を使用してユーザー委任 SAS を作成する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-blob-user-delegation-sas-create-dotnet)
-- [.NET を使用してサービス SAS を作成する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/sas-service-create-dotnet)
-- [依存関係の挿入を使用した Azure クライアントの登録 | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/azure/sdk/dependency-injection)
-- [Azure でホストされる .NET アプリの認証 | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/azure/sdk/authentication/)
-- [.NET 用 Azure Identity ライブラリの認証のベストプラクティス | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/azure/sdk/authentication/best-practices)
+- [BLOB インデックス タグを使用して Azure BLOB データを管理および検索する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-manage-find-blobs)
+- [BLOB ストレージ内でコンカレンシーを管理する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/concurrency-manage)
+- [コンテナーと BLOB 用の匿名読み取りアクセスを構成する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/anonymous-read-access-configure)
+- [.NET を使用して Azure BLOB、Azure Files、Azure Queue のユーザー委任 SAS を作成する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-blob-user-delegation-sas-create-dotnet)
+- [.NET を使用してコンテナーまたは BLOB のサービス SAS を作成する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/blobs/sas-service-create-dotnet)
+- [Azure SDK for .NET での依存関係の挿入 | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/azure/sdk/dependency-injection)
+- [Azure サービスを使用して .NET アプリケーションを認証する方法 | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/azure/sdk/authentication/)
+- [.NET 用 Azure Identity ライブラリを使用した認証のベスト プラクティス | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/azure/sdk/authentication/best-practices)
 - [.NET 用 Azure Identity ライブラリの資格情報チェーン | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/azure/sdk/authentication/credential-chains)
-- [ローカルでの Azure Storage 開発に Azurite エミュレーターを使用する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/common/storage-use-azurite)
+- [ローカルの Azure Storage 開発に Azurite エミュレーターを使用する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/storage/common/storage-use-azurite)
 - [Unrestricted File Upload | OWASP](https://owasp.org/www-community/vulnerabilities/Unrestricted_File_Upload)
