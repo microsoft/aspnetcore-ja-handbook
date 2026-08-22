@@ -933,7 +933,8 @@ public sealed class UploadValidator(IOptions<FileUploadOptions> options) : IUplo
         if (string.IsNullOrEmpty(extension)
             || !_options.PermittedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
         {
-            return UploadValidationResult.Failure($"拡張子 '{extension}' は許可されていません。");
+            // クライアント由来の値をエラーメッセージにそのまま含めない（後述）
+            return UploadValidationResult.Failure("許可されていない拡張子です。");
         }
 
         using var stream = file.OpenReadStream();
@@ -946,6 +947,9 @@ public sealed class UploadValidator(IOptions<FileUploadOptions> options) : IUplo
     }
 }
 ```
+
+> [!WARNING]
+> 検証に失敗した理由をクライアントへ返すとき、**受け取った値をそのままメッセージに埋め込まないでください**。`file.FileName` は攻撃者が自由に指定でき、`Path.GetExtension` はその内容を検査せずに最後の `.` 以降を返します。たとえば `"a.jpg\"><img src=x onerror=alert(1)>"` というファイル名を送ると、拡張子として `.jpg"><img src=x onerror=alert(1)>` がそのまま返ってきます。これを `$"拡張子 '{extension}' は許可されていません。"` のように応答へ含めると、その応答を `innerHTML` などで画面に描画するクライアントでは **クロスサイトスクリプティング (XSS)** が成立します。300 文字を超える拡張子を送りつけて応答を膨らませることも可能です。メッセージは固定の文言にとどめ、詳しい値はサーバー側のログにだけ記録しましょう。
 
 ### Minimal API での検証（.NET 10 の新機能）
 
