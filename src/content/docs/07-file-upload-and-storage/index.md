@@ -43,7 +43,7 @@ description: "IFormFile によるバッファリング受信と MultipartReader 
 
 ### multipart/form-data の基本
 
-Web ブラウザーからファイルを送信する場合、HTML フォームの `enctype` 属性に `multipart/form-data` を指定します。
+Web ブラウザからファイルを送信する場合、HTML フォームの `enctype` 属性に `multipart/form-data` を指定します。
 このとき HTTP リクエストのボディは、**境界文字列 (boundary)** で区切られた複数の **セクション (section)** の並びになります。各セクションは `Content-Disposition` ヘッダーを持ち、通常のフォーム値かファイルかを判別できます。
 
 ```html
@@ -79,7 +79,7 @@ Content-Type: image/jpeg
 > **他言語との比較**
 > - Spring Boot (Java): `MultipartFile` インターフェイス（`@RequestParam("file") MultipartFile file`）
 > - Django (Python): `request.FILES['file']`（`UploadedFile` オブジェクト）
-> - NestJS (TypeScript): `FileInterceptor` と `@UploadedFile()` デコレーター（内部で multer を使用）
+> - NestJS (TypeScript): `FileInterceptor` と `@UploadedFile()` デコレータ（内部で multer を使用）
 > - Laravel (PHP): `$request->file('file')`（`UploadedFile` オブジェクト）
 > - Gin (Go): `c.FormFile("file")`（`*multipart.FileHeader`）
 >
@@ -228,13 +228,13 @@ Minimal API でも `IFormFile` / `IFormFileCollection` をハンドラーの引�
 
 非フォージェリトークン（antiforgery token、アンチフォージェリトークンとも呼ばれます）は、**クロスサイトリクエストフォージェリ (CSRF) 攻撃** を防ぐための仕組みです。
 
-CSRF とは、利用者が正規サイトにログインした状態のまま攻撃者のページを開くと、そのページに仕込まれたフォームが利用者の Cookie を伴って正規サイトへ送信されてしまう、という攻撃です。ブラウザーは送信先のドメインに紐づく Cookie を自動的に付けるため、サーバーからは正規の利用者による操作と見分けが付きません。ファイルアップロードのエンドポイントがこれを許すと、意図しないファイルを勝手にアップロードされる恐れがあります。
+CSRF とは、利用者が正規サイトにログインした状態のまま攻撃者のページを開くと、そのページに仕込まれたフォームが利用者の Cookie を伴って正規サイトへ送信されてしまう、という攻撃です。ブラウザは送信先のドメインに紐づく Cookie を自動的に付けるため、サーバーからは正規の利用者による操作と見分けが付きません。ファイルアップロードのエンドポイントがこれを許すと、意図しないファイルを勝手にアップロードされる恐れがあります。
 
 これを防ぐため、ASP.NET Core は次の 2 つの値をペアで発行します。
 
 | 値 | 送信経路 | 役割 |
 | --- | --- | --- |
-| Cookie トークン | Cookie | ブラウザーが自動的に送信する |
+| Cookie トークン | Cookie | ブラウザが自動的に送信する |
 | リクエストトークン | フォームの hidden フィールド、または `RequestVerificationToken` ヘッダー | アプリが明示的に埋め込む |
 
 攻撃者のページは正規サイトの HTML を読み取れないため、**リクエストトークンの値を知り得ません**。サーバーは 2 つの値が対になっているかを検証し、対になっていなければリクエストを HTTP 400 で拒否します。
@@ -275,7 +275,7 @@ app.MapPost("/upload", async (IFormFile file, CancellationToken cancellationToke
 app.Run();
 ```
 
-ブラウザーのフォームから送信する場合は、`IAntiforgery` で生成したリクエストトークンを hidden フィールドとして埋め込みます。これが上記 (2) で検証される値です。
+ブラウザのフォームから送信する場合は、`IAntiforgery` で生成したリクエストトークンを hidden フィールドとして埋め込みます。これが上記 (2) で検証される値です。
 
 ```csharp
 app.MapGet("/", (HttpContext context, IAntiforgery antiforgery) =>
@@ -312,7 +312,7 @@ app.MapPost("/api/upload", async (IFormFile file) => { /* ... */ })
 ```
 
 > [!WARNING]
-> `DisableAntiforgery()` は CSRF 保護そのものを無効化します。ブラウザーから Cookie 認証で到達できるエンドポイントには **絶対に使用しないでください**。Bearer トークンやクライアント証明書のように、ブラウザーが自動送信しない資格情報でのみ保護されているエンドポイントに限って使用します。
+> `DisableAntiforgery()` は CSRF 保護そのものを無効化します。ブラウザから Cookie 認証で到達できるエンドポイントには **絶対に使用しないでください**。Bearer トークンやクライアント証明書のように、ブラウザが自動送信しない資格情報でのみ保護されているエンドポイントに限って使用します。
 
 ### 既定のサイズ制限と設定変更
 
@@ -583,7 +583,7 @@ if (!MediaTypeHeaderValue.TryParse(context.Request.ContentType, out var mediaTyp
 ```
 
 > [!TIP]
-> そもそもクライアントがフォーム値を一緒に送る必要がないなら、**multipart を使わない** という選択肢もあります。`PUT /files/{id}` のようにファイルの中身だけをリクエストボディとして送ってもらえば、`Request.Body` がそのままファイルのストリームになるため、解析は一切不要です。ファイル名などのメタデータは URL やヘッダーで渡します。ブラウザーのフォームからではなく、SPA やモバイルアプリ、他システムからのアップロードであれば、この方式が最も単純です。
+> そもそもクライアントがフォーム値を一緒に送る必要がないなら、**multipart を使わない** という選択肢もあります。`PUT /files/{id}` のようにファイルの中身だけをリクエストボディとして送ってもらえば、`Request.Body` がそのままファイルのストリームになるため、解析は一切不要です。ファイル名などのメタデータは URL やヘッダーで渡します。ブラウザのフォームからではなく、SPA やモバイルアプリ、他システムからのアップロードであれば、この方式が最も単純です。
 >
 > ```csharp
 > app.MapPut("/files/{id}", async (string id, HttpContext context, CancellationToken cancellationToken) =>
@@ -656,7 +656,7 @@ public async Task<IActionResult> UploadStream(CancellationToken cancellationToke
 | --- | --- | --- |
 | 実装の容易さ | ◎ モデルバインディングで完結 | △ 自前でセクションを解析する |
 | モデル検証との統合 | ◎ データ注釈が使える（MVC・Minimal API とも） | △ 自前で実装が必要 |
-| メモリ／ディスク消費 | △ ファイルサイズと同時実行数に比例 | ◎ 一定のバッファーのみ |
+| メモリ／ディスク消費 | △ ファイルサイズと同時実行数に比例 | ◎ 一定のバッファのみ |
 | 適したファイルサイズ | 数十 MB 程度まで | 数百 MB 以上 |
 | 適した用途 | プロフィール画像、添付書類 | 動画、バックアップ、大量データ |
 
@@ -1302,7 +1302,7 @@ BLOB には **システムプロパティ** と **ユーザー定義メタデー
 | システムプロパティ | HTTP ヘッダーに対応する既定のプロパティ | `ContentType`、`CacheControl`、`ContentDisposition` |
 | ユーザー定義メタデータ | 任意の名前と値のペア | `uploadedBy`、`originalFileName` |
 
-`Content-Type` を設定しないと、ブラウザーが BLOB の URL を直接開いたときに `application/octet-stream` として扱われ、画像が表示されずダウンロードされてしまいます。アップロード時に `BlobUploadOptions.HttpHeaders` で指定します。
+`Content-Type` を設定しないと、ブラウザが BLOB の URL を直接開いたときに `application/octet-stream` として扱われ、画像が表示されずダウンロードされてしまいます。アップロード時に `BlobUploadOptions.HttpHeaders` で指定します。
 
 ```csharp
 using System.Text;
@@ -2132,7 +2132,7 @@ sequenceDiagram
 >
 > | 方法 | 応答 | 向いている場面 | 注意点 |
 > | --- | --- | --- | --- |
-> | リダイレクト（上の例） | 302 + `Location` ヘッダー | `<a href>` や `<img src>` から直接参照する場合。ブラウザーが自動で追跡する | SAS URL が `Location` ヘッダーに載るため、**リバースプロキシやアクセスログに記録されやすい** |
+> | リダイレクト（上の例） | 302 + `Location` ヘッダー | `<a href>` や `<img src>` から直接参照する場合。ブラウザが自動で追跡する | SAS URL が `Location` ヘッダーに載るため、**リバースプロキシやアクセスログに記録されやすい** |
 > | JSON で返す | 200 + `{ "url": "..." }` | SPA やモバイルアプリから `fetch` で取得する場合 | クライアント側で URL を扱うコードが必要 |
 >
 > 本章の最後に示す完成形のコントローラーでは、API としての利用を想定して後者（JSON で返す）を採用しています。認可チェックの実装を含む全体像は[コントローラーからの利用](#コントローラーからの利用)を参照してください。
