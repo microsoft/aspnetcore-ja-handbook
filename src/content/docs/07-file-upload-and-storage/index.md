@@ -1736,6 +1736,8 @@ public sealed class BlobFileStorage(
 
             return new StoredFile(
                 descriptor.StoragePath,
+                // 非シークストリーム（MultipartReader のセクションなど）ではサイズを取得できない。
+                // 正確な値が必要なら、呼び出し側で数えるか GetPropertiesAsync で取得する
                 descriptor.Content.CanSeek ? descriptor.Content.Length : 0,
                 response.Value.ETag.ToString());
         }
@@ -2006,7 +2008,7 @@ SAS には次の 3 種類があります。
 | **サービス SAS** | ストレージアカウントキー | 単一のサービス内のリソースに限定される。アカウントキーをアプリケーションが保持する必要がある |
 | **ユーザー委任 SAS** | ユーザー委任キー（Microsoft Entra ID 由来） | Blob Storage 専用。アカウントキーが不要で、**推奨** |
 
-ユーザー委任 SAS は、`BlobServiceClient.GetUserDelegationKeyAsync` で取得したキーで署名します。キーの有効期間は最大 7 日間です。
+ユーザー委任 SAS は、`BlobServiceClient.GetUserDelegationKeyAsync` で取得したキーで署名します。キーの有効期間は最大 7 日間で、SAS はキーの有効期限を超えて使えないため、ユーザー委任 SAS の期限も実質的に最大 7 日間です。
 
 > [!IMPORTANT]
 > **ユーザー委任キーが期限切れになると、SAS 自体の有効期限が残っていても認可エラーになります。** キーは取得コストがかかるためキャッシュするのが定石ですが、「キャッシュしたキーが、これから発行する SAS の有効期限まで生きているか」を基準に再利用の可否を判断しなければなりません。単に「キーの期限が数分後より先か」だけで判定すると、残り 5 分のキーで 10 分間有効な SAS を発行してしまい、5 分後に突然 403 が返るという再現しにくい不具合になります。
@@ -2027,6 +2029,12 @@ public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, T
     // 「キーと期限がちぐはぐな組み合わせ」にはならない
     private sealed record CachedKey(UserDelegationKey Key, DateTimeOffset ExpiresOn);
 
+    // キーは SAS の期限より少し長めに取り、キャッシュ判定の余裕 (5 分) を上回るようにする
+    private static readonly TimeSpan KeyMargin = TimeSpan.FromMinutes(10);
+
+    // ユーザー委任キーの有効期間は最大 7 日間。SAS の期限はその余裕分だけ短くなる
+    private static readonly TimeSpan MaxLifetime = TimeSpan.FromDays(7) - KeyMargin;
+
     private CachedKey? _cached;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
 
@@ -2036,6 +2044,9 @@ public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, T
         string? downloadFileName = null,
         CancellationToken cancellationToken = default)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(lifetime, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(lifetime, MaxLifetime);
+
         var key = await GetUserDelegationKeyAsync(lifetime, cancellationToken);
         var now = timeProvider.GetUtcNow();
 
@@ -2100,7 +2111,12 @@ public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, T
             }
 
             var now = timeProvider.GetUtcNow();
-            var expiresOn = now.AddHours(1);
+
+            // これから発行する SAS の期限より確実に長いキーを要求する。
+            // 固定値 (たとえば常に 1 時間) にすると、lifetime が長いときに
+            // 取得直後のキーでも CoversLifetime を満たさず、
+            // 毎回キーを取り直したうえに SAS がキーの期限切れで 403 になる
+            var expiresOn = now.Add(lifetime).Add(KeyMargin);
             Response<UserDelegationKey> response = await serviceClient.GetUserDelegationKeyAsync(
                 now.AddMinutes(-5), expiresOn, cancellationToken);
 
