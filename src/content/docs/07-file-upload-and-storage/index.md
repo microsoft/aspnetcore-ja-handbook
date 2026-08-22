@@ -1157,7 +1157,7 @@ az role assignment create \
 | --- | --- | --- |
 | ストレージ BLOB データ閲覧者 (Storage Blob Data Reader) | 読み取りのみ | ファイルの配信だけを行うアプリ |
 | ストレージ BLOB データ共同作成者 (Storage Blob Data Contributor) | 読み取り・書き込み・削除 | アップロード機能を持つアプリ。本章の例はこれを想定 |
-| ストレージ BLOB 委任者 (Storage Blob Delegator) | ユーザー委任キーの取得 | 後述のユーザー委任 SAS を発行するアプリ。データ用ロールと併せて割り当てる |
+| Storage Blob デリゲータ (Storage Blob Delegator) | ユーザー委任キーの取得 | 後述のユーザー委任 SAS を発行するアプリ。データ用ロールと併せて割り当てる |
 
 > [!TIP]
 > ロールの割り当てが反映されるまで数分かかることがあります。設定直後に `403 Forbidden` が返る場合は、少し待ってから再試行してください。ローカル開発で権限設定が煩雑な場合は、後述の Azurite を使うとロール割り当て自体が不要になります。
