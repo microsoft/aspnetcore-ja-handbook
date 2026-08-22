@@ -192,6 +192,8 @@ public async Task<IActionResult> PostMultiple(
 > MVC コントローラーの `IFormFileCollection` は、**引数名と一致するフィールド名で送られたファイルだけ** を集めます。名前が食い違うと、例外も検証エラーも起きずに **空のコレクション** がバインドされるため、原因に気付きにくい不具合になります。
 >
 > 一方 Minimal API の `IFormFileCollection` は、フィールド名にかかわらず **リクエスト内のすべてのファイル** を返します。同じ型でも挙動が違う点に注意してください。
+>
+> また、1 リクエストで受け取れるフォーム項目数には `FormOptions.ValueCountLimit`（既定 1,024）の上限があります。ファイルもこの数に含まれるため、**1,025 個以上のファイルを一度に送ると HTTP 400 で拒否されます**。大量のファイルを扱う場合は、クライアント側で分割して送るか、この値を引き上げてください。
 
 ファイル以外のフォーム値と組み合わせる場合は、モデルクラスにまとめると読みやすくなります。
 
@@ -330,6 +332,7 @@ flowchart TB
 | `KestrelServerLimits.MaxRequestBodySize` | 30,000,000 バイト（約 28.6 MB） | `BadHttpRequestException` がスローされ HTTP 413 が返る。クライアントが送信を続けた場合は接続がリセットされることもある |
 | `FormOptions.MultipartBodyLengthLimit` | 134,217,728 バイト（128 MB） | `InvalidDataException` がスローされる |
 | `FormOptions.MemoryBufferThreshold` | 65,536 バイト（64 KB） | 超過分はディスク上の一時ファイルへ退避される |
+| `FormOptions.ValueCountLimit` | 1,024 個 | `InvalidDataException` がスローされ HTTP 400 が返る。ファイルもこの個数に含まれる |
 
 アプリケーション全体で上限を変更する場合は `Program.cs` で設定します。
 
