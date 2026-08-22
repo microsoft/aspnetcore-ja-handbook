@@ -279,6 +279,14 @@ app.MapPost("/upload", async (IFormFile file, CancellationToken cancellationToke
 app.Run();
 ```
 
+> [!WARNING]
+> (1) と (2) はどちらも省略できません。省略したときの症状は次のように異なります。
+>
+> | 抜けているもの | 症状 |
+> | --- | --- |
+> | `AddAntiforgery()` | `UseAntiforgery()` の呼び出しで `InvalidOperationException` が発生し、**アプリが起動しません**。ただし `AddRazorPages()` を呼んでいる場合は内部で登録されるため発生しません（`AddControllers()` だけでは登録されません） |
+> | `UseAntiforgery()` | 起動は成功しますが、`IFormFile` や `[FromForm]` にバインドするエンドポイントへリクエストが届いた時点で `InvalidOperationException` が投げられ、**HTTP 500** が返ります |
+
 ブラウザのフォームから送信する場合は、`IAntiforgery` で生成したリクエストトークンを hidden フィールドとして埋め込みます。これが上記 (2) で検証される値です。
 
 ```csharp
@@ -997,7 +1005,8 @@ public class ValidatedUploadRequest
     [Required, StringLength(100)]
     public string Title { get; set; } = "";
 
-    [MaxFileSize(5 * 1024 * 1024)]
+    // [Required] を付けないとファイル未指定のリクエストが検証を通過してしまう（後述）
+    [Required, MaxFileSize(5 * 1024 * 1024)]
     public IFormFile? File { get; set; }
 }
 ```
@@ -1018,6 +1027,9 @@ public class ValidatedUploadRequest
 > `AddValidation()` はソースジェネレーターを使って、**呼び出したアセンブリ内** の検証対象の型を検出します。そのため、Minimal API のエンドポイントを別のアセンブリ（クラスライブラリなど）で定義している場合、ホスト側で `AddValidation()` を呼ぶだけでは検証が実行されず、不正なリクエストがそのまま処理されて 400 ではなく 200 が返ります。この場合は、**エンドポイントを定義しているアセンブリ側に `AddValidation()` を呼ぶ拡張メソッドを作り、それをホストアプリから呼び出します**（ホスト側の `AddValidation()` も併せて呼びます）。そのアセンブリが `Microsoft.NET.Sdk.Web` ベースでない素のクラスライブラリの場合は、`Microsoft.Extensions.Validation` パッケージの参照も追加します。
 >
 > 特定のエンドポイントだけ検証を外したい場合は `DisableValidation()` を使います。
+
+> [!WARNING]
+> `ValidationAttribute` を継承したカスタム属性は、**値が `null` のときには呼ばれません**。`MaxFileSizeAttribute` の `IsValid` も、`value` が `IFormFile` でなければ `true` を返す実装になっています。そのため `[MaxFileSize]` だけを付けたプロパティは「ファイルが送られてきた場合にサイズを検査する」という意味にしかならず、**ファイルを一切送らないリクエストは検証を素通りします**（実際に試すと HTTP 200 が返ります）。ファイルを必須にしたい場合は、②の例のように `[Required]` を併せて指定してください。なお①のように `IFormFile` を単体の引数として受け取る場合は、ファイルが送られてこないとバインド自体が失敗するため、`[Required]` がなくても HTTP 400 が返ります。
 
 > [!WARNING]
 > この方式で検証できるのは、**ファイルがバッファリングされた後** です。5 MB を上限にしていても、100 MB のファイルが送られてくれば、それを受信し終えてから 400 を返すことになります。悪意ある大容量アップロードを入口で遮断するには、[既定のサイズ制限と設定変更](#既定のサイズ制限と設定変更) で説明した `RequestSizeLimit` を併用してください。データ注釈による検証は業務ルールの表明、`RequestSizeLimit` は資源保護、という役割分担になります。
