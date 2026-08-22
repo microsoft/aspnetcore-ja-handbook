@@ -1669,6 +1669,7 @@ public static class StorageServiceCollectionExtensions
 
         // BlobServiceClient は Singleton、ラッパーは Scoped で登録する
         services.AddScoped<IFileStorage, BlobFileStorage>();
+        services.AddScoped<IUploadValidator, UploadValidator>();
 
         // TimeProvider は既定では登録されていないため、明示的に登録する
         services.TryAddSingleton(TimeProvider.System);
