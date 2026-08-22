@@ -1825,6 +1825,7 @@ BLOB 名（保存先パス）の設計は、後からの変更が困難です。
 
 ```csharp
 using Microsoft.Extensions.Options;
+using System.Globalization;
 
 namespace FileUploadSample.Storage;
 
@@ -1852,8 +1853,13 @@ public sealed class StoragePathBuilder(
 
         var id = Guid.CreateVersion7(now).ToString("N");
 
+        // 日付の書式はカルチャに依存させない。
+        // 書式指定子 yyyy は実行環境のカレンダーに従うため、たとえばタイ語環境では
+        // 2026 年が 2569 年（仏暦）になり、同じ日時から別のパスが生成されてしまう
+        var yearMonth = now.ToString("yyyy/MM", CultureInfo.InvariantCulture);
+
         // BLOB 名は、アプリケーションが生成した値と検証済みの拡張子だけで組み立てる
-        return $"{category}/{tenantId}/{now:yyyy}/{now:MM}/{id}{extension}";
+        return $"{category}/{tenantId}/{yearMonth}/{id}{extension}";
     }
 }
 ```
