@@ -616,7 +616,7 @@ if (contentDisposition is not null && contentDisposition.IsFileDisposition())
     var blobClient = containerClient.GetBlobClient($"{Guid.NewGuid():N}.bin");
 
     // 受信ストリームを、そのまま Blob Storage へ流し込む
-    await blobClient.UploadAsync(section.Body, cancellationToken);
+    await blobClient.UploadAsync(section.Body, overwrite: false, cancellationToken);
 }
 ```
 
