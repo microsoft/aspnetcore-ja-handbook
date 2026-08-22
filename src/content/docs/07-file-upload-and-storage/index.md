@@ -458,7 +458,7 @@ builder.Services.Configure<IISServerOptions>(options =>
 | `Limits.MinRequestBodyDataRate` | 240 バイト/秒、猶予期間 5 秒 | リクエストボディの受信速度の下限 |
 | `Limits.MinResponseDataRate` | 240 バイト/秒、猶予期間 5 秒 | 応答の送信速度の下限 |
 
-猶予期間は TCP スロースタートを考慮したもので、この間は速度が測定されません。実際に速度を変えてアップロードすると、次のように挙動が分かれます。
+猶予期間は、TCP 接続の開始直後は転送速度が徐々にしか上がらない（TCP スロースタート）ことを考慮したもので、この間は速度が測定されません。実際に速度を変えてアップロードすると、次のように挙動が分かれます。
 
 | クライアントの送信速度 | 結果 |
 | --- | --- |
@@ -1608,6 +1608,18 @@ public sealed record StoredFile(string StoragePath, long Length, string ETag);
 > [!TIP]
 > インターフェイスからは `BlobClient` や `Stream` 以外の Azure 固有の型を排除します。こうすることで、上位のサービス層は Azure SDK への参照を持たずに済み、テストではインメモリ実装に差し替えられます。
 
+> [!NOTE]
+> この抽象化は、他のクラウドストレージへの移行にも効きます。オブジェクトストレージはどれも「キーを指定してストリームを保存し、キーで取得する」という同じモデルなので、`IFileStorage` の実装を差し替えるだけで対応できます。
+>
+> | サービス | .NET SDK のパッケージ | 「コンテナー」に相当する概念 |
+> | --- | --- | --- |
+> | Azure Blob Storage | `Azure.Storage.Blobs` | コンテナー |
+> | Amazon S3 | `AWSSDK.S3` | バケット |
+> | Google Cloud Storage | `Google.Cloud.Storage.V1` | バケット |
+> | MinIO（自己ホスト、S3 互換） | `AWSSDK.S3` または `Minio` | バケット |
+>
+> 一時的なアクセス URL を発行する仕組みも、Azure の SAS、S3 と MinIO の署名付き URL (Presigned URL)、Google Cloud Storage の署名付き URL と、いずれのサービスにも用意されています。そのため `CreateReadUrlAsync` も共通のインターフェイスとして表現できます。
+
 ### Blob Storage 実装
 
 ```csharp
@@ -1774,7 +1786,7 @@ BLOB 名（保存先パス）の設計は、後からの変更が困難です。
 
 | 観点 | 指針 |
 | --- | --- |
-| **一意性** | GUID や ULID を含め、衝突しない名前にする |
+| **一意性** | GUID や ULID（時刻順にソートできる 26 文字の識別子）を含め、衝突しない名前にする |
 | **推測困難性** | 連番は避ける。URL を推測して他人のファイルを取得されるリスクを減らす |
 | **分散** | 先頭に日付やハッシュを置き、名前が特定のプレフィックスに集中しないようにする |
 | **論理的な区分** | テナント ID、ユーザー ID、用途を階層に含めて運用しやすくする |
