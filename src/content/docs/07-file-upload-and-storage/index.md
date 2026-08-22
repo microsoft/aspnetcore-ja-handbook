@@ -717,10 +717,19 @@ public static class FileSignatureValidator
 var path = Path.Combine(uploadDirectory, file.FileName);
 
 // ✅ 安全: アプリケーションが生成した名前を使用し、拡張子だけを引き継ぐ
+// ただし拡張子もクライアント由来なので、許可リストの検証を通したものだけを使う
+if (!IsPermittedExtension(file.FileName))
+{
+    return BadRequest("許可されていない拡張子です。");
+}
+
 var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
 var storedName = $"{Guid.NewGuid():N}{extension}";
 var path = Path.Combine(uploadDirectory, storedName);
 ```
+
+> [!WARNING]
+> `Path.GetExtension` は `../../etc/passwd` のようなパス区切り文字を含む入力に対しては空文字列を返すため、パストラバーサルは防げます。しかし `shell.aspx` や `web.config` のような文字列を渡せば、拡張子として `.aspx` や `.config` がそのまま返ります。**許可リストの検証を省略すると、実行可能なファイルや設定ファイルとして解釈される名前で保存されてしまいます**。
 
 元のファイル名を画面に表示したい場合は、**表示用の名前としてデータベースに保持** し、表示時に HTML エンコードします。Razor は既定で出力を HTML エンコードするため安全ですが、Razor 以外で出力する場合は `WebUtility.HtmlEncode` を明示的に呼び出します。
 
@@ -1194,7 +1203,15 @@ private static string ResolveContentType(string fileName)
 ```
 
 > [!WARNING]
-> メタデータの名前と値は **有効な HTTP ヘッダー** である必要があります。ASCII 以外の文字（日本語のファイル名など）をそのまま設定すると、リクエストが失敗したり文字化けしたりします。上記の例のように Base64 エンコードするか、日本語を含む情報はデータベース側で管理してください。
+> メタデータのキー名には、HTTP ヘッダーよりも **厳しい制約** があります。HTTP ヘッダー名では一般的なハイフンが使えない点に注意してください。
+>
+> | 対象 | 規則 | ✅ 有効な例 | ❌ 無効な例 |
+> | --- | --- | --- | --- |
+> | キー名 | 英字またはアンダースコアで始まり、以降は英数字とアンダースコアのみ（ASCII） | `uploadedAt`／`_uploadedAt` | `uploaded-at`（ハイフン）／`1st`（数字始まり） |
+> | 値 | ASCII のみ | `2026-01-01` | `報告書.pdf`（日本語） |
+> | 全体 | 1 つの BLOB につき合計 8 KB まで | — | — |
+>
+> 規則に反するキー名を指定すると `RequestFailedException`（`The metadata specified is invalid. It has characters that are not permitted.`）が発生し、値に ASCII 以外を含めると HTTP ヘッダーを組み立てる段階で `Request headers must contain only ASCII characters.` となります。日本語のファイル名などは、上記の例のように Base64 エンコードして保存するか、データベース側で管理してください。
 
 アップロード後にメタデータを更新したり読み取ったりする場合は、`SetMetadataAsync` と `GetPropertiesAsync` を使います。
 
@@ -1578,6 +1595,7 @@ public sealed class BlobFileStorage(
 ```csharp
 using Azure.Identity;
 using Microsoft.Extensions.Azure;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace FileUploadSample.Storage;
 
@@ -1600,6 +1618,10 @@ public static class StorageServiceCollectionExtensions
 
         // BlobServiceClient は Singleton、ラッパーは Scoped で登録する
         services.AddScoped<IFileStorage, BlobFileStorage>();
+
+        // TimeProvider は既定では登録されていないため、明示的に登録する
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddSingleton<IStoragePathBuilder, StoragePathBuilder>();
 
         return services;
     }
@@ -1638,6 +1660,8 @@ BLOB 名（保存先パス）の設計は、後からの変更が困難です。
 ```
 
 ```csharp
+using Microsoft.Extensions.Options;
+
 namespace FileUploadSample.Storage;
 
 public interface IStoragePathBuilder
@@ -1645,25 +1669,36 @@ public interface IStoragePathBuilder
     string Build(string category, string tenantId, string originalFileName);
 }
 
-public sealed class StoragePathBuilder(TimeProvider timeProvider) : IStoragePathBuilder
+public sealed class StoragePathBuilder(
+    TimeProvider timeProvider,
+    IOptions<FileUploadOptions> options) : IStoragePathBuilder
 {
     public string Build(string category, string tenantId, string originalFileName)
     {
         var now = timeProvider.GetUtcNow();
         var extension = Path.GetExtension(originalFileName).ToLowerInvariant();
+
+        // 拡張子もクライアント由来なので、そのまま BLOB 名に含めてはいけない。
+        // 検証済みの値だけを受け入れる（多層防御。通常は上流の UploadValidator で弾かれる）
+        if (!options.Value.PermittedExtensions.Contains(extension))
+        {
+            throw new ArgumentException(
+                $"許可されていない拡張子です: {extension}", nameof(originalFileName));
+        }
+
         var id = Guid.CreateVersion7().ToString("N");
 
-        // BLOB 名にクライアント由来の文字列を含めない
+        // BLOB 名は、アプリケーションが生成した値と検証済みの拡張子だけで組み立てる
         return $"{category}/{tenantId}/{now:yyyy}/{now:MM}/{id}{extension}";
     }
 }
 ```
 
+> [!WARNING]
+> BLOB 名にクライアント由来のファイル名を含めてはいけません。`Path.GetExtension` は最後の `.` 以降をそのまま返すだけなので、`report.b?c` を渡せば `?` が、`report.` + 300 文字を渡せば 300 文字の「拡張子」が返ります。BLOB 名の上限は 1,024 文字であり、これを超えるとアップロードが失敗します。また、`?` や `#` は SDK が生成する URI では自動的にパーセントエンコードされますが、BLOB 名をデータベースに保存して後から自前で URL を組み立てる運用では、クエリ文字列やフラグメントとして解釈されて壊れます。元のファイル名はメタデータやデータベースに保持し、ダウンロード時に `Content-Disposition` ヘッダーで返してください。
+
 > [!TIP]
 > .NET 9 以降では `Guid.CreateVersion7()` が利用できます。UUID v7 は生成時刻順にソート可能なため、時系列に沿った BLOB 名になり、一覧取得やライフサイクル管理と相性が良くなります。`TimeProvider` を注入しておくと、テストで時刻を固定できます。
-
-> [!WARNING]
-> BLOB 名にクライアント由来のファイル名を含めてはいけません。パス区切り文字やパーセントエンコーディングを悪用され、意図しない場所へ書き込まれる可能性があります。元のファイル名はメタデータやデータベースに保持し、ダウンロード時に `Content-Disposition` ヘッダーで返します。
 
 ### 公開と非公開のアクセス制御
 
@@ -1708,7 +1743,9 @@ public async Task<IActionResult> Download(Guid id, CancellationToken cancellatio
         return NotFound();
     }
 
-    // 元のファイル名でダウンロードさせる
+    // 元のファイル名でダウンロードさせる。
+    // File ヘルパーが Content-Disposition ヘッダーを組み立てるため、
+    // 日本語のファイル名もフレームワーク側で正しくエンコードされる。
     return File(stream, record.ContentType, record.OriginalFileName);
 }
 ```
@@ -1734,6 +1771,7 @@ using Azure;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using Azure.Storage.Sas;
+using Microsoft.Net.Http.Headers;
 
 public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, TimeProvider timeProvider)
 {
@@ -1765,7 +1803,13 @@ public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, T
 
         if (downloadFileName is not null)
         {
-            sasBuilder.ContentDisposition = $"attachment; filename=\"{downloadFileName}\"";
+            // ファイル名をそのまま文字列連結してはいけない。
+            // 日本語などの ASCII 以外を含むと不正なヘッダーになり、応答が壊れる。
+            // SetHttpFileName が RFC 6266 に従って
+            // ASCII 版 (filename) と UTF-8 版 (filename*) の両方を組み立ててくれる。
+            var contentDisposition = new ContentDispositionHeaderValue("attachment");
+            contentDisposition.SetHttpFileName(downloadFileName);
+            sasBuilder.ContentDisposition = contentDisposition.ToString();
         }
 
         var uriBuilder = new BlobUriBuilder(blobClient.Uri)
