@@ -1871,12 +1871,12 @@ BLOB 名（保存先パス）の設計は、後からの変更が困難です。
 | **ライフサイクル管理** | 日付をパスに含めると、有効期限に基づく削除ポリシーを適用しやすい |
 
 ```text
-{用途}/{テナントID}/{yyyy}/{MM}/{一意なID}{拡張子}
+{用途}/{区分ID}/{yyyy}/{MM}/{一意なID}{拡張子}
 
 例: avatars/tenant-a1b2/2026/08/01a004c1b9c07c2e9d4f6a8b0c1d2e3f.jpg
 
   用途      : avatars
-  テナントID : tenant-a1b2
+  区分ID     : tenant-a1b2（テナント ID やユーザー ID など、ファイルを分ける単位）
   年/月     : 2026/08
   一意なID   : 01a004c1b9c07c2e9d4f6a8b0c1d2e3f （Guid.CreateVersion7() の "N" 書式）
   拡張子     : .jpg
@@ -1890,14 +1890,15 @@ namespace FileUploadSample.Storage;
 
 public interface IStoragePathBuilder
 {
-    string Build(string category, string tenantId, string originalFileName);
+    /// <param name="scopeId">ファイルを区分する単位の識別子。テナント ID やユーザー ID を指定する。</param>
+    string Build(string category, string scopeId, string originalFileName);
 }
 
 public sealed class StoragePathBuilder(
     TimeProvider timeProvider,
     IOptions<FileUploadOptions> options) : IStoragePathBuilder
 {
-    public string Build(string category, string tenantId, string originalFileName)
+    public string Build(string category, string scopeId, string originalFileName)
     {
         var now = timeProvider.GetUtcNow();
         var extension = Path.GetExtension(originalFileName).ToLowerInvariant();
@@ -1918,7 +1919,7 @@ public sealed class StoragePathBuilder(
         var yearMonth = now.ToString("yyyy/MM", CultureInfo.InvariantCulture);
 
         // BLOB 名は、アプリケーションが生成した値と検証済みの拡張子だけで組み立てる
-        return $"{category}/{tenantId}/{yearMonth}/{id}{extension}";
+        return $"{category}/{scopeId}/{yearMonth}/{id}{extension}";
     }
 }
 ```
@@ -1957,7 +1958,7 @@ Blob Storage への匿名アクセス（公開読み取り）は、既定で **�
 
 ```csharp
 [HttpGet("{id:guid}/content")]
-public async Task<IActionResult> Download(Guid id, CancellationToken cancellationToken)
+public async Task<IActionResult> DownloadThroughApp(Guid id, CancellationToken cancellationToken)
 {
     var record = await _dbContext.UploadedFiles.FindAsync([id], cancellationToken);
     if (record is null)
@@ -2114,7 +2115,7 @@ public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, T
 
 ```csharp
 [HttpGet("{id:guid}/download")]
-public async Task<IActionResult> Download(Guid id, CancellationToken cancellationToken)
+public async Task<IActionResult> RedirectToSasUrl(Guid id, CancellationToken cancellationToken)
 {
     var record = await _dbContext.UploadedFiles.FindAsync([id], cancellationToken);
     if (record is null)
@@ -2276,6 +2277,7 @@ public class FilesController(
 
         var ownerId = User.FindFirstValue(ClaimTypes.NameIdentifier)
             ?? throw new InvalidOperationException("ユーザー ID を特定できません。");
+        // 第 2 引数はファイルを区分する単位。ここではユーザーごとに分けるため ownerId を渡す
         var storagePath = pathBuilder.Build("uploads", ownerId, file.FileName);
         var contentType = ResolveContentType(file.FileName);
 
