@@ -753,6 +753,21 @@ var path = Path.Combine(uploadDirectory, storedName);
 > [!WARNING]
 > `Path.GetExtension` は `../../etc/passwd` のようなパス区切り文字を含む入力に対しては空文字列を返すため、パストラバーサルは防げます。しかし `shell.aspx` や `web.config` のような文字列を渡せば、拡張子として `.aspx` や `.config` がそのまま返ります。**許可リストの検証を省略すると、実行可能なファイルや設定ファイルとして解釈される名前で保存されてしまいます**。
 
+ファイル名だけでなく、**保存先ディレクトリの選び方** も重要です。アップロードされたファイルは、`wwwroot` の配下に置いてはいけません。`wwwroot` は `UseStaticFiles()` によって誰でもダウンロードできる公開領域だからです。
+
+実際に `wwwroot/uploads/` へファイルを置いて確認すると、次のようになります。
+
+| 保存したファイル | 応答 | 理由 |
+| --- | --- | --- |
+| `a.txt` | HTTP 200（`text/plain`） | 既定の MIME 辞書にあるため配信される |
+| `x.exe` | HTTP 200（`application/vnd.microsoft.portable-executable`） | **実行可能ファイルも既定の MIME 辞書にあるため配信される** |
+| `shell.aspx` | HTTP 404 | MIME 辞書にない拡張子は既定では配信されない |
+| `web.config` | HTTP 404 | 同上 |
+
+`.aspx` が 404 になるのは、静的ファイルミドルウェアが既定で未知の拡張子を配信しない（`ServeUnknownFileTypes` が `false`）ためであり、Kestrel が `.aspx` を実行することはありません。しかし `.exe` のようにマルウェアそのものになりうるファイルは、そのまま公開ダウンロードできてしまいます。攻撃者がマルウェアをアップロードし、その URL を第三者に配布すれば、あなたのドメインがマルウェア配布の踏み台になります。
+
+保存先は、アプリケーションの配置ディレクトリの外にある専用領域とし、可能であれば実行権限を外してください。**本章で推奨する Azure Blob Storage への保存は、そもそもアプリケーションのファイルシステムと切り離されているため、この問題を構造的に回避できます**。
+
 元のファイル名を画面に表示したい場合は、**表示用の名前としてデータベースに保持** し、表示時に HTML エンコードします。Razor は既定で出力を HTML エンコードするため安全ですが、Razor 以外で出力する場合は `WebUtility.HtmlEncode` を明示的に呼び出します。
 
 サイズ上限は構成から読み込み、`IOptions<T>` で注入するのが定石です（構成の詳細は[第5章：アプリ設定 (Configuration)](../05-configuration/index.md)、DI の詳細は[第6章：依存性注入 (DI)](../06-dependency-injection/index.md)を参照）。
