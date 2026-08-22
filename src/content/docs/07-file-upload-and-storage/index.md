@@ -1857,12 +1857,12 @@ BLOB 名（保存先パス）の設計は、後からの変更が困難です。
 ```text
 {用途}/{テナントID}/{yyyy}/{MM}/{一意なID}{拡張子}
 
-例: avatars/tenant-a1b2/2026/08/0198f3c17a5b7c2e9d4f6a8b0c1d2e3f.jpg
+例: avatars/tenant-a1b2/2026/08/01a004c1b9c07c2e9d4f6a8b0c1d2e3f.jpg
 
   用途      : avatars
   テナントID : tenant-a1b2
   年/月     : 2026/08
-  一意なID   : 0198f3c17a5b7c2e9d4f6a8b0c1d2e3f （Guid.CreateVersion7() の "N" 書式）
+  一意なID   : 01a004c1b9c07c2e9d4f6a8b0c1d2e3f （Guid.CreateVersion7() の "N" 書式）
   拡張子     : .jpg
 ```
 
