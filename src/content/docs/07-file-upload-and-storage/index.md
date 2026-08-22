@@ -598,7 +598,9 @@ public sealed class DisableFormValueModelBindingAttribute : Attribute, IResource
 ```
 
 > [!NOTE]
-> `Request.Form` や `IFormFile` にアクセスした時点でフレームワークがボディ全体を読み込んでしまうため、ストリーミングを行うアクションではこれらに触れてはいけません。フォーム値が必要な場合は、`MultipartReader` で読み取ったセクションから自前で組み立てます。
+> このフィルターは省略できません。MVC では、アクションが `Request.Form` や `IFormFile` に触れなくても、**モデルバインディングの段階でフォームの値プロバイダーがボディを読み切ってしまう** ためです。フィルターを外して `MultipartReader` で読もうとすると、`IOException`（`Unexpected end of Stream, the content may have already been read by another component.`）が発生します。
+>
+> ストリーミングを行うアクションでは、あわせて `Request.Form` や `IFormFile` にも触れないでください。フォーム値が必要な場合は、`MultipartReader` で読み取ったセクションから自前で組み立てます。
 
 ### 受信方式の選択指針
 
