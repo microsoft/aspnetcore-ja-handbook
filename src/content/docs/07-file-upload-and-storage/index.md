@@ -833,6 +833,9 @@ var path = Path.Combine(uploadDirectory, storedName);
 
 元のファイル名を画面に表示したい場合は、**表示用の名前としてデータベースに保持** し、表示時に HTML エンコードします。Razor は既定で出力を HTML エンコードするため安全ですが、Razor 以外で出力する場合は `WebUtility.HtmlEncode` を明示的に呼び出します。
 
+> [!WARNING]
+> 保持する前に、**ファイル名の長さも制限してください**。ASP.NET Core が制限しているのは multipart の各パートのヘッダー全体の大きさ（`FormOptions.MultipartHeadersLengthLimit`、既定 16,384 バイト）だけです。実際に試すと、**16,000 文字のファイル名はそのまま受け付けられ**、20,000 文字でようやく HTTP 400 になります。この値をそのままデータベースへ保存するとレコードが肥大化し、後述の SAS URL で元のファイル名を `Content-Disposition` に載せる場合は URL 自体も巨大になります。OWASP は拡張子を含めて 255 文字未満に収めることを推奨しています。上限を超えるものは切り詰めるか、拒否しましょう。
+
 サイズ上限は構成から読み込み、`IOptions<T>` で注入するのが定石です（構成の詳細は[第5章：アプリ設定 (Configuration)](../05-configuration/index.md)、DI の詳細は[第6章：依存性注入 (DI)](../06-dependency-injection/index.md)を参照）。
 
 ```json
