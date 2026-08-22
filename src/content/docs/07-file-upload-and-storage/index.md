@@ -1464,6 +1464,11 @@ public sealed class ArchiveService(IAzureClientFactory<BlobServiceClient> client
 }
 ```
 
+> [!WARNING]
+> **すべてのクライアントに名前を付けると、名前なしの `BlobServiceClient` は DI から解決できなくなります**。この状態で `BlobServiceClient` をコンストラクターで直接受け取ろうとすると、`InvalidOperationException`（`No service for type 'Azure.Storage.Blobs.BlobServiceClient' has been registered.`）が発生します。
+>
+> 名前付き登録と併用したい場合は、既定として使うものを `WithName` なしで **もう一度登録** するか、後述の `BlobFileStorage` のようなクラス側を `IAzureClientFactory<BlobServiceClient>` を受け取る形に変更してください。
+
 > [!NOTE]
 > **他言語との比較**
 > - Spring Boot (Java): `spring-cloud-azure-starter-storage-blob` が `BlobServiceClient` を Bean として自動構成する
@@ -1709,7 +1714,7 @@ public sealed class StoragePathBuilder(
                 $"許可されていない拡張子です: {extension}", nameof(originalFileName));
         }
 
-        var id = Guid.CreateVersion7().ToString("N");
+        var id = Guid.CreateVersion7(now).ToString("N");
 
         // BLOB 名は、アプリケーションが生成した値と検証済みの拡張子だけで組み立てる
         return $"{category}/{tenantId}/{now:yyyy}/{now:MM}/{id}{extension}";
@@ -1721,7 +1726,11 @@ public sealed class StoragePathBuilder(
 > BLOB 名にクライアント由来のファイル名を含めてはいけません。`Path.GetExtension` は最後の `.` 以降をそのまま返すだけなので、`report.b?c` を渡せば `?` が、`report.` + 300 文字を渡せば 300 文字の「拡張子」が返ります。BLOB 名の上限は 1,024 文字であり、これを超えるとアップロードが失敗します。また、`?` や `#` は SDK が生成する URI では自動的にパーセントエンコードされますが、BLOB 名をデータベースに保存して後から自前で URL を組み立てる運用では、クエリ文字列やフラグメントとして解釈されて壊れます。元のファイル名はメタデータやデータベースに保持し、ダウンロード時に `Content-Disposition` ヘッダーで返してください。
 
 > [!TIP]
-> .NET 9 以降では `Guid.CreateVersion7()` が利用できます。UUID v7 は生成時刻順にソート可能なため、時系列に沿った BLOB 名になり、一覧取得やライフサイクル管理と相性が良くなります。`TimeProvider` を注入しておくと、テストで時刻を固定できます。
+> .NET 9 以降では `Guid.CreateVersion7()` が利用できます。UUID v7 は先頭に生成時刻（ミリ秒）を含むため、文字列としてソートするとおおむね時系列順に並び、一覧取得やライフサイクル管理と相性が良くなります。`TimeProvider` を注入しておくと、テストで時刻を固定できます。
+>
+> ただし、**同一ミリ秒内に生成した値どうしの順序は保証されません**（残りのビットは乱数のため）。実測でも、連続生成した 2 個が昇順になる割合はおよそ半分でした。厳密な生成順が必要な場合は、データベース側の連番やタイムスタンプ列で順序付けしてください。
+>
+> なお、引数なしの `Guid.CreateVersion7()` は **システムクロックを直接読む** ため、`TimeProvider` を注入しても値の時刻部分は固定できません。テストで時刻を固定したい場合は、`Guid.CreateVersion7(timeProvider.GetUtcNow())` のように時刻を渡すオーバーロードを使います。
 
 ### 公開と非公開のアクセス制御
 
