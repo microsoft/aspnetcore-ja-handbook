@@ -605,6 +605,18 @@ public sealed class DisableFormValueModelBindingAttribute : Attribute, IResource
 >
 > ストリーミングを行うアクションでは、あわせて `Request.Form` や `IFormFile` にも触れないでください。フォーム値が必要な場合は、`MultipartReader` で読み取ったセクションから自前で組み立てます。
 
+適用は、ストリーミングを行うアクション（またはコントローラー）に属性を付けるだけです。`[RequestSizeLimit]` や `[DisableRequestSizeLimit]` と併用する場合も、同じように属性として並べます。
+
+```csharp
+[HttpPost("stream")]
+[DisableFormValueModelBinding]
+[RequestSizeLimit(500 * 1024 * 1024)]
+public async Task<IActionResult> UploadStream(CancellationToken cancellationToken)
+{
+    // Request.Body を MultipartReader で直接読み取る
+}
+```
+
 ### 受信方式の選択指針
 
 | 観点 | バッファリング（`IFormFile`） | ストリーミング（`MultipartReader`） |
