@@ -132,7 +132,9 @@ namespace FileUploadSample.Controllers;
 [Route("api/[controller]")]
 public class UploadsController : ControllerBase
 {
-    // フォームの <input name="file"> と引数名 file を一致させる
+    // フォームの <input name="file"> と引数名 file を一致させる。
+    // なお、このコントローラーの URL は [Route] により /api/uploads になるため、
+    // 前掲のフォームを使うなら action もそれに合わせる
     [HttpPost]
     public async Task<IActionResult> Post(IFormFile file, CancellationToken cancellationToken)
     {
