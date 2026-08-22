@@ -239,7 +239,7 @@ CSRF とは、利用者が正規サイトにログインした状態のまま攻
 
 攻撃者のページは正規サイトの HTML を読み取れないため、**リクエストトークンの値を知り得ません**。サーバーは 2 つの値が対になっているかを検証し、対になっていなければリクエストを HTTP 400 で拒否します。
 
-他言語のフレームワークにも同じ仕組みがあります。Django の `{% csrf_token %}` と `CsrfViewMiddleware`、Laravel の `@csrf` と `ValidateCsrfToken` ミドルウェア（Laravel 10 以前の `VerifyCsrfToken` が改名されたもの）、Spring Security の `CsrfToken` に相当します。
+他言語のフレームワークにも同じ仕組みがあります。Django の `{% csrf_token %}` と `CsrfViewMiddleware`、Laravel の `@csrf` と CSRF 対策ミドルウェア（Laravel 13 の `PreventRequestForgery`、12 以前の `ValidateCsrfToken`）、Spring Security の `CsrfToken` に相当します。
 
 ASP.NET Core では、`AddAntiforgery()` でサービスを登録し、`UseAntiforgery()` ミドルウェアをパイプラインに追加することで有効になります。Minimal API では、このミドルウェアが `IFormFile` や `[FromForm]` にバインドするエンドポイントを自動的に検証対象とするため、**アプリ側に検証コードを書く必要はありません**。
 
