@@ -1660,6 +1660,13 @@ public static class StorageServiceCollectionExtensions
                 .ValidateDataAnnotations()
                 .ValidateOnStart();
 
+        // StoragePathBuilder と UploadValidator が依存するため、
+        // FileUploadOptions の登録もこの拡張メソッドにまとめる
+        services.AddOptions<FileUploadOptions>()
+                .Bind(configuration.GetSection(FileUploadOptions.SectionName))
+                .ValidateDataAnnotations()
+                .ValidateOnStart();
+
         // BlobServiceClient は Singleton、ラッパーは Scoped で登録する
         services.AddScoped<IFileStorage, BlobFileStorage>();
 
