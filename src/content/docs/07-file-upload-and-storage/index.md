@@ -2084,16 +2084,17 @@ public class FilesController(
         var stored = await fileStorage.SaveAsync(descriptor, cancellationToken);
 
         // ③ メタデータをデータベースへ登録
+        var now = timeProvider.GetUtcNow();
         var record = new UploadedFile
         {
-            Id = Guid.CreateVersion7(),
+            Id = Guid.CreateVersion7(now),
             OriginalFileName = file.FileName,
             ContentType = contentType,
             Length = file.Length,
             StoragePath = stored.StoragePath,
             OwnerId = ownerId,
             ScanStatus = ScanStatus.Pending,
-            CreatedAt = timeProvider.GetUtcNow(),
+            CreatedAt = now,
         };
 
         dbContext.UploadedFiles.Add(record);
