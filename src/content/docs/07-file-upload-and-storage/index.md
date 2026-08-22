@@ -43,7 +43,7 @@ description: "IFormFile によるバッファリング受信と MultipartReader 
 
 ### multipart/form-data の基本
 
-Web ブラウザーからファイルを送信する場合、HTML フォームの `enctype` 属性に `multipart/form-data` を指定します。  
+Web ブラウザーからファイルを送信する場合、HTML フォームの `enctype` 属性に `multipart/form-data` を指定します。
 このとき HTTP リクエストのボディは、**境界文字列 (boundary)** で区切られた複数の **セクション (section)** の並びになります。各セクションは `Content-Disposition` ヘッダーを持ち、通常のフォーム値かファイルかを判別できます。
 
 ```html
@@ -705,6 +705,11 @@ public static class FileSignatureValidator
 }
 ```
 
+> [!WARNING]
+> このメソッドは、**シグネチャ辞書に載っていない拡張子に対して `false` を返します**。したがって、後述の許可拡張子リストに `.txt` や `.csv` のような項目を追加しただけでは、その形式のアップロードはすべて「内容が拡張子と一致しません」で拒否されます。
+>
+> テキスト系のように固定のシグネチャを持たない形式は、そもそもこの方法では判定できません。許可リストを増やすときは、**シグネチャ辞書にも対応する定義を追加する**か、シグネチャを持たない拡張子は検証をスキップする（`TryGetValue` が失敗したら `true` を返す）かを、形式ごとに決めてください。後者を選ぶ場合、その拡張子については中身の検証が効かなくなる点に注意します。
+
 > [!NOTE]
 > シグネチャ検証は「拡張子と中身が一致するか」を確かめるだけであり、**ファイルが安全であることを保証しません**。正しい JPEG ヘッダーを持つ悪意あるファイルは作成可能です。ウイルススキャンと併用してください。
 
@@ -796,46 +801,46 @@ using Microsoft.Extensions.Options;
 
 public interface IUploadValidator
 {
-    ValidationResult Validate(IFormFile file);
+    UploadValidationResult Validate(IFormFile file);
 }
 
-public sealed record ValidationResult(bool IsValid, string? ErrorMessage)
+public sealed record UploadValidationResult(bool IsValid, string? ErrorMessage)
 {
-    public static ValidationResult Success { get; } = new(true, null);
+    public static UploadValidationResult Success { get; } = new(true, null);
 
-    public static ValidationResult Failure(string message) => new(false, message);
+    public static UploadValidationResult Failure(string message) => new(false, message);
 }
 
 public sealed class UploadValidator(IOptions<FileUploadOptions> options) : IUploadValidator
 {
     private readonly FileUploadOptions _options = options.Value;
 
-    public ValidationResult Validate(IFormFile file)
+    public UploadValidationResult Validate(IFormFile file)
     {
         if (file.Length == 0)
         {
-            return ValidationResult.Failure("ファイルが空です。");
+            return UploadValidationResult.Failure("ファイルが空です。");
         }
 
         if (file.Length > _options.MaxFileSizeBytes)
         {
-            return ValidationResult.Failure(
+            return UploadValidationResult.Failure(
                 $"ファイルサイズが上限（{_options.MaxFileSizeBytes:N0} バイト）を超えています。");
         }
 
         var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
         if (string.IsNullOrEmpty(extension) || !_options.PermittedExtensions.Contains(extension))
         {
-            return ValidationResult.Failure($"拡張子 '{extension}' は許可されていません。");
+            return UploadValidationResult.Failure($"拡張子 '{extension}' は許可されていません。");
         }
 
         using var stream = file.OpenReadStream();
         if (!FileSignatureValidator.IsValidSignature(stream, extension))
         {
-            return ValidationResult.Failure("ファイルの内容が拡張子と一致しません。");
+            return UploadValidationResult.Failure("ファイルの内容が拡張子と一致しません。");
         }
 
-        return ValidationResult.Success;
+        return UploadValidationResult.Success;
     }
 }
 ```
@@ -1112,6 +1117,23 @@ public static async Task<Uri> UploadAsync(
 ```
 
 `UploadAsync` は、データサイズと転送オプションに応じて、単一の `Put Blob` 操作を行うか、`Put Block` を複数回実行してから `Put Block List` でコミットするかを自動的に選択します。大きなファイルの並列転送を制御したい場合は `StorageTransferOptions` を指定します。
+
+> [!IMPORTANT]
+> **コンテナーは自動では作成されません**。存在しないコンテナーへアップロードすると、`RequestFailedException`（`Status: 404`、`ErrorCode: ContainerNotFound`）が発生します。
+>
+> コンテナーは Bicep や Terraform などのインフラ定義で事前に作成しておくのが原則です。アプリケーション側で用意したい場合は、**起動時に一度だけ** 作成を試みます。
+>
+> ```csharp
+> // Program.cs（app.Run() の前）
+> using (var scope = app.Services.CreateScope())
+> {
+>     var serviceClient = scope.ServiceProvider.GetRequiredService<BlobServiceClient>();
+>     var container = serviceClient.GetBlobContainerClient("uploads");
+>     await container.CreateIfNotExistsAsync();
+> }
+> ```
+>
+> リクエストのたびに `CreateIfNotExistsAsync` を呼ぶのは避けてください。毎回 `Get Container Properties` 相当のラウンドトリップが増えるうえ、コンテナー作成の権限（`Storage Blob Data Contributor` 以上）を実行時ずっと持ち続けることになります。
 
 ```csharp
 using Azure.Storage;
@@ -1474,7 +1496,7 @@ public interface IFileStorage
 
     Task<bool> DeleteAsync(string storagePath, CancellationToken cancellationToken = default);
 
-    Task<Uri> CreateReadUrlAsync(string storagePath, TimeSpan lifetime, CancellationToken cancellationToken = default);
+    Task<Uri> CreateReadUrlAsync(string storagePath, TimeSpan lifetime, string? downloadFileName = null, CancellationToken cancellationToken = default);
 }
 
 /// <summary>保存要求を表すレコード。</summary>
@@ -1582,6 +1604,7 @@ public sealed class BlobFileStorage(
     public Task<Uri> CreateReadUrlAsync(
         string storagePath,
         TimeSpan lifetime,
+        string? downloadFileName = null,
         CancellationToken cancellationToken = default)
     {
         // 実装は「SAS による一時的なアクセス許可」を参照
@@ -1884,9 +1907,10 @@ public async Task<IActionResult> Download(Guid id, CancellationToken cancellatio
         return NotFound();
     }
 
-    // 認可はアプリケーション側で実施し、通過した場合のみ短命な URL を発行する
+    // 認可はアプリケーション側で実施し、通過した場合のみ短命な URL を発行する。
+    // 元のファイル名を渡すと、SAS 側の Content-Disposition で復元される
     var url = await _fileStorage.CreateReadUrlAsync(
-        record.StoragePath, TimeSpan.FromMinutes(10), cancellationToken);
+        record.StoragePath, TimeSpan.FromMinutes(10), record.OriginalFileName, cancellationToken);
 
     return Redirect(url.ToString());
 }
@@ -2083,7 +2107,7 @@ public class FilesController(
         }
 
         var url = await fileStorage.CreateReadUrlAsync(
-            record.StoragePath, TimeSpan.FromMinutes(10), cancellationToken);
+            record.StoragePath, TimeSpan.FromMinutes(10), record.OriginalFileName, cancellationToken);
 
         return Ok(new { url, expiresInSeconds = 600 });
     }
