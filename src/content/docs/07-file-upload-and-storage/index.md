@@ -1990,12 +1990,13 @@ public async Task<IActionResult> Download(Guid id, CancellationToken cancellatio
 
 **共有アクセス署名 (Shared Access Signature: SAS)** は、有効期限と権限を限定した URL を発行する仕組みです。クライアントはこの URL で Blob Storage へ直接アクセスできるため、アプリケーションサーバーを経由せずに済みます。
 
-SAS には主に 2 種類あります。
+SAS には次の 3 種類があります。
 
 | 種別 | 署名に使う鍵 | 特徴 |
 | --- | --- | --- |
-| **サービス SAS** | ストレージアカウントキー | アカウントキーをアプリケーションが保持する必要がある |
-| **ユーザー委任 SAS** | ユーザー委任キー（Microsoft Entra ID 由来） | アカウントキーが不要。**推奨** |
+| **アカウント SAS** | ストレージアカウントキー | BLOB / キュー / テーブル / ファイルの複数サービスや、サービス自体の設定操作まで委任できる。範囲が広く、漏えいしたときの影響が最も大きい |
+| **サービス SAS** | ストレージアカウントキー | 単一のサービス内のリソースに限定される。アカウントキーをアプリケーションが保持する必要がある |
+| **ユーザー委任 SAS** | ユーザー委任キー（Microsoft Entra ID 由来） | Blob Storage 専用。アカウントキーが不要で、**推奨** |
 
 ユーザー委任 SAS は、`BlobServiceClient.GetUserDelegationKeyAsync` で取得したキーで署名します。キーの有効期間は最大 7 日間です。
 
