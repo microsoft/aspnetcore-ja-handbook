@@ -906,8 +906,15 @@ public sealed class UploadValidator(IOptions<FileUploadOptions> options) : IUplo
                 $"ファイルサイズが上限（{_options.MaxFileSizeBytes:N0} バイト）を超えています。");
         }
 
+        // ToLower ではなく ToLowerInvariant を使う。
+        // ToLower は実行環境のロケールに従うため、たとえばトルコ語環境では
+        // ".TIF" が ".tıf"（点のない i）になり、許可リストに一致しなくなる
         var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
-        if (string.IsNullOrEmpty(extension) || !_options.PermittedExtensions.Contains(extension))
+
+        // 比較子を指定する。構成ファイルに ".JPG" と大文字で書かれていても
+        // 一致させるため（既定の Contains は大文字小文字を区別する）
+        if (string.IsNullOrEmpty(extension)
+            || !_options.PermittedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
         {
             return UploadValidationResult.Failure($"拡張子 '{extension}' は許可されていません。");
         }
