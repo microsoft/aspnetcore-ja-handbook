@@ -1937,6 +1937,8 @@ using Azure.Storage.Blobs.Models;
 using Azure.Storage.Sas;
 using Microsoft.Net.Http.Headers;
 
+namespace FileUploadSample.Storage;
+
 public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, TimeProvider timeProvider)
 {
     // キーと有効期限を 1 つの参照にまとめる。
