@@ -782,6 +782,7 @@ public static class FileSignatureValidator
 
 ```csharp
 // ❌ 危険: クライアント由来の名前をそのまま使用
+// Path.Combine は結合するだけで、".." を解決したり不正な文字を除去したりはしない
 var path = Path.Combine(uploadDirectory, file.FileName);
 
 // ✅ 安全: アプリケーションが生成した名前を使用し、拡張子だけを引き継ぐ
@@ -798,6 +799,16 @@ var path = Path.Combine(uploadDirectory, storedName);
 
 > [!WARNING]
 > `Path.GetExtension` は `../../etc/passwd` のようなパス区切り文字を含む入力に対しては空文字列を返すため、パストラバーサルは防げます。しかし `shell.aspx` や `web.config` のような文字列を渡せば、拡張子として `.aspx` や `.config` がそのまま返ります。**許可リストの検証を省略すると、実行可能なファイルや設定ファイルとして解釈される名前で保存されてしまいます**。
+
+`Path.Combine` にも注意が必要です。名前のとおり「結合するだけ」で、安全な保存先に閉じ込めてくれる関数ではありません。
+
+| `file.FileName` の値 | `Path.Combine("/uploads", ...)` の結果 |
+| --- | --- |
+| `photo.png` | `/uploads/photo.png` |
+| `../../etc/cron.d/job` | `/uploads/../../etc/cron.d/job`（`..` は解決されず、OS が解釈して `/etc/cron.d/job` に到達する） |
+| `/etc/cron.d/job` | `/etc/cron.d/job`（**第 2 引数が絶対パスだと、第 1 引数は捨てられる**） |
+
+`Path.Combine` の第 2 引数が絶対パスだったときに第 1 引数を無視するのは、Python の `os.path.join` や Node.js の `path.resolve` と同じ挙動です。いずれの言語でも「結合先のディレクトリに収まることを保証する関数」ではないため、保存先の安全性は呼び出し側で担保しなければなりません。前掲の ✅ の例のように、アプリケーションが生成した名前だけを使えばこれらの問題はまとめて回避できます。
 
 ファイル名だけでなく、**保存先ディレクトリの選び方** も重要です。アップロードされたファイルは、`wwwroot` の配下に置いてはいけません。`wwwroot` は `UseStaticFiles()` によって誰でもダウンロードできる公開領域だからです。
 
