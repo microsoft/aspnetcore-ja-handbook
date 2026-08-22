@@ -73,7 +73,7 @@ Content-Type: image/jpeg
 ```
 
 > [!WARNING]
-> `enctype="multipart/form-data"` を指定し忘れると、ファイルは一切送信されません。この場合 `IFormFile` にバインドされる引数は `null` になります。「ファイルが `null` になる」という不具合の多くはこれが原因です。なお `IFormFile` は、アップロードされたファイル 1 件を表す ASP.NET Core のインターフェイスです（詳細は [IFormFile によるバッファリング受信](#iformfile-によるバッファリング受信) で後述します）。
+> `enctype="multipart/form-data"` を指定し忘れると、ファイルは一切送信されません。この場合、サーバー側ではファイルにバインドできず、後述の `[ApiController]` を付けたコントローラーでは HTTP 400 が返ります（`IFormFile?` と null 許容で受け取っている場合は `null` になります）。「ファイルが受け取れない」「引数が `null` になる」という不具合の多くはこれが原因です。なお `IFormFile` は、アップロードされたファイル 1 件を表す ASP.NET Core のインターフェイスです（詳細は [IFormFile によるバッファリング受信](#iformfile-によるバッファリング受信) で後述します）。
 
 > [!NOTE]
 > **他言語との比較**
@@ -138,9 +138,9 @@ public class UploadsController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Post(IFormFile file, CancellationToken cancellationToken)
     {
-        if (file is null || file.Length == 0)
+        if (file.Length == 0)
         {
-            return BadRequest("ファイルが選択されていません。");
+            return BadRequest("ファイルが空です。");
         }
 
         // クライアントが送ってきたファイル名は信用しない（後述）
@@ -154,6 +154,11 @@ public class UploadsController : ControllerBase
     }
 }
 ```
+
+> [!NOTE]
+> `[ApiController]` を付けたコントローラーでは、null 許容でない `IFormFile file` は **必須のパラメーター** として扱われます。ファイルが送られてこなかった場合や、フォームのフィールド名が引数名と食い違った場合は、モデル検証の段階で `{"errors":{"file":["The file field is required."]}}` という HTTP 400 が返り、アクションのコードには到達しません。そのため `file is null` を確認する必要はありません。
+>
+> 一方、`IFormFile? file` と null 許容で宣言した場合や、`[ApiController]` を付けていないコントローラーでは、バインドできなくても `null` が渡された状態でアクションが呼ばれます。この場合は自分で `null` を確認してください。
 
 コード中の `Guid` は、他の多くの言語で **UUID** と呼ばれているものの .NET での名称です。`:N` はハイフンなしの 32 桁の 16 進数として文字列化する書式指定で、ファイル名に使いやすい形になります。
 
@@ -222,7 +227,7 @@ public async Task<IActionResult> PostWithMetadata(
 ```
 
 > [!TIP]
-> HTML フォームを使わず JavaScript の `FormData` から送信する場合も、`FormData.append()` の第 1 引数（フィールド名）とサーバー側の引数名を一致させる必要があります。名前が食い違うとバインドされず `null` になります。
+> HTML フォームを使わず JavaScript の `FormData` から送信する場合も、`FormData.append()` の第 1 引数（フィールド名）とサーバー側の引数名を一致させる必要があります。名前が食い違うとバインドされず、上記のコントローラーでは HTTP 400 が返ります。
 
 ### Minimal API でのファイル受信
 
@@ -343,7 +348,7 @@ flowchart TB
 | IIS の `maxAllowedContentLength` | 30,000,000 バイト（約 28.6 MB） | HTTP 404.13 が返る |
 | `KestrelServerLimits.MaxRequestBodySize` | 30,000,000 バイト（約 28.6 MB） | `BadHttpRequestException` がスローされ HTTP 413 が返る。クライアントが送信を続けた場合は接続がリセットされることもある |
 | `FormOptions.MultipartBodyLengthLimit` | 134,217,728 バイト（128 MB） | `InvalidDataException` がスローされる |
-| `FormOptions.MemoryBufferThreshold` | 65,536 バイト（64 KB） | 超過分はディスク上の一時ファイルへ退避される |
+| `FormOptions.MemoryBufferThreshold` | 65,536 バイト（64 KB） | 閾値を超えた時点で、それまでメモリに保持していた分も含めて全量がディスク上の一時ファイルへ退避される |
 | `FormOptions.ValueCountLimit` | 1,024 個 | `InvalidDataException` がスローされ HTTP 400 が返る。ファイルもこの個数に含まれる |
 
 アプリケーション全体で上限を変更する場合は `Program.cs` で設定します。
@@ -900,7 +905,7 @@ Microsoft.Extensions.Options.OptionsValidationException: DataAnnotation validati
 > public string[] PermittedExtensions { get; set; } = [];
 > ```
 >
-> ❌ の書き方をして構成の記述を忘れると、次項の `UploadValidator` で使っている `PermittedExtensions.Contains(extension)` が常に `false` を返すため、**例外も出ないまま、すべてのファイルが「拡張子が許可されていません」として拒否される** という、原因の分かりにくい不具合になります。必須項目には必ず `[Required]` を付けてください。構成の検証方法の全体像は[第5章：アプリ設定 (Configuration)](../05-configuration/index.md)を参照してください。
+> ❌ の書き方をして構成の記述を忘れると、次項の `UploadValidator` で使っている `PermittedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)` が常に `false` を返すため、**例外も出ないまま、すべてのファイルが「拡張子が許可されていません」として拒否される** という、原因の分かりにくい不具合になります。`null` の配列に対する呼び出しなので例外になりそうに見えますが、C# 14 では配列が暗黙に `ReadOnlySpan<T>` へ変換され、LINQ の `Enumerable.Contains` ではなく `MemoryExtensions.Contains` が選ばれます。空のスパンとして扱われるため、例外にならず単に `false` が返ります。必須項目には必ず `[Required]` を付けてください。構成の検証方法の全体像は[第5章：アプリ設定 (Configuration)](../05-configuration/index.md)を参照してください。
 
 検証ロジックをサービスとしてまとめておくと、複数のエンドポイントから再利用できます。
 
@@ -1229,7 +1234,7 @@ builder.Services.AddAzureClients(clientBuilder =>
 
 ### ストリームをそのままアップロードする
 
-Web アプリケーションでのファイルアップロードでは、いったんローカルディスクへ保存せず、受信したストリームを直接 Blob Storage へ流し込むのが基本形です。
+Web アプリケーションでのファイルアップロードでは、いったん自前でローカルディスクへ保存せず、受信したストリームを直接 Blob Storage へ流し込むのが基本形です。
 
 ```csharp
 using Azure.Storage.Blobs;
@@ -1250,6 +1255,9 @@ public static async Task<Uri> UploadAsync(
 ```
 
 `UploadAsync` は、データサイズと転送オプションに応じて、単一の `Put Blob` 操作を行うか、`Put Block` を複数回実行してから `Put Block List` でコミットするかを自動的に選択します。大きなファイルの並列転送を制御したい場合は `StorageTransferOptions` を指定します。
+
+> [!NOTE]
+> ここで「ローカルディスクへ保存しない」と言っているのは、**アプリケーションのコードが保存先としてローカルディスクを選ばない** という意味です。`IFormFile` を使っている以上、64 KB を超えたファイルはフレームワークによって一時ファイルへ退避されており、`file.OpenReadStream()` はその一時ファイルを読んでいます。一時ファイルへの書き出しも含めて完全に回避したい場合は、[MultipartReader によるストリーミング受信](#multipartreader-によるストリーミング受信) を使い、受信しながら直接 `UploadAsync` へ渡します。
 
 > [!IMPORTANT]
 > **コンテナーは自動では作成されません**。存在しないコンテナーへアップロードすると、`RequestFailedException`（`Status: 404`、`ErrorCode: ContainerNotFound`）が発生します。
@@ -1406,13 +1414,26 @@ Blob Storage には BLOB を一覧・検索する手段がいくつかありま�
 
 | 手段 | できること | メタデータで絞り込めるか |
 | --- | --- | --- |
-| プレフィックス指定の一覧取得 (`GetBlobsAsync(prefix:)`) | 名前が特定の文字列で始まる BLOB を列挙する | できない |
+| プレフィックス指定の一覧取得 (`GetBlobsAsync`) | 名前が特定の文字列で始まる BLOB を列挙する | できない |
 | **BLOB インデックスタグ** (`Tags`) | キーと値の条件式で BLOB を横断的に検索する（例: `"scanStatus" = 'clean'`） | — （タグが検索対象） |
 | Azure AI Search などの外部検索サービス | 全文検索や高度な条件検索を行う | 別途インデックスを構築すれば可能 |
 
+> [!WARNING]
+> 一覧取得の引数は `GetBlobsOptions` にまとめて渡します。以前は `GetBlobsAsync(prefix: "avatars/")` のように名前付き引数で一部だけを指定できましたが、**Azure.Storage.Blobs 12.27 以降は旧来のオーバーロードから既定値が外れており、この書き方はコンパイルできません**。`GetBlobsByHierarchyAsync` も同様です。Web 上の古い記事のコードをそのまま貼り付けるとビルドが通らないので注意してください。
+>
+> ```csharp
+> using Azure.Storage.Blobs.Models;
+>
+> await foreach (BlobItem item in containerClient.GetBlobsAsync(
+>     new GetBlobsOptions { Prefix = "avatars/tenant-a1b2/", Traits = BlobTraits.Metadata }))
+> {
+>     Console.WriteLine($"{item.Name} ({item.Properties.ContentLength} バイト)");
+> }
+> ```
+
 このうち **BLOB インデックスタグ** は、Blob Storage が標準で提供する検索用の索引機能です。タグとして設定したキーと値は Blob Storage 側で索引化され、`FindBlobsByTagsAsync` で「タグの値がこの条件に一致する BLOB」をコンテナーをまたいで探し出せます。「スキャン未完了のファイルを全部拾いたい」「特定のテナントのファイルだけ集めたい」といった用途がこれにあたります。
 
-一方、メタデータには索引が作られません。メタデータの値で BLOB を探そうとすると、全 BLOB を列挙して 1 件ずつ `GetPropertiesAsync` で中身を確認することになり、件数が増えると現実的ではなくなります。メタデータはあくまで、**BLOB のパスが既に分かっている状態で、その BLOB に付随する補足情報を取り出す** ための機能だと理解してください。
+一方、メタデータには索引が作られません。メタデータの値で BLOB を探そうとすると、全 BLOB を列挙して 1 件ずつクライアント側で条件に合うか確認することになり、件数が増えると現実的ではなくなります（`GetBlobsAsync(new GetBlobsOptions { Traits = BlobTraits.Metadata })` と指定すれば一覧の応答にメタデータを含められるので、BLOB ごとに `GetPropertiesAsync` を呼ぶ必要はありません。それでも全件を取得して絞り込む点は変わりません）。メタデータはあくまで、**BLOB のパスが既に分かっている状態で、その BLOB に付随する補足情報を取り出す** ための機能だと理解してください。
 
 ```csharp
 // 検索したい属性はタグとして設定する（1 BLOB あたり最大 10 個）
@@ -1479,9 +1500,10 @@ catch (RequestFailedException ex) when (ex.Status == StatusCodes.Status409Confli
 既存 BLOB の更新時に、取得してから更新するまでの間に他のプロセスが変更していないことを保証するには、**楽観的同時実行制御 (Optimistic Concurrency)** を使います。ダウンロード時に取得した `ETag` を `IfMatch` に指定すると、値が一致しない場合に HTTP 412 (Precondition Failed) が返ります。
 
 ```csharp
-// 現在の内容と ETag を取得する
-Response<BlobDownloadResult> response = await blobClient.DownloadContentAsync(cancellationToken);
-ETag originalETag = response.Value.Details.ETag;
+// 現在の ETag を取得する。GetPropertiesAsync は内容をダウンロードしないため、
+// 大きなファイルでもメモリを消費しない
+Response<BlobProperties> properties = await blobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
+ETag originalETag = properties.Value.ETag;
 
 var conditionalUpdate = new BlobUploadOptions
 {
@@ -2284,9 +2306,9 @@ public class FilesController(
     [RequestSizeLimit(10 * 1024 * 1024)]
     public async Task<IActionResult> Upload(IFormFile file, CancellationToken cancellationToken)
     {
-        if (file is null || file.Length == 0)
+        if (file.Length == 0)
         {
-            return BadRequest("ファイルが選択されていません。");
+            return BadRequest("ファイルが空です。");
         }
 
         // ① 検証
