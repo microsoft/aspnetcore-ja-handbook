@@ -121,7 +121,7 @@ flowchart TB
 
 小さなファイルを受け取る場合は `IFormFile` を使います。前項で触れたとおり、`IFormFile` はアップロードされたファイル 1 件を表すインターフェイスで、実体はフレームワークが用意する `FormFile` クラスです。ファイルの中身はメモリまたはディスク上の一時ファイルに保持されており、`IFormFile` はそこへのアクセス手段を提供しているにすぎません。したがって、**リクエストが完了した後に `IFormFile` を保持しても中身は読めなくなる** 点に注意してください。読み取りや保存は、必ずリクエスト処理中に行います。
 
-MVC コントローラーでは、フォームフィールド名と一致する名前の引数を宣言するだけでモデルバインディングが機能します。
+MVC コントローラーでは、フォームフィールド名と一致する名前の引数を宣言するだけでモデルバインディングが機能します（モデルバインディングの仕組み全般は[第3章：モデルバインディング](../03-mvc-web-and-api/index.md#モデルバインディング)を参照）。
 
 ```csharp
 using Microsoft.AspNetCore.Mvc;
@@ -220,7 +220,7 @@ public async Task<IActionResult> PostWithMetadata(
 
 ### Minimal API でのファイル受信
 
-Minimal API でも `IFormFile` / `IFormFileCollection` をハンドラーの引数に宣言できます。ただし **フォームからのバインドには非フォージェリトークン (antiforgery token) の検証が必須** である点が MVC と異なります。
+Minimal API でも `IFormFile` / `IFormFileCollection` をハンドラーの引数に宣言できます（Minimal API のバインディング全般は[第4章：各種入力のバインディング](../04-minimal-api/index.md#各種入力のバインディング)を参照）。ただし **フォームからのバインドには非フォージェリトークン (antiforgery token) の検証が必須** である点が MVC と異なります。
 
 #### 非フォージェリトークンとは
 
@@ -237,7 +237,7 @@ CSRF とは、利用者が正規サイトにログインした状態のまま攻
 
 攻撃者のページは正規サイトの HTML を読み取れないため、**リクエストトークンの値を知り得ません**。サーバーは 2 つの値が対になっているかを検証し、対になっていなければリクエストを HTTP 400 で拒否します。
 
-他言語のフレームワークにも同じ仕組みがあります。Django の `{% csrf_token %}` と `CsrfViewMiddleware`、Laravel の `@csrf` と `VerifyCsrfToken` ミドルウェア、Spring Security の `CsrfToken` に相当します。
+他言語のフレームワークにも同じ仕組みがあります。Django の `{% csrf_token %}` と `CsrfViewMiddleware`、Laravel の `@csrf` と `ValidateCsrfToken` ミドルウェア（Laravel 10 以前の `VerifyCsrfToken` が改名されたもの）、Spring Security の `CsrfToken` に相当します。
 
 ASP.NET Core では、`AddAntiforgery()` でサービスを登録し、`UseAntiforgery()` ミドルウェアをパイプラインに追加することで有効になります。Minimal API では、このミドルウェアが `IFormFile` や `[FromForm]` にバインドするエンドポイントを自動的に検証対象とするため、**アプリ側に検証コードを書く必要はありません**。
 
@@ -574,7 +574,7 @@ if (contentDisposition is not null && contentDisposition.IsFileDisposition())
 
 同じことは `IFormFile` でも `file.OpenReadStream()` を渡すだけで実現できます。詳しくは [ストリームをそのままアップロードする](#ストリームをそのままアップロードする) で扱います。
 
-MVC コントローラーでストリーミングを行う場合は、フォームのモデルバインディングが先にリクエストボディを読み切ってしまわないよう、フォーム値のバインドを無効化するリソースフィルターを適用します。
+MVC コントローラーでストリーミングを行う場合は、フォームのモデルバインディングが先にリクエストボディを読み切ってしまわないよう、フォーム値のバインドを無効化するリソースフィルターを適用します（フィルターの種類と実行順序は[第3章：フィルター（ActionFilter, ExceptionFilter 等）と横断処理](../03-mvc-web-and-api/index.md#6-フィルターactionfilter-exceptionfilter-等と横断処理)を参照）。
 
 ```csharp
 using Microsoft.AspNetCore.Mvc.Filters;
@@ -842,7 +842,7 @@ public sealed class UploadValidator(IOptions<FileUploadOptions> options) : IUplo
 
 ### Minimal API での検証（.NET 10 の新機能）
 
-MVC コントローラーでは以前からデータ注釈（`[Required]`、`[Range]` など）によるモデル検証が動作しましたが、Minimal API には同等の仕組みがなく、上記のような検証サービスを自分で呼び出す必要がありました。
+MVC コントローラーでは以前からデータ注釈（`[Required]`、`[Range]` など）によるモデル検証が動作しましたが（詳細は[第3章：入力検証 (バリデーション)](../03-mvc-web-and-api/index.md#入力検証-バリデーション)を参照）、Minimal API には同等の仕組みがなく、上記のような検証サービスを自分で呼び出す必要がありました。
 
 **ASP.NET Core 10 では、Minimal API でもデータ注釈による検証が利用できるようになりました。** `AddValidation()` を呼ぶだけで、ハンドラーの引数に付けた検証属性がフレームワークによって評価され、違反があればハンドラーに到達せず HTTP 400 と検証エラーの詳細が返ります。
 
@@ -1766,6 +1766,9 @@ SAS には主に 2 種類あります。
 
 ユーザー委任 SAS は、`BlobServiceClient.GetUserDelegationKeyAsync` で取得したキーで署名します。キーの有効期間は最大 7 日間です。
 
+> [!IMPORTANT]
+> **ユーザー委任キーが期限切れになると、SAS 自体の有効期限が残っていても認可エラーになります。** キーは取得コストがかかるためキャッシュするのが定石ですが、「キャッシュしたキーが、これから発行する SAS の有効期限まで生きているか」を基準に再利用の可否を判断しなければなりません。単に「キーの期限が数分後より先か」だけで判定すると、残り 5 分のキーで 10 分間有効な SAS を発行してしまい、5 分後に突然 403 が返るという再現しにくい不具合になります。
+
 ```csharp
 using Azure;
 using Azure.Storage.Blobs;
@@ -1775,8 +1778,12 @@ using Microsoft.Net.Http.Headers;
 
 public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, TimeProvider timeProvider)
 {
-    private UserDelegationKey? _cachedKey;
-    private DateTimeOffset _cachedKeyExpiresOn;
+    // キーと有効期限を 1 つの参照にまとめる。
+    // 参照の代入はアトミックなので、ロックを取らずに読んでも
+    // 「キーと期限がちぐはぐな組み合わせ」にはならない
+    private sealed record CachedKey(UserDelegationKey Key, DateTimeOffset ExpiresOn);
+
+    private CachedKey? _cached;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
 
     public async Task<Uri> CreateReadUrlAsync(
@@ -1785,7 +1792,7 @@ public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, T
         string? downloadFileName = null,
         CancellationToken cancellationToken = default)
     {
-        var key = await GetUserDelegationKeyAsync(cancellationToken);
+        var key = await GetUserDelegationKeyAsync(lifetime, cancellationToken);
         var now = timeProvider.GetUtcNow();
 
         var sasBuilder = new BlobSasBuilder
@@ -1820,31 +1827,42 @@ public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, T
         return uriBuilder.ToUri();
     }
 
-    private async Task<UserDelegationKey> GetUserDelegationKeyAsync(CancellationToken cancellationToken)
+    private async Task<UserDelegationKey> GetUserDelegationKeyAsync(
+        TimeSpan lifetime,
+        CancellationToken cancellationToken)
     {
-        var now = timeProvider.GetUtcNow();
+        // ユーザー委任キーが期限切れになると、SAS 自体の有効期限が残っていても
+        // 認可エラーになる。そのため「発行する SAS の有効期限まで
+        // キーが生きているか」を基準に、キャッシュの再利用可否を判断する
+        bool CoversLifetime(CachedKey? cached) =>
+            cached is not null
+            && cached.ExpiresOn > timeProvider.GetUtcNow().Add(lifetime).AddMinutes(5);
 
-        if (_cachedKey is not null && _cachedKeyExpiresOn > now.AddMinutes(5))
+        // フィールドをローカル変数へ 1 度だけ読み出す
+        var cached = _cached;
+        if (CoversLifetime(cached))
         {
-            return _cachedKey;
+            return cached!.Key;
         }
 
         await _semaphore.WaitAsync(cancellationToken);
         try
         {
-            if (_cachedKey is not null && _cachedKeyExpiresOn > now.AddMinutes(5))
+            // 待っている間に他のスレッドが取得済みかもしれないので、もう一度確認する
+            cached = _cached;
+            if (CoversLifetime(cached))
             {
-                return _cachedKey;
+                return cached!.Key;
             }
 
+            var now = timeProvider.GetUtcNow();
             var expiresOn = now.AddHours(1);
             Response<UserDelegationKey> response = await serviceClient.GetUserDelegationKeyAsync(
                 now.AddMinutes(-5), expiresOn, cancellationToken);
 
-            _cachedKey = response.Value;
-            _cachedKeyExpiresOn = expiresOn;
+            _cached = new CachedKey(response.Value, expiresOn);
 
-            return _cachedKey;
+            return response.Value;
         }
         finally
         {
