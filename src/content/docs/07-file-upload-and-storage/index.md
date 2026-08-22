@@ -1844,7 +1844,7 @@ public sealed class StoragePathBuilder(
 
         // 拡張子もクライアント由来なので、そのまま BLOB 名に含めてはいけない。
         // 検証済みの値だけを受け入れる（多層防御。通常は上流の UploadValidator で弾かれる）
-        if (!options.Value.PermittedExtensions.Contains(extension))
+        if (!options.Value.PermittedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
         {
             throw new ArgumentException(
                 $"許可されていない拡張子です: {extension}", nameof(originalFileName));
