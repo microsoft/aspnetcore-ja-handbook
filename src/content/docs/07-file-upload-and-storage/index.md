@@ -1664,6 +1664,9 @@ public sealed record FileUploadDescriptor(
 public sealed record StoredFile(string StoragePath, long Length, string ETag);
 ```
 
+> [!NOTE]
+> この節以降のコード例では `FileUploadSample.Storage` のような名前空間を明示しています。第 2 節で作成した `FileUploadOptions`、`UploadValidator`、`FileSignatureValidator` も、同じ `FileUploadSample.Storage` に置く前提です。名前空間をそろえておけば、`using` を書かずに相互参照できます。
+
 > [!TIP]
 > インターフェイスからは `BlobClient` や `Stream` 以外の Azure 固有の型を排除します。こうすることで、上位のサービス層は Azure SDK への参照を持たずに済み、テストではインメモリ実装に差し替えられます。
 
