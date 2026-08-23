@@ -2063,6 +2063,7 @@ using Microsoft.Net.Http.Headers;
 namespace FileUploadSample.Storage;
 
 public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, TimeProvider timeProvider)
+    : IDisposable
 {
     // キーと有効期限を 1 つの参照にまとめる。
     // 参照の代入はアトミックなので、ロックを取らずに読んでも
@@ -2169,8 +2170,15 @@ public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, T
             _semaphore.Release();
         }
     }
+
+    // SemaphoreSlim は破棄が必要なため、IDisposable を実装して DI コンテナーに任せる。
+    // Singleton として登録した場合、アプリケーション終了時に自動で呼ばれる
+    public void Dispose() => _semaphore.Dispose();
 }
 ```
+
+> [!NOTE]
+> `SemaphoreSlim` のように破棄が必要なフィールドを持つクラスは、`IDisposable` を実装しておきます。DI コンテナーは、自分が生成したインスタンスが `IDisposable` を実装していれば、そのスコープ（Singleton ならアプリケーション終了時）で自動的に `Dispose()` を呼びます。実装を忘れると .NET のコード アナライザーが CA1001 で警告します。
 
 コントローラーからは、SAS URL へのリダイレクトを返します。
 
