@@ -349,7 +349,15 @@ flowchart TB
 | `KestrelServerLimits.MaxRequestBodySize` | 30,000,000 バイト（約 28.6 MB） | `BadHttpRequestException` がスローされ HTTP 413 が返る。クライアントが送信を続けた場合は接続がリセットされることもある |
 | `FormOptions.MultipartBodyLengthLimit` | 134,217,728 バイト（128 MB） | `InvalidDataException` がスローされる |
 | `FormOptions.MemoryBufferThreshold` | 65,536 バイト（64 KB） | 閾値を超えた時点で、それまでメモリに保持していた分も含めて全量がディスク上の一時ファイルへ退避される |
-| `FormOptions.ValueCountLimit` | 1,024 個 | `InvalidDataException` がスローされ HTTP 400 が返る。ファイルもこの個数に含まれる |
+| `FormOptions.ValueCountLimit` | 1,024 個 | `InvalidDataException` がスローされる。ファイルもこの個数に含まれる |
+
+> [!IMPORTANT]
+> `FormOptions` の上限を超えたときにスローされる `InvalidDataException` は、フレームワークが自動的に 400 へ変換してくれるわけではありません。クライアントに返る HTTP ステータスは、フォームを読み取る経路によって変わります。
+>
+> - **MVC コントローラー**（`[ApiController]` と `[FromForm]` の組み合わせ）では、モデルバインディングの失敗として扱われ、**HTTP 400** と検証エラーの詳細が返ります。
+> - **自分で `HttpRequest.ReadFormAsync()` を呼ぶ場合**（Minimal API でフォームを直接読む場合など）は、未処理の例外となり **HTTP 500** が返ります。
+>
+> 後者で 400 を返したい場合は、`ReadFormAsync()` の呼び出しを `try` / `catch` で囲み、`InvalidDataException` を捕捉して自分でレスポンスを組み立ててください。
 
 アプリケーション全体で上限を変更する場合は `Program.cs` で設定します。
 
@@ -831,6 +839,13 @@ var path = Path.Combine(uploadDirectory, storedName);
 
 `Path.Combine` の第 2 引数が絶対パスだったときに第 1 引数を無視するのは、Python の `os.path.join` や Node.js の `path.resolve` と同じ挙動です（名前の似た Node.js の `path.join` は、後続の引数が絶対パスでも前の引数を捨てないため、挙動が異なります）。いずれの言語でも「結合先のディレクトリに収まることを保証する関数」ではないため、保存先の安全性は呼び出し側で担保しなければなりません。前掲の ✅ の例のように、アプリケーションが生成した名前だけを使えばこれらの問題はまとめて回避できます。
 
+> [!WARNING]
+> 他の言語の `basename` に相当する `Path.GetFileName` でディレクトリ部分を取り除けば安全になる、と考えるのは危険です。この関数が区切り文字として扱うのは **実行中の OS の区切り文字だけ** です。Linux や macOS 上で動くアプリに `C:\Windows\system32\evil.exe` を渡すと、`\` は区切り文字とみなされないため、**文字列全体がそのまま 1 つのファイル名として返ります**。
+>
+> ファイル名に含まれる制御文字も取り除かれません。実際に試すと、`evil.php` のうしろに NULL 文字を挟んだ `evil.php\0.jpg` は、`Path.GetExtension` が `.jpg` を返すため拡張子の許可リストを通過し、NULL 文字を含んだままの文字列が `IFormFile.FileName` から読み取れます。同様に、`file.jpg.` のように末尾がピリオドの名前は `Path.GetExtension` が空文字列を返します。
+>
+> クライアント由来の名前を加工して安全にしようとするのではなく、前掲の ✅ の例のように **アプリケーションが生成した名前を使い、拡張子は許可リストを通ったものだけを引き継ぐ** のが確実です。
+
 ファイル名だけでなく、**保存先ディレクトリの選び方** も重要です。アップロードされたファイルは、`wwwroot` の配下に置いてはいけません。`wwwroot` は `UseStaticFiles()` によって誰でもダウンロードできる公開領域だからです。
 
 実際に `wwwroot/uploads/` へファイルを置いて確認すると、次のようになります。
@@ -885,7 +900,7 @@ builder.Services
     .ValidateOnStart();
 ```
 
-`ValidateDataAnnotations()` は起動時に構成値を検証し、`ValidateOnStart()` と組み合わせることで、設定漏れをアプリの起動時点で失敗させられます。上記の例で `PermittedExtensions` が空のまま起動しようとすると、次のように `OptionsValidationException` で停止します。
+`ValidateDataAnnotations()` は、`System.ComponentModel.DataAnnotations` の属性による検証を **有効にする** メソッドです。これだけでは検証は実行されず、`IOptions<T>` の `Value` に初めてアクセスした時点まで遅延します。`ValidateOnStart()` を続けて呼ぶことで、その検証がアプリケーションの起動時に実行されるようになり、設定漏れを起動時点で失敗させられます（検証のタイミングについては[第5章：バリデーションのタイミング](../05-configuration/index.md#バリデーションのタイミング)を参照）。上記の例で `PermittedExtensions` が空のまま起動しようとすると、次のように `OptionsValidationException` で停止します。
 
 ```text
 Microsoft.Extensions.Options.OptionsValidationException: DataAnnotation validation failed for
@@ -905,7 +920,7 @@ Microsoft.Extensions.Options.OptionsValidationException: DataAnnotation validati
 > public string[] PermittedExtensions { get; set; } = [];
 > ```
 >
-> ❌ の書き方をして構成の記述を忘れると、次項の `UploadValidator` で使っている `PermittedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)` が常に `false` を返すため、**例外も出ないまま、すべてのファイルが「拡張子が許可されていません」として拒否される** という、原因の分かりにくい不具合になります。`null` の配列に対する呼び出しなので例外になりそうに見えますが、C# 14 では配列が暗黙に `ReadOnlySpan<T>` へ変換され、LINQ の `Enumerable.Contains` ではなく `MemoryExtensions.Contains` が選ばれます。空のスパンとして扱われるため、例外にならず単に `false` が返ります。必須項目には必ず `[Required]` を付けてください。構成の検証方法の全体像は[第5章：アプリ設定 (Configuration)](../05-configuration/index.md)を参照してください。
+> ❌ の書き方をして構成の記述を忘れると、次項の `UploadValidator` で使っている `PermittedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)` が常に `false` を返すため、**例外も出ないまま、すべてのファイルが「拡張子が許可されていません」として拒否される** という、原因の分かりにくい不具合になります。`null` の配列に対する呼び出しなので例外になりそうに見えますが、C# 14 では配列が暗黙に `ReadOnlySpan<T>` へ変換され、LINQ の `Enumerable.Contains` ではなく `MemoryExtensions.Contains` が選ばれます。空のスパンとして扱われるため、例外にならず単に `false` が返ります。必須項目には必ず `[Required]` を付けてください。構成の検証方法の全体像は[第5章：バリデーション](../05-configuration/index.md#バリデーション)を参照してください。
 
 検証ロジックをサービスとしてまとめておくと、複数のエンドポイントから再利用できます。
 
@@ -973,7 +988,7 @@ public sealed class UploadValidator(IOptions<FileUploadOptions> options) : IUplo
 
 MVC コントローラーでは以前からデータ注釈（`[Required]`、`[Range]` など）によるモデル検証が動作しましたが（詳細は[第3章：入力検証 (バリデーション)](../03-mvc-web-and-api/index.md#入力検証-バリデーション)を参照）、Minimal API には同等の仕組みがなく、上記のような検証サービスを自分で呼び出す必要がありました。
 
-**ASP.NET Core 10 では、Minimal API でもデータ注釈による検証が利用できるようになりました。** `AddValidation()` を呼ぶだけで、ハンドラーの引数に付けた検証属性がフレームワークによって評価され、違反があればハンドラーに到達せず HTTP 400 と検証エラーの詳細が返ります。
+**ASP.NET Core 10 では、Minimal API でもデータ注釈による検証が利用できるようになりました。** `AddValidation()` を呼ぶだけで、ハンドラーの引数に付けた検証属性がフレームワークによって評価され、違反があればハンドラーに到達せず HTTP 400 と検証エラーの詳細が返ります。この仕組みの全体像は[第4章：バリデーション](../04-minimal-api/index.md#バリデーション)で扱っています。ここではファイルアップロード特有の使い方に絞って説明します。
 
 ```csharp
 builder.Services.AddValidation();
@@ -1060,7 +1075,7 @@ flowchart TB
 4. 合格したファイルのみを通常のコンテナーへ移動し、ステータスを更新する
 
 > [!TIP]
-> `BackgroundService` は Singleton として動作するため、内部で Scoped サービス（`DbContext` など）を使う場合は `IServiceScopeFactory` でスコープを作成します。詳細は[第6章：依存性注入 (DI)](../06-dependency-injection/index.md)を参照してください。
+> `BackgroundService` は Singleton として動作するため、内部で Scoped サービス（`DbContext` など）を使う場合は `IServiceScopeFactory` でスコープを作成します。詳細は[第6章：IServiceScopeFactory による手動スコープ作成](../06-dependency-injection/index.md#iservicescopefactory-による手動スコープ作成)を参照してください。
 
 ---
 
@@ -1848,7 +1863,10 @@ public static class StorageServiceCollectionExtensions
 
         // BlobServiceClient は Singleton、ラッパーは Scoped で登録する
         services.AddScoped<IFileStorage, BlobFileStorage>();
-        services.AddScoped<IUploadValidator, UploadValidator>();
+
+        // 状態を持たず生成コストも低いため Transient で登録する
+        // （第6章のライフタイム選択のガイドラインに従う）
+        services.AddTransient<IUploadValidator, UploadValidator>();
 
         // ユーザー委任キーをキャッシュするため Singleton で登録する
         services.AddSingleton<UserDelegationSasProvider>();
@@ -1885,7 +1903,7 @@ builder.Services.AddBlobFileStorage(builder.Configuration);
 ```
 
 > [!NOTE]
-> `AddAzureClients` が登録する `BlobServiceClient` は **Singleton** です。`BlobFileStorage` を Scoped で登録しても、Singleton である `BlobServiceClient` に依存するだけなので Captive Dependency にはなりません（短いライフタイムから長いライフタイムへの依存は問題ありません）。ライフタイムの依存方向については[第6章：依存性注入 (DI)](../06-dependency-injection/index.md)を参照してください。
+> `AddAzureClients` が登録する `BlobServiceClient` は **Singleton** です。`BlobFileStorage` を Scoped で登録しても、Singleton である `BlobServiceClient` に依存するだけなので Captive Dependency にはなりません（短いライフタイムから長いライフタイムへの依存は問題ありません）。ライフタイムの依存方向については[第6章：ライフタイム選択のガイドライン](../06-dependency-injection/index.md#ライフタイム選択のガイドライン)を参照してください。
 
 ### 保存先パスの設計
 
@@ -2312,7 +2330,8 @@ public class FilesController(
         var validation = validator.Validate(file);
         if (!validation.IsValid)
         {
-            return BadRequest(validation.ErrorMessage);
+            // 第3章で扱った ProblemDetails 形式でエラーを返す
+            return ValidationProblem(detail: validation.ErrorMessage);
         }
 
         var ownerId = User.FindFirstValue(ClaimTypes.NameIdentifier)
@@ -2371,7 +2390,9 @@ public class FilesController(
 
         if (record.ScanStatus != ScanStatus.Clean)
         {
-            return StatusCode(StatusCodes.Status409Conflict, "ウイルススキャンが完了していません。");
+            return Problem(
+                detail: "ウイルススキャンが完了していません。",
+                statusCode: StatusCodes.Status409Conflict);
         }
 
         var url = await fileStorage.CreateReadUrlAsync(
