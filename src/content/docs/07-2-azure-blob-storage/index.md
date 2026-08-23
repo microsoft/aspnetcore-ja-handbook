@@ -1,6 +1,6 @@
 ---
 title: "第7章（後編）：Azure Blob Storage への保存"
-description: "Azure Blob Storage のオブジェクトモデルと Microsoft Entra ID による認証、ストリームのアップロード、メタデータと上書き制御、Azurite によるローカル開発、AddAzureClients を使った DI 設計と SAS によるアクセス制御を解説します。"
+description: "Azure Blob Storage への Microsoft Entra ID による認証とストリームのアップロード、Azurite によるローカル開発、AddAzureClients を使った DI 設計と SAS によるアクセス制御を解説します。"
 ---
 
 この章は [第7章（前編）：ファイル受信と検証](../07-1-file-upload-and-validation/index.md) の続きです。前編で受け取って検証したファイルを、Azure Blob Storage へ保存する方法を説明します。前編のコード例を前提にしている箇所があるため、先に前編を読んでおくことをおすすめします。
