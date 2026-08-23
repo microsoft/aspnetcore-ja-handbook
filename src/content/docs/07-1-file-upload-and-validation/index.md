@@ -60,7 +60,7 @@ Content-Type: image/jpeg
 ------Boundary1234--
 ```
 
-> [!WARNING]
+> [!IMPORTANT]
 > `enctype="multipart/form-data"` を指定し忘れると、ファイルは一切送信されません。このときの症状はエンドポイントの実装方法によって異なります。後述の Minimal API では **HTTP 415（Unsupported Media Type）** が返り、引数を `IFormFile?` と null 許容にしても 415 のままです。一方、後述の `[ApiController]` を付けたコントローラーでは **HTTP 400** が返ります（`IFormFile?` と null 許容で受け取っている場合は `null` になります）。「ファイルが受け取れない」「引数が `null` になる」という不具合の多くはこれが原因です。なお `IFormFile` は、アップロードされたファイル 1 件を表す ASP.NET Core のインターフェイスです（詳細は [IFormFile によるバッファリング受信](#iformfile-によるバッファリング受信) で後述します）。
 
 > [!NOTE]
@@ -185,7 +185,7 @@ public async Task<IActionResult> PostMultiple(
 }
 ```
 
-> [!WARNING]
+> [!IMPORTANT]
 > MVC コントローラーの `IFormFileCollection` は、**引数名と一致するフィールド名で送られたファイルだけ** を集めます。名前が食い違うと、例外も検証エラーも起きずに **空のコレクション** がバインドされるため、原因に気付きにくい不具合になります。
 >
 > 一方 Minimal API の `IFormFileCollection` は、フィールド名にかかわらず **リクエスト内のすべてのファイル** を返します。同じ型でも挙動が違う点に注意してください。
@@ -272,7 +272,7 @@ app.MapPost("/upload", async (IFormFile file, CancellationToken cancellationToke
 app.Run();
 ```
 
-> [!WARNING]
+> [!IMPORTANT]
 > (1) と (2) はどちらも省略できません。省略したときの症状は次のように異なります。
 >
 > | 抜けているもの | 症状 |
@@ -410,7 +410,7 @@ app.Use(async (context, next) =>
 });
 ```
 
-> [!WARNING]
+> [!IMPORTANT]
 > この設定を **エンドポイントのハンドラーの中** で行っても効果はありません。ハンドラーが呼び出される時点で `IFormFile` へのバインドは完了しており、ボディはすでに読み取られているためです。このとき `IsReadOnly` は `true` になっているので、上記のような `if (feature is { IsReadOnly: false })` という書き方をすると、**エラーも警告も出ないまま設定が黙って無視されます**。同じ理由で、エンドポイントフィルター (`AddEndpointFilter`) も手遅れです。フィルターはパラメーターのバインドが終わった後に実行されます。
 
 #### IIS でホストする場合の設定
@@ -444,7 +444,7 @@ builder.Services.Configure<IISServerOptions>(options =>
 | `web.config` | `maxAllowedContentLength` | IIS がアプリにリクエストを渡すかどうかの判定。ここで弾かれるとアプリには一切届かない | HTTP 404.13 が返り、アプリのコードには到達しない |
 | C# コード | `IISServerOptions.MaxRequestBodySize` | アプリがボディの読み取りを許可する上限 | `BadHttpRequestException` がスローされ、HTTP 413 が返る |
 
-> [!WARNING]
+> [!IMPORTANT]
 > **どちらか一方だけを設定した場合、より小さいほうの値が実効的な上限になります。** 上限を引き上げたつもりが効いていないときは、両方の設定を確認してください。
 
 > [!NOTE]
@@ -770,7 +770,7 @@ public static class FileSignatureValidator
 > [!WARNING]
 > このメソッドは、`IFormFile.OpenReadStream()` のように **シークできるストリーム専用** です。`MultipartReader` によるストリーミング受信で得られる `section.Body` は `CanSeek` が `false` ですが、`Position = 0` や `Seek(0, SeekOrigin.Begin)` を呼んでも **例外は発生しません**。実際に試すと `Position` プロパティの値だけが 0 に戻り、読み取り位置は戻らないため、**先頭の数バイトが欠けたファイルが保存されます**。ストリーミング受信でシグネチャを検証する場合は、先頭バイトを読み取ったバッファを保存先へ書き出してから、残りを `CopyToAsync` で転送してください。
 
-> [!WARNING]
+> [!IMPORTANT]
 > このメソッドは、**シグネチャ辞書に載っていない拡張子に対して `false` を返します**。したがって、後述の許可拡張子リストに `.txt` や `.csv` のような項目を追加しただけでは、その形式のアップロードはすべて「内容が拡張子と一致しません」で拒否されます。
 
 シグネチャの定義そのものにも注意が必要です。JPEG のシグネチャを `FF D8 FF E0`（JFIF）のように 4 バイトで固定している例をよく見かけますが、4 バイト目は後続のマーカー種別であり、`E1`（Exif）や `EE`（Adobe）、`DB`（量子化テーブル）など多くの値を取ります。
@@ -785,10 +785,10 @@ public static class FileSignatureValidator
 | `FF D8 FF EE` | APP14（Adobe） | 9 |
 | `FF D8 FF DB` | DQT（量子化テーブル） | 2 |
 
-> [!WARNING]
+> [!IMPORTANT]
 > 上の分布のうち、`E0` / `E2` / `E3` の 3 パターンだけを許可する実装（MS Learn のサンプルコードがこの形です）では、**363 件（約 12%）が拒否されます**。しかもそこには、デジタルカメラやスマートフォンで撮影した写真の標準形式である **Exif JPEG が丸ごと含まれます**。写真投稿機能でこの実装を使えば、スマートフォンからのアップロードがことごとく失敗することになります。JPEG は `FF D8 FF` の 3 バイトで判定してください。
 
-> [!WARNING]
+> [!IMPORTANT]
 > 前述のとおり辞書にない拡張子は拒否されるため、許可リストを増やすときは、**シグネチャ辞書にも対応する定義を追加する**か、**シグネチャを持たない拡張子は検証をスキップする**（`TryGetValue` が失敗したら `true` を返す）かを、形式ごとに決めてください。テキストや CSV のように決まった先頭バイト列を持たない形式は前者を選べないため後者になりますが、その拡張子については中身の検証が効かなくなる点に注意します。
 
 > [!NOTE]
@@ -856,7 +856,7 @@ var path = Path.Combine(uploadDirectory, storedName);
 元のファイル名を画面に表示したい場合は、**表示用の名前としてデータベースに保持** し、表示時に HTML エンコードします。Razor は既定で出力を HTML エンコードするため安全ですが、Razor 以外で出力する場合は `WebUtility.HtmlEncode` を明示的に呼び出します。
 
 > [!WARNING]
-> 保持する前に、**ファイル名の長さも制限してください**。ASP.NET Core が制限しているのは multipart の各パートのヘッダー全体の大きさ（`FormOptions.MultipartHeadersLengthLimit`、既定 16,384 バイト）だけです。実際に試すと、**16,000 文字のファイル名はそのまま受け付けられ**、20,000 文字でようやく HTTP 400 になります。この値をそのままデータベースへ保存するとレコードが肥大化し、後編の「[SAS による一時的なアクセス許可](../07-2-azure-blob-storage/index.md#sas-による一時的なアクセス許可)」で元のファイル名を `Content-Disposition` に載せる場合は、発行する URL 自体も巨大になります。OWASP は拡張子を含めて 255 文字未満に収めることを推奨しています。上限を超えるものは切り詰めるか、拒否しましょう。
+> 保持する前に、**ファイル名の長さも制限してください**。ASP.NET Core が制限しているのは multipart の各パートのヘッダー全体の大きさ（`FormOptions.MultipartHeadersLengthLimit`、既定 16,384 バイト）だけです。実際に試すと、**16,000 文字のファイル名はそのまま受け付けられ**、20,000 文字でようやく HTTP 400 になります。この値をそのままデータベースへ保存するとレコードが肥大化し、後編の「[SAS による一時的なアクセス許可](../07-2-azure-blob-storage/index.md#sas-による一時的なアクセス許可)」で元のファイル名を `Content-Disposition` に載せる場合は、発行する URL 自体も巨大になります。[OWASP](https://owasp.org/) は拡張子を含めて 255 文字未満に収めることを推奨しています。上限を超えるものは切り詰めるか、拒否しましょう。
 
 サイズ上限は構成から読み込み、`IOptions<T>` で注入するのが定石です（構成の詳細は[第5章：アプリ設定 (Configuration)](../05-configuration/index.md)、DI の詳細は[第6章：依存性注入 (DI)](../06-dependency-injection/index.md)を参照）。
 
@@ -900,7 +900,7 @@ Microsoft.Extensions.Options.OptionsValidationException: DataAnnotation validati
 'The field PermittedExtensions must be a string or array type with a minimum length of '1'.'.
 ```
 
-> [!WARNING]
+> [!IMPORTANT]
 > `ValidateDataAnnotations()` が検証するのは、**`System.ComponentModel.DataAnnotations` の属性が付いたプロパティだけ** です。C# の `required` 修飾子は付けても検証されません。`required` はコンパイル時にオブジェクト初期化子での指定を強制する機能であり、構成バインダーはリフレクションで値を設定するため、この制約は働かないためです。
 >
 > ```csharp
