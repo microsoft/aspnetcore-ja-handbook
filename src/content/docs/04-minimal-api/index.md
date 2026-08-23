@@ -274,7 +274,7 @@ app.Run();
 ```
 
 > [!NOTE]
-> ASP.NET Core 8 以降、`IFormFile` や `[FromForm]` をバインドするエンドポイントでは **Antiforgery トークンの検証が必須** です。`AddAntiforgery()` を忘れると `UseAntiforgery()` 時点で起動時に `InvalidOperationException` が、`UseAntiforgery()` を忘れると対象エンドポイントへのリクエストで HTTP 500 が発生します。
+> ASP.NET Core 8 以降、`IFormFile` や `[FromForm]` をバインドするエンドポイントでは **Antiforgery トークンの検証が必須** です。`AddAntiforgery()` を忘れると `UseAntiforgery()` の時点で起動時に `InvalidOperationException` が発生します。また `UseAntiforgery()` を忘れると、対象エンドポイントへのリクエストが HTTP 500 で失敗します。
 > クッキーを使わない API クライアントからの呼び出しなど、検証を意図的に無効化したい場合はエンドポイントに `.DisableAntiforgery()` を付与します。詳しくは [ASP.NET Core でのクロスサイト リクエスト フォージェリ (CSRF/XSRF) 攻撃の防止 - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/anti-request-forgery?view=aspnetcore-10.0) を参照してください。
 
 ```mermaid
