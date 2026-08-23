@@ -727,7 +727,7 @@ public sealed class BlobStorageOptions
 
 public sealed class BlobFileStorage(
     BlobServiceClient serviceClient,
-    // SAS URL の発行役。実装は後述の「SAS による一時的なアクセス許可」で示す
+    // SAS URL の発行役。実装は後述の「[SAS による一時的なアクセス許可](#sas-による一時的なアクセス許可)」で示す
     UserDelegationSasProvider sasProvider,
     IOptions<BlobStorageOptions> options,
     ILogger<BlobFileStorage> logger) : IFileStorage
@@ -857,7 +857,7 @@ public static class StorageServiceCollectionExtensions
 
         // TimeProvider は既定では登録されていないため、明示的に登録する
         services.TryAddSingleton(TimeProvider.System);
-        // 保存先の BLOB 名を組み立てる。実装は後述の「保存先パスの設計」で示す
+        // 保存先の BLOB 名を組み立てる。実装は後述の「[保存先パスの設計](#保存先パスの設計)」で示す
         services.AddSingleton<IStoragePathBuilder, StoragePathBuilder>();
 
         return services;
