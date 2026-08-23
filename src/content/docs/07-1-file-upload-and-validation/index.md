@@ -3,7 +3,7 @@ title: "第7章（前編）：ファイル受信と検証"
 description: "multipart/form-data の仕組み、IFormFile によるバッファリング受信と MultipartReader によるストリーミング受信、サイズ制限の設定、拡張子とファイルシグネチャによる検証を解説します。"
 ---
 
-第7章は前編と後編に分かれています。前編では、ブラウザーやクライアントから送られてきたファイルを受け取る仕組みと、受け取ったファイルを安全に検証する方法を説明します。受け取ったファイルを Azure Blob Storage へ保存する方法は [第7章（後編）：Azure Blob Storage への保存](../07-2-azure-blob-storage/index.md) で扱います。
+第7章は前編と後編に分かれています。前編では、ブラウザやクライアントから送られてきたファイルを受け取る仕組みと、受け取ったファイルを安全に検証する方法を説明します。受け取ったファイルを Azure Blob Storage へ保存する方法は [第7章（後編）：Azure Blob Storage への保存](../07-2-azure-blob-storage/index.md) で扱います。
 
 ---
 
@@ -614,6 +614,7 @@ if (!MediaTypeHeaderValue.TryParse(context.Request.ContentType, out var mediaTyp
 ```csharp
 if (contentDisposition is not null && contentDisposition.IsFileDisposition())
 {
+    // containerClient（BlobContainerClient）の取得方法は後編で解説します
     var blobClient = containerClient.GetBlobClient($"{Guid.NewGuid():N}.bin");
 
     // 受信ストリームを、そのまま Blob Storage へ流し込む
@@ -767,6 +768,9 @@ public static class FileSignatureValidator
 ```
 
 > [!WARNING]
+> このメソッドは、`IFormFile.OpenReadStream()` のように **シークできるストリーム専用** です。`MultipartReader` によるストリーミング受信で得られる `section.Body` は `CanSeek` が `false` ですが、`Position = 0` や `Seek(0, SeekOrigin.Begin)` を呼んでも **例外は発生しません**。実際に試すと `Position` プロパティの値だけが 0 に戻り、読み取り位置は戻らないため、**先頭の数バイトが欠けたファイルが保存されます**。ストリーミング受信でシグネチャを検証する場合は、先頭バイトを読み取ったバッファを保存先へ書き出してから、残りを `CopyToAsync` で転送してください。
+
+> [!WARNING]
 > このメソッドは、**シグネチャ辞書に載っていない拡張子に対して `false` を返します**。したがって、後述の許可拡張子リストに `.txt` や `.csv` のような項目を追加しただけでは、その形式のアップロードはすべて「内容が拡張子と一致しません」で拒否されます。
 
 シグネチャの定義そのものにも注意が必要です。JPEG のシグネチャを `FF D8 FF E0`（JFIF）のように 4 バイトで固定している例をよく見かけますが、4 バイト目は後続のマーカー種別であり、`E1`（Exif）や `EE`（Adobe）、`DB`（量子化テーブル）など多くの値を取ります。
@@ -852,7 +856,7 @@ var path = Path.Combine(uploadDirectory, storedName);
 元のファイル名を画面に表示したい場合は、**表示用の名前としてデータベースに保持** し、表示時に HTML エンコードします。Razor は既定で出力を HTML エンコードするため安全ですが、Razor 以外で出力する場合は `WebUtility.HtmlEncode` を明示的に呼び出します。
 
 > [!WARNING]
-> 保持する前に、**ファイル名の長さも制限してください**。ASP.NET Core が制限しているのは multipart の各パートのヘッダー全体の大きさ（`FormOptions.MultipartHeadersLengthLimit`、既定 16,384 バイト）だけです。実際に試すと、**16,000 文字のファイル名はそのまま受け付けられ**、20,000 文字でようやく HTTP 400 になります。この値をそのままデータベースへ保存するとレコードが肥大化し、後述の「[SAS による一時的なアクセス許可](../07-2-azure-blob-storage/index.md#sas-による一時的なアクセス許可)」で元のファイル名を `Content-Disposition` に載せる場合は、発行する URL 自体も巨大になります。OWASP は拡張子を含めて 255 文字未満に収めることを推奨しています。上限を超えるものは切り詰めるか、拒否しましょう。
+> 保持する前に、**ファイル名の長さも制限してください**。ASP.NET Core が制限しているのは multipart の各パートのヘッダー全体の大きさ（`FormOptions.MultipartHeadersLengthLimit`、既定 16,384 バイト）だけです。実際に試すと、**16,000 文字のファイル名はそのまま受け付けられ**、20,000 文字でようやく HTTP 400 になります。この値をそのままデータベースへ保存するとレコードが肥大化し、後編の「[SAS による一時的なアクセス許可](../07-2-azure-blob-storage/index.md#sas-による一時的なアクセス許可)」で元のファイル名を `Content-Disposition` に載せる場合は、発行する URL 自体も巨大になります。OWASP は拡張子を含めて 255 文字未満に収めることを推奨しています。上限を超えるものは切り詰めるか、拒否しましょう。
 
 サイズ上限は構成から読み込み、`IOptions<T>` で注入するのが定石です（構成の詳細は[第5章：アプリ設定 (Configuration)](../05-configuration/index.md)、DI の詳細は[第6章：依存性注入 (DI)](../06-dependency-injection/index.md)を参照）。
 
