@@ -687,6 +687,13 @@ public sealed record StoredFile(string StoragePath, long Length, string ETag);
 > インターフェイスからは `BlobClient` や `Stream` 以外の Azure 固有の型を排除します。こうすることで、上位のサービス層は Azure SDK への参照を持たずに済み、テストではインメモリ実装に差し替えられます。
 
 > [!NOTE]
+> **他言語との比較**
+> - Laravel (PHP): Flysystem を基盤とする `Storage` ファサードが同じ役割を担います。`config/filesystems.php` に「ディスク」を定義し、`Storage::disk('s3')` のように名前で切り替えます。公式にサポートされるドライバーはローカル・SFTP・Amazon S3 で、Azure Blob Storage を使う場合はサードパーティ製のパッケージを追加します
+> - Go: Go Cloud Development Kit の `gocloud.dev/blob` が `blob.Bucket` という共通型を提供し、`azureblob`、`s3blob`、`gcsblob`、`fileblob`、`memblob` の実装を差し替えられます。テスト用のインメモリ実装が用意されている点も、上図の `InMemoryFileStorage` と同じ発想です
+>
+> 抽象化の粒度こそ違いますが、「保存先ごとの違いをインターフェイスの裏に隠す」という設計はどの言語でも共通です。
+
+> [!NOTE]
 > この抽象化は、他のクラウドストレージへの移行にも効きます。オブジェクトストレージはどれも「キーを指定してストリームを保存し、キーで取得する」という同じモデルなので、`IFileStorage` の実装を差し替えるだけで対応できます。
 >
 > | サービス | .NET SDK のパッケージ | 「コンテナー」に相当する概念 |
