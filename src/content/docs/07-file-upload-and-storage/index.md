@@ -2175,6 +2175,8 @@ public async Task<IActionResult> RedirectToSasUrl(Guid id, CancellationToken can
 }
 ```
 
+このダウンロード処理で、クライアント・アプリケーション・Microsoft Entra ID・Blob Storage の間をやり取りが行き来する順序を時系列で表すと、次のようになります。
+
 ```mermaid
 sequenceDiagram
     participant C as クライアント
