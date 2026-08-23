@@ -334,18 +334,31 @@ flowchart TB
 | 設定 | 既定値 | 超過時の挙動 |
 | --- | --- | --- |
 | IIS の `maxAllowedContentLength` | 30,000,000 バイト（約 28.6 MB） | HTTP 404.13 が返る |
-| `KestrelServerLimits.MaxRequestBodySize` | 30,000,000 バイト（約 28.6 MB） | `BadHttpRequestException` がスローされ HTTP 413 が返る。クライアントが送信を続けた場合は接続がリセットされることもある |
+| `KestrelServerLimits.MaxRequestBodySize` | 30,000,000 バイト（約 28.6 MB） | `BadHttpRequestException` がスローされる。クライアントに返るステータスは後述のとおり経路によって異なる |
 | `FormOptions.MultipartBodyLengthLimit` | 134,217,728 バイト（128 MB） | `InvalidDataException` がスローされる |
 | `FormOptions.MemoryBufferThreshold` | 65,536 バイト（64 KB） | 閾値を超えた時点で、それまでメモリに保持していた分も含めて全量がディスク上の一時ファイルへ退避される |
 | `FormOptions.ValueCountLimit` | 1,024 個 | `InvalidDataException` がスローされる。ファイルもこの個数に含まれる |
 
 > [!IMPORTANT]
-> `FormOptions` の上限を超えたときにスローされる `InvalidDataException` は、フレームワークが自動的に 400 へ変換してくれるわけではありません。クライアントに返る HTTP ステータスは、フォームを読み取る経路によって変わります。
+> 上限を超えたときにクライアントへ返る HTTP ステータスは、**フォームを読み取る経路によって変わります**。フレームワークが常に同じステータスへ変換してくれるわけではありません。
 >
-> - **MVC コントローラー**（`[ApiController]` と `[FromForm]` の組み合わせ）では、モデルバインディングの失敗として扱われ、**HTTP 400** と検証エラーの詳細が返ります。
-> - **自分で `HttpRequest.ReadFormAsync()` を呼ぶ場合**（Minimal API でフォームを直接読む場合など）は、未処理の例外となり **HTTP 500** が返ります。
+> | 超過した上限 | MVC コントローラー<br>（`[ApiController]` と `[FromForm]`） | Minimal API<br>（`IFormFile` バインドや `ReadFormAsync`） |
+> | --- | --- | --- |
+> | `MaxRequestBodySize` | **400**（モデルバインディングの失敗として扱われる） | **413** |
+> | `FormOptions` の各上限 | **400**（同上） | **500**（未処理の `InvalidDataException`） |
 >
-> 後者で 400 を返したい場合は、`ReadFormAsync()` の呼び出しを `try` / `catch` で囲み、`InvalidDataException` を捕捉して自分でレスポンスを組み立ててください。
+> MVC の場合は、いずれも次のような `ValidationProblemDetails` が返ります。例外の内容がそのままメッセージに含まれるため、原因の切り分けには役立ちます。
+>
+> ```json
+> {
+>   "status": 400,
+>   "errors": {
+>     "": ["Failed to read the request form. Form value count limit 1024 exceeded."]
+>   }
+> }
+> ```
+>
+> Minimal API で 400 を返したい場合は、`ReadFormAsync()` の呼び出しを `try` / `catch` で囲み、`InvalidDataException` を捕捉して自分でレスポンスを組み立ててください。
 
 アプリケーション全体で上限を変更する場合は `Program.cs` で設定します。
 
@@ -513,6 +526,8 @@ ASP.NET Core がファイル受信のために提供している手段は、抽�
 
 > [!NOTE]
 > 100 MB のファイルをアップロードして実測すると、`ReadFormAsync()` はマネージドヒープの割り当てを数 MB に抑える一方で、ディスク上に 100 MB の一時ファイルを作成します。つまり「メモリは節約されるがディスク I/O は 2 往復する」状態です。`MultipartReader` はこの一時ファイルを作らないため、ディスク I/O が 1 回で済みます。
+>
+> この一時ファイルは OS の一時ディレクトリに `ASPNETCORE_` で始まる名前で作られます。手元で確かめたい場合は、アップロード処理の実行中にそのディレクトリを覗いてみてください。
 
 最小構成は次のとおりです。この程度であれば、実装コストはさほど高くありません。
 
@@ -856,7 +871,7 @@ var path = Path.Combine(uploadDirectory, storedName);
 元のファイル名を画面に表示したい場合は、**表示用の名前としてデータベースに保持** し、表示時に HTML エンコードします。Razor は既定で出力を HTML エンコードするため安全ですが、Razor 以外で出力する場合は `WebUtility.HtmlEncode` を明示的に呼び出します。
 
 > [!WARNING]
-> 保持する前に、**ファイル名の長さも制限してください**。ASP.NET Core が制限しているのは multipart の各パートのヘッダー全体の大きさ（`FormOptions.MultipartHeadersLengthLimit`、既定 16,384 バイト）だけです。実際に試すと、**16,000 文字のファイル名はそのまま受け付けられ**、20,000 文字でようやく HTTP 400 になります。この値をそのままデータベースへ保存するとレコードが肥大化し、後編の「[SAS による一時的なアクセス許可](../07-2-azure-blob-storage/index.md#sas-による一時的なアクセス許可)」で元のファイル名を `Content-Disposition` に載せる場合は、発行する URL 自体も巨大になります。[OWASP](https://owasp.org/) は拡張子を含めて 255 文字未満に収めることを推奨しています。上限を超えるものは切り詰めるか、拒否しましょう。
+> 保持する前に、**ファイル名の長さも制限してください**。ASP.NET Core が制限しているのは multipart の各パートのヘッダー全体の大きさ（`FormOptions.MultipartHeadersLengthLimit`、既定 16,384 バイト）だけです。実際に試すと、**16,000 文字のファイル名はそのまま受け付けられ**、20,000 文字でようやく `InvalidDataException`（`Multipart headers length limit 16384 exceeded.`）になります（クライアントに返るステータスは、前述のとおり読み取り経路によって 400 または 500 に分かれます）。この値をそのままデータベースへ保存するとレコードが肥大化し、後編の「[SAS による一時的なアクセス許可](../07-2-azure-blob-storage/index.md#sas-による一時的なアクセス許可)」で元のファイル名を `Content-Disposition` に載せる場合は、発行する URL 自体も巨大になります。[OWASP](https://owasp.org/) は拡張子を含めて 255 文字未満に収めることを推奨しています。上限を超えるものは切り詰めるか、拒否しましょう。
 
 サイズ上限は構成から読み込み、`IOptions<T>` で注入するのが定石です（構成の詳細は[第5章：アプリ設定 (Configuration)](../05-configuration/index.md)、DI の詳細は[第6章：依存性注入 (DI)](../06-dependency-injection/index.md)を参照）。
 
@@ -1036,7 +1051,16 @@ public class ValidatedUploadRequest
 ```
 
 > [!NOTE]
-> `AddValidation()` はソースジェネレーターを使って、**呼び出したアセンブリ内** の検証対象の型を検出します。そのため、Minimal API のエンドポイントを別のアセンブリ（クラスライブラリなど）で定義している場合、ホスト側で `AddValidation()` を呼ぶだけでは検証が実行されず、不正なリクエストがそのまま処理されて 400 ではなく 200 が返ります。この場合は、**エンドポイントを定義しているアセンブリ側に `AddValidation()` を呼ぶ拡張メソッドを作り、それをホストアプリから呼び出します**（ホスト側の `AddValidation()` も併せて呼びます）。そのアセンブリが `Microsoft.NET.Sdk.Web` ベースでない素のクラスライブラリの場合は、`Microsoft.Extensions.Validation` パッケージの参照も追加します。
+> `AddValidation()` はソースジェネレーターを使って、**呼び出したアセンブリ内** の検証対象の型を検出します。そのため、Minimal API のエンドポイントを別のアセンブリ（クラスライブラリなど）で定義していると、ホスト側で `AddValidation()` を呼ぶだけでは効かない場合があります。実際に試すと、次のように分かれます。
+>
+> | 検証属性の付け方 | 別アセンブリで定義したエンドポイント |
+> | --- | --- |
+> | ②のように**複合型のプロパティ**に付ける | **検証されない**（不正な値でも 200 が返る） |
+> | ①のように**ハンドラーの引数**に直接付ける | 検証される（400 が返る） |
+>
+> 生成対象になるのは「検証対象の**型**」であり、引数に直接付けた属性は実行時に評価されるためです。①の `[MaxFileSize] IFormFile file` は後者にあたりますが、②の `ValidatedUploadRequest` のような複合型は前者にあたるため影響を受けます。
+>
+> この場合は、**エンドポイントを定義しているアセンブリ側に `AddValidation()` を呼ぶ拡張メソッドを作り、それをホストアプリから呼び出します**（ホスト側の `AddValidation()` も併せて呼びます）。そのアセンブリが `Microsoft.NET.Sdk.Web` ベースでない素のクラスライブラリの場合は、`Microsoft.Extensions.Validation` パッケージの参照も追加します。
 >
 > 特定のエンドポイントだけ検証を外したい場合は `DisableValidation()` を使います。
 
