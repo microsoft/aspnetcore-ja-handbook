@@ -257,6 +257,8 @@ app.MapPost("/products", (Product newProd, IProductRepository repo) =>
 
 ```csharp
 // Program.cs
+using Microsoft.AspNetCore.Mvc; // [FromForm] は暗黙の using に含まれないため明示的に必要
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddAntiforgery(); // Antiforgery サービスの登録（必須）
 
