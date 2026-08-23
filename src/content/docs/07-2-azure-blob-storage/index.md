@@ -354,7 +354,11 @@ private static string ResolveContentType(string fileName)
 > | 値 | ASCII のみ | `2026-01-01` | `報告書.pdf`（日本語） |
 > | 全体 | 1 つの BLOB につき合計 8 KB まで | — | — |
 >
-> 規則に反するキー名を指定すると `RequestFailedException`（`The metadata specified is invalid. It has characters that are not permitted.`）が発生し、値に ASCII 以外を含めると HTTP ヘッダーを組み立てる段階で `Request headers must contain only ASCII characters.` となります。日本語のファイル名などは、上記の例のように Base64 エンコードして保存するか、データベース側で管理してください。
+> 規則に反するキー名を指定すると、サーバーが 400 を返し `RequestFailedException`（`The metadata specified is invalid. It has characters that are not permitted.`）が発生します。
+>
+> 一方、値に ASCII 以外を含めた場合は、リクエストを送信する前の HTTP ヘッダー組み立ての段階で失敗します。このとき表に出る例外は `RequestFailedException` ではなく **`AggregateException`**（メッセージは `Retry failed after 6 tries.` で、内側に `Request headers must contain only ASCII characters.` という `RequestFailedException` が 6 件入っています）です。クライアント側の誤りであるにもかかわらず既定のリトライ設定に従って 6 回試行されるため、`catch (RequestFailedException)` では捕捉できない点に注意してください。
+>
+> 日本語のファイル名などは、上記の例のように Base64 エンコードして保存するか、データベース側で管理してください。
 
 アップロード後にメタデータを更新したり読み取ったりする場合は、`SetMetadataAsync` と `GetPropertiesAsync` を使います。
 
@@ -508,6 +512,23 @@ docker run -p 10000:10000 -p 10001:10001 -p 10002:10002 \
 npm install -g azurite
 azurite --silent --location ./azurite-data
 ```
+
+> [!WARNING]
+> Azurite が対応する Storage REST API のバージョンは、Azure SDK for .NET の更新に追いつかないことがあります。新しい SDK と組み合わせると、最初の操作でいきなり次の例外が発生します。
+>
+> ```text
+> Azure.RequestFailedException: The API version 2026-06-06 is not supported by Azurite.
+> Please upgrade Azurite to latest version and retry.
+> Status: 400 (InvalidHeaderValue)
+> ```
+>
+> メッセージは「Azurite を最新版に更新せよ」と促しますが、**Azurite が最新版でも解決しません**。実際に Azurite 3.36.0（npm の最新）と `Azure.Storage.Blobs` 12.29.1 の組み合わせで発生します。Azurite 側の API バージョンチェックを無効にして起動してください。
+>
+> ```bash
+> azurite --silent --location ./azurite-data --skipApiVersionCheck
+> ```
+>
+> Docker で起動する場合は、イメージ名の後ろに同じオプションを続けるか、環境変数 `AZURITE_SKIP_API_VERSION_CHECK=true` を渡します。
 
 Azurite は既知の開発用アカウントキーを持つため、開発環境では接続文字列 `UseDevelopmentStorage=true` を使用します。
 
