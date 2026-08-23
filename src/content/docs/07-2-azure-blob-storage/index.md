@@ -949,7 +949,7 @@ public sealed class StoragePathBuilder(
 ```
 
 > [!WARNING]
-> BLOB 名にクライアント由来のファイル名を含めてはいけません。`Path.GetExtension` は最後の `.` 以降をそのまま返すだけなので、`report.b?c` を渡せば `?` が、`report.` + 300 文字を渡せば 300 文字の「拡張子」が返ります。BLOB 名の上限は 1,024 文字であり、これを超えるとアップロードが失敗します。また、`?` や `#` は SDK が生成する URI では自動的にパーセントエンコードされますが、BLOB 名をデータベースに保存して後から自前で URL を組み立てる運用では、クエリ文字列やフラグメントとして解釈されて壊れます。元のファイル名はメタデータやデータベースに保持し、ダウンロード時に `Content-Disposition` ヘッダーで返してください。
+> BLOB 名にクライアント由来のファイル名を含めてはいけません。`Path.GetExtension` は最後の `.` 以降をそのまま返すだけなので、`report.b?c` を渡せば `.b?c` が、`report.` の後ろに 300 文字続く名前を渡せば `.` を含む 301 文字が、そのまま「拡張子」として返ります。BLOB 名の上限は 1,024 文字であり、これを超えると `400 (OutOfRangeInput)` でアップロードが失敗します。また、`?` や `#` は SDK が生成する URI では自動的にパーセントエンコードされますが、BLOB 名をデータベースに保存して後から自前で URL を組み立てる運用では、クエリ文字列やフラグメントとして解釈されて壊れます。元のファイル名はメタデータやデータベースに保持し、ダウンロード時に `Content-Disposition` ヘッダーで返してください。
 
 > [!TIP]
 > .NET 9 以降では `Guid.CreateVersion7()` が利用できます。UUID v7 は先頭に生成時刻（ミリ秒）を含むため、文字列としてソートするとおおむね時系列順に並び、一覧取得やライフサイクル管理と相性が良くなります。`TimeProvider` を注入しておくと、テストで時刻を固定できます。
@@ -1323,8 +1323,10 @@ public class FilesController(
 
         var ownerId = User.FindFirstValue(ClaimTypes.NameIdentifier)
             ?? throw new InvalidOperationException("ユーザー ID を特定できません。");
+        // 第 1 引数は用途。コンテナー名 (uploads) とは別の階層になるため、
+        // ここに "uploads" を渡すと BLOB 名が uploads/uploads/... と重複する。
         // 第 2 引数はファイルを区分する単位。ここではユーザーごとに分けるため ownerId を渡す
-        var storagePath = pathBuilder.Build("uploads", ownerId, file.FileName);
+        var storagePath = pathBuilder.Build("attachments", ownerId, file.FileName);
         var contentType = ResolveContentType(file.FileName);
 
         // ② BLOB へ保存（受信ストリームをそのまま転送）
