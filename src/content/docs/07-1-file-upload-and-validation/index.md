@@ -61,7 +61,7 @@ Content-Type: image/jpeg
 ```
 
 > [!WARNING]
-> `enctype="multipart/form-data"` を指定し忘れると、ファイルは一切送信されません。この場合、サーバー側ではファイルにバインドできず、後述の `[ApiController]` を付けたコントローラーでは HTTP 400 が返ります（`IFormFile?` と null 許容で受け取っている場合は `null` になります）。「ファイルが受け取れない」「引数が `null` になる」という不具合の多くはこれが原因です。なお `IFormFile` は、アップロードされたファイル 1 件を表す ASP.NET Core のインターフェイスです（詳細は [IFormFile によるバッファリング受信](#iformfile-によるバッファリング受信) で後述します）。
+> `enctype="multipart/form-data"` を指定し忘れると、ファイルは一切送信されません。このときの症状はエンドポイントの実装方法によって異なります。後述の Minimal API では **HTTP 415（Unsupported Media Type）** が返り、引数を `IFormFile?` と null 許容にしても 415 のままです。一方、後述の `[ApiController]` を付けたコントローラーでは **HTTP 400** が返ります（`IFormFile?` と null 許容で受け取っている場合は `null` になります）。「ファイルが受け取れない」「引数が `null` になる」という不具合の多くはこれが原因です。なお `IFormFile` は、アップロードされたファイル 1 件を表す ASP.NET Core のインターフェイスです（詳細は [IFormFile によるバッファリング受信](#iformfile-によるバッファリング受信) で後述します）。
 
 > [!NOTE]
 > **他言語との比較**
