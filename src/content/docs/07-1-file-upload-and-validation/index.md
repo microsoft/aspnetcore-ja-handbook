@@ -195,6 +195,7 @@ public async Task<IActionResult> PostMultiple(
 ファイル以外のフォーム値と組み合わせる場合は、モデルクラスにまとめると読みやすくなります。
 
 ```csharp
+// モデルクラスはコントローラーの外側に定義する
 public class UploadRequest
 {
     public required string Title { get; init; }
@@ -204,6 +205,7 @@ public class UploadRequest
     public required IFormFile File { get; init; }
 }
 
+// 以下のアクションメソッドは、前掲の UploadsController の中に追加する
 [HttpPost("with-metadata")]
 public async Task<IActionResult> PostWithMetadata(
     [FromForm] UploadRequest request,
@@ -675,7 +677,8 @@ public sealed class DisableFormValueModelBindingAttribute : Attribute, IResource
 [RequestSizeLimit(500 * 1024 * 1024)]
 public async Task<IActionResult> UploadStream(CancellationToken cancellationToken)
 {
-    // Request.Body を MultipartReader で直接読み取る
+    // 本体は前掲の MultipartReader を使ったコードと同じ
+    /* ... */
 }
 ```
 
