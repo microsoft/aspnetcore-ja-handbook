@@ -450,7 +450,7 @@ builder.Services.Configure<IISServerOptions>(options =>
 > [!NOTE]
 > `maxAllowedContentLength` は IIS 固有の設定です。Kestrel を直接公開する構成、Linux 上のコンテナー、Azure App Service の Linux プランなど IIS を経由しない環境では、この設定自体が存在しないため `web.config` は不要です。Nginx や Apache をリバースプロキシとして使う場合は、それぞれ `client_max_body_size`、`LimitRequestBody` が対応する設定になります。
 
-`<requestLimits>` 要素では、`maxAllowedContentLength` のほかに次の設定も指定できます。ファイルアップロードで直接必要になることは多くありませんが、同じ要素にまとまっているため把握しておくとよいでしょう。
+[`<requestLimits>` 要素](https://learn.microsoft.com/ja-jp/iis/configuration/system.webserver/security/requestfiltering/requestlimits/)では、`maxAllowedContentLength` のほかに次の設定も指定できます。ファイルアップロードで直接必要になることは多くありませんが、同じ要素にまとまっているため把握しておくとよいでしょう。
 
 | 属性 / 子要素 | 既定値 | 説明 |
 | --- | --- | --- |
@@ -1078,4 +1078,5 @@ flowchart TB
 - [ASP.NET Core でクロスサイト リクエスト フォージェリ (XSRF/CSRF) 攻撃を防止する | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/anti-request-forgery?view=aspnetcore-10.0)
 - [ASP.NET Core での検証 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/validation?view=aspnetcore-10.0)
 - [ASP.NET Core Kestrel Web サーバーのオプションを構成する | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/servers/kestrel/options?view=aspnetcore-10.0)
+- [要求の制限 `<requestLimits>` | Microsoft Learn](https://learn.microsoft.com/ja-jp/iis/configuration/system.webserver/security/requestfiltering/requestlimits/)
 - [Unrestricted File Upload | OWASP](https://owasp.org/www-community/vulnerabilities/Unrestricted_File_Upload)
