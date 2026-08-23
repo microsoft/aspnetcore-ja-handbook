@@ -1,0 +1,19 @@
+/*
+ * 狭い画面で表が横スクロールになるのを防ぐ。
+ *
+ * Starlight は表に display:block と overflow:auto を付けているため、
+ * ページ全体のレイアウトは崩れない。ただしセル内の `code`（`IISServerOptions.MaxRequestBodySize`
+ * のような長い識別子）が折り返せず、表が本文幅を超えて横スクロールが必要になる。
+ *
+ * Starlight の既定は overflow-wrap:break-word だが、これは CSS 仕様上
+ * 表の min-content 幅の計算に影響しないため、表は縮まない。
+ * min-content 幅に反映されるのは overflow-wrap:anywhere のほうなので、そちらを指定する。
+ *
+ * 広い画面では列幅の配分が変わってしまうため、狭い画面に限定して適用する。
+ * 50rem は Starlight がモバイルレイアウトへ切り替えるブレークポイントに合わせている。
+ */
+@media (max-width: 50rem) {
+	.sl-markdown-content table:not(:where(.not-content *)) :is(th, td) code {
+		overflow-wrap: anywhere;
+	}
+}
