@@ -129,7 +129,7 @@ var enabled = section.GetValue<bool>("Enabled");  // true
 
 > [!TIP]
 > `IConfiguration["Key"]` による設定値の直接取得は、Spring Boot の `@Value("${my-feature.title}")` でフィールドに設定値をインジェクトする方法に相当します。  
-> ただし ASP.NET Core では DI コンテナを介したコンストラクタインジェクションが主流であり、コントローラーやサービスでは `IConfiguration` を DI で注入して使用するのが一般的です。
+> ただし ASP.NET Core では DI コンテナーを介したコンストラクタインジェクションが主流であり、コントローラーやサービスでは `IConfiguration` を DI で注入して使用するのが一般的です。
 
 > [!TIP]
 > 各 IDE では、 `appsettings.json` の編集時に既知のキー（ `Logging` 、 `ConnectionStrings` 、 `AllowedHosts` など）に対する **IntelliSense（補完・型チェック）** が利用できます。`Logging.LogLevel` のキー名や値の候補が自動的に補完され、JSON の構文エラーもリアルタイムで検出されます。
@@ -204,7 +204,7 @@ ASP.NET Core では、 `appsettings.json` に加え **`appsettings.{Environment}
 }
 ```
 
-本番環境やコンテナ環境では、OS の環境変数として `ASPNETCORE_ENVIRONMENT` に `Production` を設定します。
+本番環境やコンテナー環境では、OS の環境変数として `ASPNETCORE_ENVIRONMENT` に `Production` を設定します。
 
 ```bash
 # Bash（Linux / macOS）
@@ -263,7 +263,7 @@ public class MyService
 ### 環境変数
 
 **環境変数** は `appsettings.json` の設定値を上書きするための主要な手段の一つです。  
-コンテナ（Docker、Kubernetes）やクラウドプラットフォーム（Azure App Service、AWS など）でのデプロイ時に設定値を外部から注入する場合によく利用されます。
+コンテナー（Docker、Kubernetes）やクラウドプラットフォーム（Azure App Service、AWS など）でのデプロイ時に設定値を外部から注入する場合によく利用されます。
 
 ASP.NET Core では環境変数で設定を定義する際、 **階層的なキーの区切り文字として `__`（アンダースコア 2 つ）** を使用します。  
 これは `:` が OS によっては環境変数のキー名として利用できない場合があるためです。
@@ -511,7 +511,7 @@ var connStr = builder.Configuration.GetConnectionString("DefaultConnection");
 設定値を直接 `IConfiguration["Key"]` で取得する方法は手軽ですが、大規模なアプリケーションでは「どのキーがどこで使われているか分からない」「型の不一致に気付きにくい」といった問題が発生しがちです。  
 こうした課題を解決するのが **オプションパターン（Options Pattern）** です。
 
-オプションパターンでは、設定セクションを **POCO（Plain Old CLR Object）クラス** にバインドし、DI コンテナ経由で型安全に設定値を利用します。  
+オプションパターンでは、設定セクションを **POCO（Plain Old CLR Object）クラス** にバインドし、DI コンテナー経由で型安全に設定値を利用します。  
 これにより、設定値へのアクセスがクラスのプロパティとして強く型付けされ、IDE の補完やリファクタリングが有効になります。
 
 > [!TIP]
@@ -551,7 +551,7 @@ public class MyFeatureOptions
 }
 ```
 
-次に `Program.cs` でオプションクラスを DI コンテナに登録します。
+次に `Program.cs` でオプションクラスを DI コンテナーに登録します。
 
 ```csharp
 // Program.cs
@@ -691,7 +691,7 @@ app.MapGet("/feature/monitor", (IOptionsMonitor<MyFeatureOptions> monitor) =>
 
 > [!IMPORTANT]
 > `IOptionsSnapshot<T>`, `IOptionsMonitor<T>` は、すべての構成ソースの変更を自動反映するわけではないことは知っておく必要があります。アプリ起動後の変更を反映できるのは、更新検知と再読み込みをサポートする構成プロバイダを使用している場合に限られます。例えば、既定の `appsettings.json` / `appsettings.{Environment}.json` は `reloadOnChange=true` により自動反映されます。
-> 一方、本番環境では `appsettings.json` を環境変数で上書きする運用が一般的ですが、たとえ `IOptionsSnapshot<T>`, `IOptionsMonitor<T>` を使用しても**一度起動したアプリに対して環境変数の値を変更してもオプションクラスに対して自動的に反映されません**。値を変更するには、アプリの再起動・再デプロイ（コンテナ再作成、Pod 再起動を含む）が必要です。
+> 一方、本番環境では `appsettings.json` を環境変数で上書きする運用が一般的ですが、たとえ `IOptionsSnapshot<T>`, `IOptionsMonitor<T>` を使用しても**一度起動したアプリに対して環境変数の値を変更してもオプションクラスに対して自動的に反映されません**。値を変更するには、アプリの再起動・再デプロイ（コンテナー再作成、Pod 再起動を含む）が必要です。
 > 実行中にアプリを再起動・再デプロイせずに設定値を自動的に切り替える要件がある場合は、Azure App Configuration などの動的リフレッシュ対応プロバイダを利用してください。
 > 参考：[チュートリアル:ASP.NET Core アプリで動的な構成を使用する](https://learn.microsoft.com/ja-jp/azure/azure-app-configuration/enable-dynamic-configuration-aspnet-core)
 
@@ -886,7 +886,7 @@ builder.Services.AddOptions<MyFeatureOptions>()
 ### DI を使わない直接バインド
 
 DI を使わずにオプションクラスへ直接バインドする方法もあります。  
-`Program.cs` の起動処理など、DI コンテナが構築される前の段階で設定値を読みたい場合に便利です。
+`Program.cs` の起動処理など、DI コンテナーが構築される前の段階で設定値を読みたい場合に便利です。
 
 ```csharp
 // GetSection().Get<T>() でオプションクラスへ直接取得する（DI 不要）
@@ -945,7 +945,7 @@ flowchart LR
     J["appsettings.json\n（基本設定）"]
     JE["appsettings.Development.json\n（開発環境上書き）"]
     US["ユーザーシークレット\n（開発環境の機密情報）"]
-    EV["環境変数\n（コンテナ / 本番環境）"]
+    EV["環境変数\n（コンテナー / 本番環境）"]
     CL["コマンドライン引数\n（起動時パラメータ）"]
     J -->|上書き| JE
     JE -->|上書き| US
