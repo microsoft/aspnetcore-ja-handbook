@@ -256,13 +256,26 @@ app.MapPost("/products", (Product newProd, IProductRepository repo) =>
 **フォームデータ** や **ファイルアップロード** （`IFormFile`）にも対応しており、必要に応じて `[FromForm]` 属性を付与して明示的にフォーム由来であることを指定できます。
 
 ```csharp
+// Program.cs
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddAntiforgery(); // Antiforgery サービスの登録（必須）
+
+var app = builder.Build();
+app.UseAntiforgery(); // Antiforgery トークン検証ミドルウェア（必須）
+
 // フォームデータとファイルアップロードをバインドする例
 app.MapPost("/upload", ([FromForm] string description, IFormFile file, ILogger<Program> logger) =>
 {
     logger.LogInformation("description: {Description}, fileName: {FileName}, fileSize: {FileSize}", description, file.FileName, file.Length);
     return Results.Ok();
 });
+
+app.Run();
 ```
+
+> [!NOTE]
+> ASP.NET Core 8 以降、`IFormFile` や `[FromForm]` をバインドするエンドポイントでは **Antiforgery トークンの検証が必須** です。`AddAntiforgery()` を忘れると `UseAntiforgery()` 時点で起動時に `InvalidOperationException` が、`UseAntiforgery()` を忘れると対象エンドポイントへのリクエストで HTTP 500 が発生します。
+> クッキーを使わない API クライアントからの呼び出しなど、検証を意図的に無効化したい場合はエンドポイントに `.DisableAntiforgery()` を付与します。詳しくは [ASP.NET Core でのクロスサイト リクエスト フォージェリ (CSRF/XSRF) 攻撃の防止 - Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/anti-request-forgery?view=aspnetcore-10.0) を参照してください。
 
 ```mermaid
 flowchart TD
