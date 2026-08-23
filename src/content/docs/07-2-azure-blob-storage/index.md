@@ -43,7 +43,7 @@ description: "Azure Blob Storage のオブジェクトモデルと Microsoft Ent
 
 ### Blob Storage のオブジェクトモデル
 
-Azure Blob Storage は、大量の非構造化データ（画像、動画、ログ、バックアップなど）を保存するためのオブジェクトストレージサービスです。データは 3 階層で構成されます。
+Azure Blob Storage は、大量の非構造化データ（画像、動画、ログ、バックアップなど）を保存するためのオブジェクトストレージサービスです。**BLOB (Binary Large Object) とは、ここに保存されるデータ 1 件分の単位** で、実質的には 1 つのファイルに相当します。データは 3 階層で構成されます。
 
 ```mermaid
 flowchart TB
@@ -150,7 +150,7 @@ az role assignment create \
 | --- | --- | --- |
 | ストレージ BLOB データ閲覧者 (Storage Blob Data Reader) | 読み取りのみ | ファイルの配信だけを行うアプリ |
 | ストレージ BLOB データ共同作成者 (Storage Blob Data Contributor) | 読み取り・書き込み・削除 | アップロード機能を持つアプリ。本章の例はこれを想定 |
-| Storage Blob デリゲータ (Storage Blob Delegator) | ユーザー委任キーの取得 | 後述のユーザー委任 SAS を発行するアプリ。データ用ロールと併せて割り当てる |
+| Storage Blob デリゲータ (Storage Blob Delegator) | ユーザー委任キーの取得 | 後述のユーザー委任 SAS（[有効期限付きのアクセス URL](#sas-による一時的なアクセス許可)）を発行するアプリ。データ用ロールと併せて割り当てる |
 
 > [!TIP]
 > ロールの割り当てが反映されるまで数分かかることがあります。設定直後に `403 Forbidden` が返る場合は、少し待ってから再試行してください。ローカル開発で権限設定が煩雑な場合は、後述の Azurite を使うとロール割り当て自体が不要になります。
