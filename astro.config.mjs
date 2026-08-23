@@ -89,7 +89,7 @@ export default defineConfig({
 			customCss: [
 				'./src/styles/panel-toggle.css',
 				// 狭い画面で表がはみ出して横スクロールになるのを防ぐ。
-				'./src/styles/table-mobile.css',
+				'./src/styles/table-wrap.css',
 			],
 			head: [
 				{
