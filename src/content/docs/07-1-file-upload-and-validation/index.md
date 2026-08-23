@@ -190,7 +190,7 @@ public async Task<IActionResult> PostMultiple(
 >
 > 一方 Minimal API の `IFormFileCollection` は、フィールド名にかかわらず **リクエスト内のすべてのファイル** を返します。同じ型でも挙動が違う点に注意してください。
 >
-> また、1 リクエストで受け取れるフォーム項目数には `FormOptions.ValueCountLimit`（既定 1,024）の上限があります。ファイルもこの数に含まれるため、**1,025 個以上のファイルを一度に送ると HTTP 400 で拒否されます**。大量のファイルを扱う場合は、クライアント側で分割して送るか、この値を引き上げてください。
+> また、1 リクエストで受け取れるフォーム項目数には `FormOptions.ValueCountLimit`（既定 1,024）の上限があります。ファイルもこの数に含まれるため、**1,025 個以上のファイルを一度に送ると `InvalidDataException` で拒否されます**。このときクライアントに返るステータスは、上のコントローラーなら 400、Minimal API で自分でフォームを読む場合は 500 に分かれます（詳しくは[既定のサイズ制限と設定変更](#既定のサイズ制限と設定変更)で説明します）。大量のファイルを扱う場合は、クライアント側で分割して送るか、この値を引き上げてください。
 
 ファイル以外のフォーム値と組み合わせる場合は、モデルクラスにまとめると読みやすくなります。
 
@@ -455,7 +455,7 @@ builder.Services.Configure<IISServerOptions>(options =>
 | 設定場所 | 設定項目 | 役割 | 超過時の挙動 |
 | --- | --- | --- | --- |
 | `web.config` | `maxAllowedContentLength` | IIS がアプリにリクエストを渡すかどうかの判定。ここで弾かれるとアプリには一切届かない | HTTP 404.13 が返り、アプリのコードには到達しない |
-| C# コード | `IISServerOptions.MaxRequestBodySize` | アプリがボディの読み取りを許可する上限 | `BadHttpRequestException` がスローされ、HTTP 413 が返る |
+| C# コード | `IISServerOptions.MaxRequestBodySize` | アプリがボディの読み取りを許可する上限 | `BadHttpRequestException` がスローされる。クライアントに返るステータスは前述のとおり経路によって異なる |
 
 > [!IMPORTANT]
 > **どちらか一方だけを設定した場合、より小さいほうの値が実効的な上限になります。** 上限を引き上げたつもりが効いていないときは、両方の設定を確認してください。
@@ -871,7 +871,7 @@ var path = Path.Combine(uploadDirectory, storedName);
 元のファイル名を画面に表示したい場合は、**表示用の名前としてデータベースに保持** し、表示時に HTML エンコードします。Razor は既定で出力を HTML エンコードするため安全ですが、Razor 以外で出力する場合は `WebUtility.HtmlEncode` を明示的に呼び出します。
 
 > [!WARNING]
-> 保持する前に、**ファイル名の長さも制限してください**。ASP.NET Core が制限しているのは multipart の各パートのヘッダー全体の大きさ（`FormOptions.MultipartHeadersLengthLimit`、既定 16,384 バイト）だけです。実際に試すと、**16,000 文字のファイル名はそのまま受け付けられ**、20,000 文字でようやく `InvalidDataException`（`Multipart headers length limit 16384 exceeded.`）になります（クライアントに返るステータスは、前述のとおり読み取り経路によって 400 または 500 に分かれます）。この値をそのままデータベースへ保存するとレコードが肥大化し、後編の「[SAS による一時的なアクセス許可](../07-2-azure-blob-storage/index.md#sas-による一時的なアクセス許可)」で元のファイル名を `Content-Disposition` に載せる場合は、発行する URL 自体も巨大になります。[OWASP](https://owasp.org/) は拡張子を含めて 255 文字未満に収めることを推奨しています。上限を超えるものは切り詰めるか、拒否しましょう。
+> 保持する前に、**ファイル名の長さも制限してください**。ASP.NET Core が制限しているのは multipart の各パートのヘッダー全体の大きさ（`FormOptions.MultipartHeadersLengthLimit`、既定 16,384 バイト）だけです。実際に試すと、**16,000 文字のファイル名はそのまま受け付けられ**、20,000 文字でようやく `InvalidDataException` になります（メッセージは `Multipart headers length limit 16384 exceeded.`）。クライアントに返るステータスは、前述のとおり読み取り経路によって 400 または 500 に分かれます。この値をそのままデータベースへ保存するとレコードが肥大化し、後編の「[SAS による一時的なアクセス許可](../07-2-azure-blob-storage/index.md#sas-による一時的なアクセス許可)」で元のファイル名を `Content-Disposition` に載せる場合は、発行する URL 自体も巨大になります。[OWASP](https://owasp.org/) は拡張子を含めて 255 文字未満に収めることを推奨しています。上限を超えるものは切り詰めるか、拒否しましょう。
 
 サイズ上限は構成から読み込み、`IOptions<T>` で注入するのが定石です（構成の詳細は[第5章：アプリ設定 (Configuration)](../05-configuration/index.md)、DI の詳細は[第6章：依存性注入 (DI)](../06-dependency-injection/index.md)を参照）。
 
