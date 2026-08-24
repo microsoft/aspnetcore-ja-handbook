@@ -922,7 +922,18 @@ public static class StorageServiceCollectionExtensions
 builder.Services.AddBlobFileStorage(builder.Configuration);
 ```
 
-この拡張メソッドは 3 つの構成セクションを読み込みます。`ValidateOnStart()` を付けているため、いずれかが欠けていると起動時に `OptionsValidationException` で停止します。
+この拡張メソッドは 3 つの構成セクションを読み込みます。このうち `BlobStorage` と `FileUpload` には `ValidateOnStart()` を付けているため、値が欠けていると起動時に `OptionsValidationException` で停止します。
+
+> [!WARNING]
+> `AddBlobServiceClient` に渡す `Storage` セクションは、この仕組みの対象外です。実際に `Storage` セクションを削除して試すと、**アプリは何事もなく起動し**、最初に `BlobServiceClient` を必要とするリクエストが来た時点で `InvalidOperationException`（`Unable to find matching constructor while trying to create an instance of BlobServiceClient.`）になります。構成の書き間違いが本番稼働後まで発覚しない可能性があるため、起動時に確かめたい場合は次のように明示的に解決しておきます。
+>
+> ```csharp
+> // 構成の誤りを起動時に検出する
+> using (var scope = app.Services.CreateScope())
+> {
+>     scope.ServiceProvider.GetRequiredService<BlobServiceClient>();
+> }
+> ```
 
 ```json
 {
