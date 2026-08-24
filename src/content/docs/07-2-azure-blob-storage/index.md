@@ -128,7 +128,8 @@ var serviceClient = new BlobServiceClient(
 # 例 1: ローカル開発。サインイン中の開発者アカウントに、
 #       特定のストレージアカウントに対する読み書き権限を与える
 az role assignment create \
-  --assignee "$(az ad signed-in-user show --query id -o tsv)" \
+  --assignee-object-id "$(az ad signed-in-user show --query id -o tsv)" \
+  --assignee-principal-type User \
   --role "Storage Blob Data Contributor" \
   --scope "/subscriptions/<サブスクリプション ID>/resourceGroups/<リソースグループ名>/providers/Microsoft.Storage/storageAccounts/<ストレージアカウント名>"
 
@@ -139,10 +140,26 @@ PRINCIPAL_ID=$(az webapp identity assign \
   --query principalId -o tsv)
 
 az role assignment create \
-  --assignee "$PRINCIPAL_ID" \
+  --assignee-object-id "$PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal \
   --role "Storage Blob Data Contributor" \
   --scope "/subscriptions/<サブスクリプション ID>/resourceGroups/<リソースグループ名>/providers/Microsoft.Storage/storageAccounts/<ストレージアカウント名>"
 ```
+
+> [!IMPORTANT]
+> 割り当て先の指定に `--assignee` ではなく **`--assignee-object-id` と `--assignee-principal-type` を使っています**。`--assignee` は渡された値をオブジェクト ID かアプリケーション ID か判別するために Microsoft Entra ID へ問い合わせるため、次の 2 つの状況で失敗します。
+>
+> - **マネージド ID を有効化した直後**。ID の作成が Microsoft Entra ID 全体へ反映されるまでに時間差があり、その間は「まだ存在しない」と判定される
+> - **サインイン中のアカウントにディレクトリの読み取り権限がない**、またはネットワークから Microsoft Entra ID へ問い合わせできない
+>
+> 実際に、存在しないオブジェクト ID を渡して両者を比べると、動作の違いがはっきり出ます。
+>
+> | 指定方法 | 結果 |
+> | --- | --- |
+> | `--assignee` | `Cannot find user or service principal in graph database for '...'` で停止する |
+> | `--assignee-object-id` + `--assignee-principal-type` | 問い合わせを行わず、次の処理（スコープの解決）まで進む |
+>
+> 上の例 2 は「マネージド ID を有効化し、その直後に割り当てる」という、まさに時間差が起きやすい流れです。**スクリプトで自動化する場合は必ずこちらを使ってください。** `--assignee-principal-type` には `User` / `Group` / `ServicePrincipal` / `ForeignGroup` を指定します。マネージド ID とアプリ登録はどちらも `ServicePrincipal` です。
 
 用途に応じて、次のようにロールを使い分けます。
 

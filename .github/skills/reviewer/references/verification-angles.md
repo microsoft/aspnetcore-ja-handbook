@@ -445,6 +445,67 @@ MS Learn に書いてあることでも、記事の文脈でそのとおりに�
 
 マークダウンのソースだけを見ていても分からない問題があります。`npx astro build` した後の `dist/` の HTML を検証します。
 
+### 3.8.1 CLI コマンドは「構文」ではなく「その手順で実行したとき」を検証する
+
+`az` や `dotnet` のコマンドは、**引数が実在すること** と **記事の手順どおりに実行して成功すること** が別物である。とくに次の型の記事は危険度が高い。
+
+> 「まずリソースを作成し、**その直後に** 作成されたものを参照して次のコマンドを実行する」
+
+Azure の Microsoft Entra ID 関連は、作成したプリンシパルがディレクトリ全体へ反映されるまでに時間差があるため、**構文は完全に正しいのに実行すると失敗する**。
+
+検証は「わざと失敗させて、どこで止まるか」を比較するのが速い。存在しない ID と存在しないスコープを渡し、**エラーが出る段階の違い**を見る。
+
+```bash
+FAKE="00000000-0000-0000-0000-0000000000ff"
+SCOPE="/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/nope/..."
+
+# A) 記事の書き方
+az role assignment create --assignee "$FAKE" --role "..." --scope "$SCOPE"
+#   -> Cannot find user or service principal in graph database   ... Graph で停止
+
+# B) 代替の書き方
+az role assignment create --assignee-object-id "$FAKE"   --assignee-principal-type ServicePrincipal --role "..." --scope "$SCOPE"
+#   -> Subscription '...' not found                              ... Graph を通過して次段階へ
+```
+
+**エラーメッセージが変わった位置が、その引数の効果そのもの**である。A は Graph 問い合わせで止まり、B は問い合わせを行わずに先へ進んだ。これで「Graph をバイパスする」という挙動が実証できる。
+
+第7章では、マネージド ID を有効化した直後にロールを割り当てる例が `--assignee` を使っていた。読者がスクリプト化すると伝播遅延で失敗する書き方だったため、`--assignee-object-id` + `--assignee-principal-type` に変更した。
+
+あわせて **コマンドの `--help` を読む**。ヘルプの説明文そのものが根拠になることが多い。この例では公式ヘルプに `to avoid errors caused by propagation latency in Microsoft Graph` と明記されていた。
+
+```bash
+az role assignment create --help | sed -n '/--assignee-object-id/,/--condition/p'
+```
+
+### 3.8.2 コードブロックを言語ごとのパーサーへ通す
+
+`json` / `xml` / `bash` のブロックは、**書いてある言語のパーサーに実際に食わせる**。目視では気づけない構文崩れが一発で出る。
+
+```bash
+# 記事から言語別に抽出して検証（json は json.loads、xml は ET.fromstring、bash は bash -n）
+```
+
+このとき **誤検知の切り分け** まで含めて行う。第7章では 4 件が引っかかったが、内訳は次のとおりですべて正常だった。
+
+| 検出 | 実際 |
+| --- | --- |
+| `> ` が先頭に付いて解析失敗 | 引用ブロック内のコードを抽出した副作用。抽出側の問題 |
+| `// appsettings.json` で JSON 解析失敗 | **`JsonConfigurationProvider` はコメントを許可する** ため実際には動く |
+
+後者は「本当に動くのか」を必ず実測する。`AddJsonFile` で読み込んで値が取れることを確認したうえで、**他章も同じ書き方で統一されているか**を数えて確認した（第5章に 6 例、第7章に 2 例）。
+
+### 3.8.3 用語の日本語表記は製品の公式日本語ページで確認する
+
+Azure の RBAC ロールなどは、**英語名をそのまま使う語と、日本語化される語が混在する**。記憶で書かず、公式の日本語ページを取得して照合する。
+
+```bash
+curl -s -L "https://learn.microsoft.com/ja-jp/azure/role-based-access-control/built-in-roles/storage?accept=text/markdown" -o /tmp/roles.md
+grep -o 'ストレージ BLOB [^ ]*' /tmp/roles.md | sort -u
+```
+
+第7章では「ストレージ BLOB データ共同作成者」「ストレージ BLOB データ閲覧者」「Storage Blob デリゲータ」がいずれも公式表記と一致していた。**3 つ目だけ英語のまま**という不揃いも公式どおりであり、勝手に日本語化してはいけない。
+
 ### 3.9 引用した外部規範の原文に、その記述が本当にあるか
 
 「OWASP は〜を推奨している」「RFC では〜と定められている」のように **外部の規範を根拠として数値や方針を書いた箇所** は、必ず原文を取得して該当記述を検索する。孫引きや記憶で書くと、原文にない数値を権威づけて書いてしまう。
