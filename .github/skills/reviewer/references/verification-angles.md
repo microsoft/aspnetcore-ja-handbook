@@ -620,6 +620,47 @@ Console.WriteLine($"MaxRequestBodySize        = {iis.MaxRequestBodySize:N0}");  
 
 サービス登録の要否も分岐する。`UseAntiforgery()` は `AddAntiforgery()` が無いと起動時に `InvalidOperationException`。ただし `AddRazorPages()` は内部で登録するため成功し、`AddControllers()` だけでは失敗する。この種の「間接的に登録される」条件は、組み合わせを総当たりして確かめる。
 
+### 2.50 検証ロジックは「通るべき入力」と「弾くべき入力」を両側から撃つ
+
+記事が載せている検証コード（バリデーター）は、**そのままコピーして実データを流す**。攻撃入力を弾けるかだけでなく、**正当な入力を誤って弾かないか**も確かめる。誤検知は読者のアプリで実害になる。
+
+実例: 前編の `FileSignatureValidator` を写経し、境界値を含む 16 種類のファイルを通した。
+
+| 分類 | 入力 | 期待 | 結果 |
+| --- | --- | --- | --- |
+| 通るべき | JPEG の 4 バイト目が `E0`/`E1`/`E2`/`EE`/`DB`/`C0`/`ED` | 全部許可 | 全部許可 |
+| 通るべき | `.jpeg`、大文字 `.JPG`、実 PNG、PDF | 許可 | 許可 |
+| 境界 | 3 バイトぴったりの JPEG | 許可 | 許可 |
+| 弾くべき | 2 バイトだけ、空ファイル、PNG 実体に `.jpg`、辞書外の `.txt` | 拒否 | 拒否 |
+
+記事が「4 バイト目を固定すると正常な JPEG を取りこぼす」と書いていたので、**取りこぼすはずのマーカーを全部作って通した**のが要点。「弾けるか」だけ試すと、この種の記述は検証できない。
+
+ファイル形式は Python でバイト列を組み立てれば十分で、実データを用意する必要はない。
+
+```python
+for m, name in [(0xE0,'jfif'), (0xE1,'exif'), (0xE2,'icc'), (0xEE,'adobe'), (0xDB,'dqt')]:
+    open(f'/tmp/sigdata/j_{name}.jpg','wb').write(bytes([0xFF,0xD8,0xFF,m]) + b'\x00'*20)
+```
+
+### 2.51 「例外は出ないが壊れる」と書かれた箇所こそ、壊れた結果を数字で確かめる
+
+「エラーにならないまま壊れる」という記述は、読者が最も信じにくく、かつ最も重要な情報。**壊れた後の状態を数値で示せるところまで再現**する。
+
+実例: 記事は「`CanSeek` が `false` のストリームに `Position = 0` を書いても例外は出ず、読み取り位置は戻らないため先頭が欠けたファイルが保存される」と書いていた。`CanSeek => false` の前方専用ストリームを自作して通したところ、例外なしで判定は `True`、その後に `CopyTo` した内容は **先頭 3 バイトが欠けて 24 → 21 バイト**、先頭が `E1000000` になっていた。
+
+```csharp
+class ForwardOnly(Stream inner) : Stream
+{
+    long _pos;
+    public override bool CanSeek => false;
+    public override long Position { get => _pos; set => _pos = value; }  // 代入は通るが何も起きない
+    public override int Read(byte[] b, int o, int c) { var n = inner.Read(b, o, c); _pos += n; return n; }
+    // 以下 Flush / Seek / SetLength / Write / Length / CanRead / CanWrite は省略
+}
+```
+
+フレームワークの型（`MultipartReader` の `section.Body` など）を用意しなくても、**同じ性質を持つ最小のスタブ**で再現できることが多い。
+
 ## 3. 外部依存の実在確認
 
 ### 3.1 NuGet パッケージ
