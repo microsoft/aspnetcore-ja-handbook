@@ -597,6 +597,50 @@ node.innerHTML;                              // → "A<br>B<br>C"
 node.getBoundingClientRect().height;         // → 96（3 行分）
 ```
 
+### 4.5.5 スペースによる桁揃えは日本語を含むと必ず崩れる
+
+コードブロックや `text` ブロックの中で、半角スペースを並べてコロンや値の位置を揃えた凡例は、**日本語が含まれると実表示で崩れる**。等幅フォントでも日本語グリフの幅は半角の正確に 2 倍にならないため。
+
+第7章では次の凡例を書いていた。ソース上は全角 2 桁換算でほぼ揃っていたが、実描画のコロン位置は **98.2 / 108.6 / 98.2 / 105.7 / 103.9 px** とばらついていた。実測すると半角は 7.2px、日本語 1 文字は約 20.3px で、**2 倍ではなく約 2.82 倍** だった。
+
+```text
+  用途      : avatars
+  区分ID     : tenant-a1b2
+  年/月     : 2026/08
+```
+
+測り方は、`pre` の子要素（Expressive Code なら `div.ec-line`）を 1 行ずつ取り、コロンより前の文字列を同じフォントの隠し `span` に入れて幅を測る。**`pre.textContent` を改行で分割する方法は使えない**（行要素間に改行テキストノードがないため、複数行が 1 行に潰れて見える）。
+
+```js
+const code = pre.querySelector('code') || pre;
+const cs = getComputedStyle(pre);
+const span = document.createElement('span');
+span.style.fontFamily = cs.fontFamily; span.style.fontSize = cs.fontSize;
+span.style.whiteSpace = 'pre'; span.style.position = 'absolute'; span.style.visibility = 'hidden';
+document.body.appendChild(span);
+for (const line of code.children) {
+  const i = line.textContent.indexOf(':');
+  if (i < 0) continue;
+  span.textContent = line.textContent.slice(0, i);
+  console.log(line.textContent.slice(0, i).trim(), span.getBoundingClientRect().width);
+}
+```
+
+**直し方はスペースを調整することではない。** フォントによって比率が変わる以上、揃うスペース数は存在しない。**凡例はマークダウンの表に置き換える**のが正解。コードブロックには書式と例だけを残す。
+
+残存チェックは、コードブロック内で「日本語の直後に 2 つ以上のスペース」がある行を探せばよい。
+
+```bash
+python3 -c "
+import re,glob
+for f in sorted(glob.glob('src/content/docs/*/index.md')):
+    s=open(f,encoding='utf-8').read()
+    for m in re.finditer(r'\`\`\`(\w*)\n(.*?)\`\`\`', s, re.S):
+        for ln in m.group(2).split(chr(10)):
+            if re.search(r'[\u3040-\u30ff\u4e00-\u9fff] {2,}', ln): print(f, ln[:90])
+"
+```
+
 ### 4.6 サイドバーとページ送り
 
 新しいページを追加・リネームしたときは、サイドバーの表示名（生のフォルダー名が露出していないか）と、ページ送りの前後関係を実 HTML で確認します。

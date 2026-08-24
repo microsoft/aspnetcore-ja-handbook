@@ -911,13 +911,15 @@ BLOB 名（保存先パス）の設計は、後からの変更が困難です。
 {用途}/{区分ID}/{yyyy}/{MM}/{一意なID}{拡張子}
 
 例: avatars/tenant-a1b2/2026/08/01a004c1b9c07c2e9d4f6a8b0c1d2e3f.jpg
-
-  用途      : avatars
-  区分ID     : tenant-a1b2（テナント ID やユーザー ID など、ファイルを分ける単位）
-  年/月     : 2026/08
-  一意なID   : 01a004c1b9c07c2e9d4f6a8b0c1d2e3f （Guid.CreateVersion7() の "N" 書式）
-  拡張子     : .jpg
 ```
+
+| 部分 | 例の値 | 意味 |
+| --- | --- | --- |
+| 用途 | `avatars` | ファイルの用途。アプリ内でファイルの種類を分ける |
+| 区分 ID | `tenant-a1b2` | テナント ID やユーザー ID など、ファイルを分ける単位 |
+| 年 / 月 | `2026/08` | 有効期限に基づく削除ポリシーを適用しやすくする |
+| 一意な ID | `01a004c1b9c07c2e9d4f6a8b0c1d2e3f` | `Guid.CreateVersion7()` の `"N"` 書式 |
+| 拡張子 | `.jpg` | 検証済みの拡張子をそのまま使う |
 
 ```csharp
 using Microsoft.Extensions.Options;
