@@ -661,6 +661,47 @@ class ForwardOnly(Stream inner) : Stream
 
 フレームワークの型（`MultipartReader` の `section.Body` など）を用意しなくても、**同じ性質を持つ最小のスタブ**で再現できることが多い。
 
+### 2.52 「いずれかが欠けていると起動時に落ちます」は、1 つずつ欠けさせて全部試す
+
+構成や登録について「〜が無いと起動時にエラーになります」と書いてある箇所は、**列挙されている項目を 1 つずつ欠けさせて**確かめる。全部まとめて欠けさせると、最初に落ちた 1 件しか分からず、残りが本当に検出されるかは検証できていない。
+
+実例: 後編は「この拡張メソッドは 3 つの構成セクションを読み込みます。`ValidateOnStart()` を付けているため、いずれかが欠けていると起動時に `OptionsValidationException` で停止します」と書いていた。1 つずつ欠けさせると結果が割れた。
+
+| 欠けさせたセクション | 登録方法 | 実際の挙動 |
+| --- | --- | --- |
+| `BlobStorage` | `AddOptions<T>().ValidateOnStart()` | 起動時に `OptionsValidationException` ✅ |
+| `FileUpload` | 同上 | 起動時に `OptionsValidationException` ✅ |
+| `Storage` | `AddBlobServiceClient(configuration.GetSection(...))` | **起動する**。最初に `BlobServiceClient` を解決した時点で `InvalidOperationException` |
+
+`ValidateOnStart()` が効くのは `AddOptions<T>()` 経由で登録したものだけで、**ライブラリ独自の構成バインド（`AddAzureClients` など）は対象外**。「同じ構成ファイルから読んでいる」ことと「同じ検証が効く」ことは別問題。
+
+検証は `AddInMemoryCollection` で構成を差し替え、`app.StartAsync()` を try/catch で囲むのが速い。
+
+```csharp
+builder.Host.UseDefaultServiceProvider(o => { o.ValidateOnBuild = true; o.ValidateScopes = true; });
+builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?> { /* 1 つずつ抜く */ });
+try { app.StartAsync().GetAwaiter().GetResult(); Console.WriteLine("起動した"); }
+catch (Exception ex) { Console.WriteLine($"起動時に {ex.GetType().Name}"); }
+```
+
+なお `ValidateOnBuild = true` でも上記の `Storage` 欠如は検出できない。**DI の検証と構成の検証は別物**であることも押さえておく。
+
+### 2.53 記事の DI 登録は写経してコンテナー検証にかける
+
+記事がサービス登録の拡張メソッドを載せている場合、**登場する型のコンストラクター引数だけを写した空のクラス**を用意して `ValidateOnBuild` / `ValidateScopes` を通す。Captive Dependency や登録漏れは、読まずに機械的に検出できる。
+
+型の中身は不要で、依存関係だけ合わせればよい。
+
+```csharp
+public sealed class BlobFileStorage(
+    BlobServiceClient serviceClient,
+    UserDelegationSasProvider sasProvider,
+    IOptions<BlobStorageOptions> options,
+    ILogger<BlobFileStorage> logger) : IFileStorage { }   // 中身は空でよい
+```
+
+記事が「Scoped が Singleton に依存しても Captive Dependency にはならない」と説明している場合も、この方法で実際に通ることを示せる。
+
 ## 3. 外部依存の実在確認
 
 ### 3.1 NuGet パッケージ
