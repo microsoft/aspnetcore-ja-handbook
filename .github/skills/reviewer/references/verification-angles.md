@@ -702,6 +702,41 @@ public sealed class BlobFileStorage(
 
 記事が「Scoped が Singleton に依存しても Captive Dependency にはならない」と説明している場合も、この方法で実際に通ることを示せる。
 
+### 2.54 「壊れる」は、壊れる**タイミング**まで確かめる
+
+「〜すると壊れます」という警告は、**いつ壊れるか**で読者の役に立つ度合いが変わる。その場で例外になるなら開発中に気づけるが、後工程で静かに壊れるなら本番まで発覚しない。同じ「壊れる」でも書き分けが必要。
+
+実例: 後編は `Content-Disposition` にファイル名を文字列連結する危険を「不正なヘッダーになり、応答が壊れる」と書いていた。2 つの経路で撃つと挙動が真逆だった。
+
+| 経路 | 非 ASCII を含むファイル名を連結 |
+| --- | --- |
+| `Response.Headers["Content-Disposition"]` に代入 | `InvalidOperationException: Invalid non-ASCII or control character in header: 0x6C7A` で即座に失敗 |
+| `BlobSasBuilder.ContentDisposition` に代入 | **例外なし**。`ToSasQueryParameters` は URL を返し、壊れるのは利用者の手元 |
+
+記事のコードは後者だったので、「例外が出ないまま通ってしまう」ことこそが伝えるべき情報だった。
+
+チェックの型: 警告文を見つけたら「これは例外になるのか、静かに間違った結果になるのか」を必ず実行して確かめる。**静かに壊れるほうが危険なので、その場合は警告の書き方も強める**。
+
+### 2.55 スレッドセーフを主張するキャッシュは並列で叩き、時計を進める
+
+「ロックを取らずに読んでも安全」「二重取得は起きない」といった並行性の主張は、目視レビューでは確認できない。`TimeProvider` を差し替えられる設計なら、偽の時計と大量の `Task.Run` で機械的に確かめられる。
+
+```csharp
+var results = await Task.WhenAll(Enumerable.Range(0, 200)
+    .Select(_ => Task.Run(() => provider.GetKeyAsync(TimeSpan.FromMinutes(30)))));
+Console.WriteLine($"取得回数={provider.FetchCount} 種類={results.Distinct().Count()}");
+```
+
+見るべき観点は 3 つ。
+
+| 観点 | 期待 |
+| --- | --- |
+| 200 並列で同時要求 | 実際の取得は 1 回、返る値は全て同一 |
+| 偽の時計を期限切れまで進める | 取得回数が増える（再取得される） |
+| 短い有効期間で要求 | キャッシュが再利用され取得回数は増えない |
+
+外部サービスの呼び出しはデリゲートでスタブにすればよく、実アカウントは要らない。あわせて引数ガードの境界（0、負値、上限ちょうど、上限 +1 秒）も同じテストで撃てる。
+
 ## 3. 外部依存の実在確認
 
 ### 3.1 NuGet パッケージ
