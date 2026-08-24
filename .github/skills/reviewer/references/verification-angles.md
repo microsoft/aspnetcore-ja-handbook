@@ -493,6 +493,39 @@ az role assignment list --assignee-object-id "$(az ad signed-in-user show --quer
 
 権限を落としたプリンシパルを用意できない場合（テナントのポリシーでサービスプリンシパルを作れないなど）は、**ロール定義や REST API リファレンスという宣言的な一次情報**で判断する。実測できないことを黙って「確認済み」と書かない。
 
+### 2.42 「〜だけが作られる」「〜しか起きない」は副作用を数えて確かめる
+
+「1 回の操作で作られるのは 1 つだけ」のような**数を断定する記述**は、API が内部で行う準備処理を見落としていることが多い。実際に副作用を数えて確かめる。
+
+実例: 記事は `BlockBlobClient.OpenWriteAsync` について「1 回のアップロードで作られるバージョンは確定時の 1 つだけ」と書いていたが、バージョン管理を有効にした実アカウントで数えると **2 つ**だった。
+
+```csharp
+await foreach (var it in container.GetBlobsAsync(
+    new GetBlobsOptions { States = BlobStates.Version, Prefix = name }))
+    Console.WriteLine($"{it.VersionId} 現行={it.IsLatestVersion == true} size={it.Properties.ContentLength}");
+```
+
+| 操作 | できたバージョン |
+| --- | --- |
+| `OpenWriteAsync(overwrite: true)` 1 回で 5 MB | 0 バイト（過去） + 5 MB（現行）の **2 つ** |
+| `UploadAsync` 1 回で 5 MB | 5 MB（現行）の **1 つ** |
+
+原因は `OpenWriteAsync` が**呼び出した時点で空の BLOB を作成してから**書き込みを始めるため。この事実に気づくと、次の副作用も芋づる式に見つかった。
+
+- 確定前でも `ExistsAsync` は `true`、長さは 0 → 他のプロセスからアップロード済みに見える
+- 確定せずに終了すると 0 バイトの BLOB が残る
+- `overwrite: false` は `ArgumentException`（`BlockBlobClient.OpenWrite only supports overwriting`）
+
+「ストリームを開く」「トランザクションを始める」系の API は、**開いた瞬間にサーバー側で何が起きるか**を確認する。
+
+### 2.43 自分が書いたテストコードのコンパイルエラーを記事の裏取りに使う
+
+検証コードを書いていて `error CS7036`（必須引数の不足）や `CS0246`（型が見つからない）に当たったら、それ自体が**記事の記述の裏取りになっていないか**を確認する。
+
+実例: `GetBlobsAsync(BlobTraits.None, BlobStates.Version, prefix: name)` と書いてコンパイルエラーになった。記事には「Azure.Storage.Blobs 12.27 以降は旧来のオーバーロードから既定値が外れており、この書き方はコンパイルできません」という警告があり、**自分がまさにその罠を踏んでいた**。記事の記述が実務的に有用であることの強い裏付けになる。
+
+逆に、記事のとおりに書いてもコンパイルが通らない場合は記事側の誤りなので、どちらに転んでも情報が得られる。
+
 ## 3. 外部依存の実在確認
 
 ### 3.1 NuGet パッケージ
