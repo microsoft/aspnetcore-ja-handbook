@@ -332,7 +332,13 @@ while ((section = await reader.ReadNextSectionAsync(cancellationToken)) is not n
 ```
 
 > [!TIP]
-> Blob Storage 側にストリームを開いて少しずつ書き込みたい場合は、`BlockBlobClient.OpenWriteAsync` を使用します。ZIP アーカイブを組み立てながらアップロードするようなシナリオで有用です。内部では、バッファがいっぱいになるたびにブロックを送信し (Put Block)、ストリームを閉じたときにそれらを 1 つの BLOB として確定します (Put Block List)。バージョン管理が有効な場合でも Put Block はバージョンを作らないため、1 回のアップロードで作られるバージョンは確定時の 1 つだけです。
+> Blob Storage 側にストリームを開いて少しずつ書き込みたい場合は、`BlockBlobClient.OpenWriteAsync` を使用します。ZIP アーカイブを組み立てながらアップロードするようなシナリオで有用です。内部では、バッファがいっぱいになるたびにブロックを送信し (Put Block)、ストリームを閉じたときにそれらを 1 つの BLOB として確定します (Put Block List)。Put Block はバージョンを作らないため、ブロックを何個送っても途中でバージョンが増えることはありません。
+>
+> ただし、このメソッドは**呼び出した時点で 0 バイトの BLOB を作成してから**書き込みを始めます。そのため次の点に注意してください。
+>
+> - 確定前でも BLOB は存在し、他のプロセスからは 0 バイトのファイルとして見えます。途中で処理が失敗すると 0 バイトの BLOB が残ります。
+> - バージョン管理が有効な場合、1 回のアップロードで **0 バイトの過去バージョンと確定後の現行バージョンの 2 つ**が作られます。
+> - `overwrite: false` は指定できず、`ArgumentException` (`BlockBlobClient.OpenWrite only supports overwriting`) になります。上書きを防ぎたい場合は `BlockBlobOpenWriteOptions.OpenConditions` に `IfNoneMatch = ETag.All` を指定します（既存の BLOB があれば 409 `BlobAlreadyExists` になります）。
 >
 > ただし、**同じ BLOB を何度も上書きする** 使い方には注意してください。バージョン管理が有効だと上書きのたびに以前の状態がバージョンとして残り、オブジェクトレプリケーションのポリシーを設定している場合はそのすべてがコピー先アカウントへ複製されるため、ストレージコストが膨らみます。Azure Blob の保管型バックアップ (vaulted backup) も内部でオブジェクトレプリケーションを使うため、同じことが起こります。
 
