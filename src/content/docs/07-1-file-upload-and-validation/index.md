@@ -384,6 +384,16 @@ builder.Services.Configure<FormOptions>(options =>
 });
 ```
 
+> [!TIP]
+> **この 2 つは片方だけ引き上げても意味がありません。実効的な上限は、常に小さいほうの値になります。** Kestrel を 50 MB、`FormOptions` を 10 MB に設定した状態で 20 MB を送ると拒否され、設定を入れ替えて Kestrel を 10 MB、`FormOptions` を 50 MB にしても、やはり 20 MB は拒否されます。
+>
+> 引き上げたはずなのに拒否されるときは、**返ってきたステータスコードでどちらの上限に当たったかを切り分けられます**（`IFormFile` にバインドする場合）。
+>
+> | 返るステータス | 当たった上限 | 引き上げる設定 |
+> | --- | --- | --- |
+> | **413** | Kestrel のボディ上限 | `KestrelServerLimits.MaxRequestBodySize` |
+> | **400** | multipart の上限 | `FormOptions.MultipartBodyLengthLimit` |
+
 特定のアクションだけ緩和したい場合は、属性で個別に指定します。
 
 ```csharp
@@ -406,7 +416,7 @@ app.MapPost("/upload-huge", async (IFormFile file) => { /* ... */ })
    .WithMetadata(new DisableRequestSizeLimitAttribute());
 ```
 
-条件によって上限を変えたい場合は `IHttpMaxRequestBodySizeFeature` を使いますが、**設定できるのはリクエストボディの読み取りが始まる前だけ** です。読み取りが始まった後は `IsReadOnly` が `true` になり、代入すると例外がスローされます。
+条件によって上限を変えたい場合は `IHttpMaxRequestBodySizeFeature` を使いますが、**設定できるのはリクエストボディの読み取りが始まる前だけ** です。読み取りが始まった後は `IsReadOnly` が `true` になり、代入すると `InvalidOperationException`（`The maximum request body size cannot be modified after the app has already started reading from the request body.`）がスローされます。
 
 ```csharp
 using Microsoft.AspNetCore.Http.Features;
