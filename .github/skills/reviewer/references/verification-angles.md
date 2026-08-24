@@ -728,6 +728,63 @@ Azure のロール名など、**公式に日本語表記が定められている
 
 サンプルのクラスがグローバル名前空間に置かれていないか、他の節と同じ規則になっているかを確認します。
 
+### 5.10.1 章をまたいで型を参照するとき、名前空間と using が閉じているか
+
+同じサンプルアプリを複数の章（や前編・後編）で組み立てる場合、**後の章のコードが前の章で定義した型を参照する**。このとき、前の章の型に名前空間が書かれていなかったり、後の章に `using` がなかったりすると、読者がコピーしても絶対にコンパイルできない。
+
+第7章では、後編の 3 つのブロックが前編の `FileUploadOptions` / `IUploadValidator` / `UploadValidator` を実コードで参照していたが、**前編にはそれらの名前空間の宣言がなく、後編にも対応する `using` が一切なかった**。後編は全ブロックに `namespace` があり、前編はコントローラーの 1 ブロックだけという不統一が原因だった。
+
+検出は 2 段階で行う。
+
+**① 型の定義位置と参照位置を機械的に突き合わせる**
+
+```python
+import re, glob
+# 章内で定義された public 型を name -> namespace で集める
+defs = {}
+for f in sorted(glob.glob('src/content/docs/07-*/index.md')):
+    s = open(f, encoding='utf-8').read()
+    for m in re.finditer(r'```csharp\n(.*?)```', s, re.S):
+        blk = m.group(1)
+        ns = re.findall(r'^namespace ([\w.]+);', blk, re.M)
+        for name in re.findall(r'^public (?:sealed |static |abstract )*(?:class|record|interface|enum)\s+(\w+)', blk, re.M):
+            defs[name] = ns[0] if ns else None
+# 参照しているのに using が無いブロックを探す
+```
+
+**② 抽出して実際にビルドする（決定的）**
+
+`namespace` を含むブロックだけを個別の `.cs` として書き出し、1 つのプロジェクトに入れてビルドする。名前空間が閉じていなければ `CS0246` で必ず落ちる。
+
+```bash
+dotnet new web -o /tmp/ch7build --force
+cd /tmp/ch7build && dotnet add package Azure.Storage.Blobs && dotnet add package Azure.Identity
+# 記事から namespace 付きブロックを Chapters/*.cs として書き出してから
+dotnet build -v q --nologo
+```
+
+記事で定義していない読者側の型（`AppDbContext` など）だけはスタブを用意する。**スタブが必要になった型は、本文でその存在を説明しているか必ず確認する**（第7章では NOTE で明示していた）。
+
+トップレベルステートメントを含む `Program.cs` の断片を検証するときは、**ステートメントを先に、型宣言を後ろに**結合する。順序を誤ると記事側ではなく検証スクリプト側の都合で `CS8803` が出る。
+
+### 5.10.2 名前空間の方針は章の性格に合わせて決め、章内で統一する
+
+単一ファイルの断片を示すだけの章では `namespace` を省いてよいが、**複数ファイルにわたる実装を組み立てる章では、独立したファイルになるブロックすべてに `namespace` を書く**。半端に一部だけ書かれている状態が最も悪い。
+
+第7章では次のように整理した。
+
+| 名前空間 | 収める型 |
+| --- | --- |
+| `FileUploadSample.Controllers` | コントローラー |
+| `FileUploadSample.Models` | リクエスト / エンティティ |
+| `FileUploadSample.Filters` | フィルター属性 |
+| `FileUploadSample.Validation` | 検証ロジックとその設定クラス |
+| `FileUploadSample.Storage` | ストレージ抽象と実装 |
+
+例外として `namespace` を書けないのは、**トップレベルステートメントの後ろに型を置く `Program.cs` の断片** と、**既存クラスへ追記するメソッドを示す抜粋** だけ。後者はコメントで所属を明示する（2.27 を参照）。
+
+同じ役割のクラスで修飾子が割れていないかも見る。第7章では前編の `FileUploadOptions` が非 `sealed`、後編の `BlobStorageOptions` が `sealed` と割れていたため、`sealed` に揃えた。
+
 ### 5.11 到達しないコード・重複した検証
 
 コード例に無意味な行が残っていないかを確認します。読者は「必要だから書いてある」と受け取ります。

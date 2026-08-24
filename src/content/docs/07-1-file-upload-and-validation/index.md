@@ -195,8 +195,8 @@ public async Task<IActionResult> PostMultiple(
 ファイル以外のフォーム値と組み合わせる場合は、モデルクラスにまとめると読みやすくなります。
 
 ```csharp
-// モデルクラスはコントローラーの外側に定義する
-public class UploadRequest
+// モデルクラスはコントローラーの外側（FileUploadSample.Models 名前空間）に定義する
+public sealed class UploadRequest
 {
     public required string Title { get; init; }
 
@@ -647,6 +647,8 @@ MVC コントローラーでストリーミングを行う場合は、フォー�
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 
+namespace FileUploadSample.Filters;
+
 [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
 public sealed class DisableFormValueModelBindingAttribute : Attribute, IResourceFilter
 {
@@ -732,6 +734,8 @@ private static bool IsPermittedExtension(string fileName)
 
 ```csharp
 using System.Buffers;
+
+namespace FileUploadSample.Validation;
 
 public static class FileSignatureValidator
 {
@@ -899,7 +903,9 @@ var path = Path.Combine(uploadDirectory, storedName);
 ```csharp
 using System.ComponentModel.DataAnnotations;
 
-public class FileUploadOptions
+namespace FileUploadSample.Validation;
+
+public sealed class FileUploadOptions
 {
     public const string SectionName = "FileUpload";
 
@@ -912,6 +918,8 @@ public class FileUploadOptions
 ```
 
 ```csharp
+using FileUploadSample.Validation;
+
 builder.Services
     .AddOptions<FileUploadOptions>()
     .Bind(builder.Configuration.GetSection(FileUploadOptions.SectionName))
@@ -945,6 +953,8 @@ Microsoft.Extensions.Options.OptionsValidationException: DataAnnotation validati
 
 ```csharp
 using Microsoft.Extensions.Options;
+
+namespace FileUploadSample.Validation;
 
 public interface IUploadValidator
 {
@@ -1018,6 +1028,8 @@ builder.Services.AddValidation();
 ```csharp
 using System.ComponentModel.DataAnnotations;
 
+namespace FileUploadSample.Validation;
+
 [AttributeUsage(AttributeTargets.Property | AttributeTargets.Parameter)]
 public sealed class MaxFileSizeAttribute(long maxBytes) : ValidationAttribute
 {
@@ -1031,6 +1043,7 @@ public sealed class MaxFileSizeAttribute(long maxBytes) : ValidationAttribute
 
 ```csharp
 using System.ComponentModel.DataAnnotations;
+using FileUploadSample.Validation;
 using Microsoft.AspNetCore.Mvc;
 
 // ① IFormFile を単体の引数として受け取る場合

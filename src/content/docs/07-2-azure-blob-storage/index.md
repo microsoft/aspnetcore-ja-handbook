@@ -621,6 +621,8 @@ builder.Services.AddAzureClients(clientBuilder =>
 using Azure.Storage.Blobs;
 using Microsoft.Extensions.Azure;
 
+namespace FileUploadSample.Storage;
+
 public sealed class ArchiveService(IAzureClientFactory<BlobServiceClient> clientFactory)
 {
     private readonly BlobServiceClient _publicClient = clientFactory.CreateClient("public");
@@ -822,6 +824,7 @@ public sealed class BlobFileStorage(
 
 ```csharp
 using Azure.Identity;
+using FileUploadSample.Validation;
 using Microsoft.Extensions.Azure;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -922,6 +925,7 @@ BLOB 名（保存先パス）の設計は、後からの変更が困難です。
 | 拡張子 | `.jpg` | 検証済みの拡張子をそのまま使う |
 
 ```csharp
+using FileUploadSample.Validation;
 using Microsoft.Extensions.Options;
 using System.Globalization;
 
@@ -1307,6 +1311,7 @@ public enum ScanStatus
 using System.Security.Claims;
 using FileUploadSample.Models;
 using FileUploadSample.Storage;
+using FileUploadSample.Validation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.StaticFiles;
