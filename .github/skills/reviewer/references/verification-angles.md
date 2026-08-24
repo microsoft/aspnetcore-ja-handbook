@@ -379,6 +379,45 @@ cd.SetHttpFileName("日本語.png");                     // メンバーの実�
 
 引数の型や名前付き引数まで含めて検証できるため、本文が抜粋しているコードの正しさをそのまま裏付けられます。名前空間の衝突（`BadHttpRequestException` や `ContentDispositionHeaderValue` は 2 か所に存在する）は完全修飾で回避します。
 
+### 2.34 ASP.NET Core の API はコンソールアプリで検証してはいけない
+
+`Microsoft.AspNetCore.*` の型を検証したいとき、`dotnet new console` に `dotnet add package` で追加すると、**共有フレームワークとは別物の古い NuGet 互換パッケージ**（`Microsoft.AspNetCore.StaticFiles` なら 2.3.12 など）が入り、実際の挙動と食い違う。
+
+実例として `FileExtensionContentTypeProvider` の既定マッピングは次のように異なる。
+
+| 検証環境 | アセンブリ | Mappings | `.exe` |
+| --- | --- | --- | --- |
+| `dotnet new console` + `dotnet add package` | `bin/.../Microsoft.AspNetCore.StaticFiles.dll` 2.3.12 | 377 件 | **なし** |
+| `dotnet new web`（共有フレームワーク） | `shared/Microsoft.AspNetCore.App/10.0.7/...` 10.0.0 | 382 件 | **あり** |
+
+コンソールアプリ側の結果だけを見て「記事が間違っている」と誤判定しかけた事例がある。**ASP.NET Core の API を検証するときは必ず `dotnet new web`（Web SDK）を使い、読み込まれたアセンブリの `Assembly.Location` が `shared/Microsoft.AspNetCore.App/` 配下であることを確認する。**
+
+```csharp
+var asm = typeof(FileExtensionContentTypeProvider).Assembly;
+Console.WriteLine(asm.Location);          // shared/... であること
+Console.WriteLine(asm.GetName().Version); // 10.0.0.0 であること
+```
+
+さらに、静的ファイルの配信可否のように**ミドルウェア全体の挙動**を述べている記述は、辞書の中身を覗くだけでなく **実際に HTTP リクエストを投げて確認する**。
+
+```bash
+curl -s -o /dev/null -w 'HTTP %{http_code}  %{content_type}\n' http://127.0.0.1:5211/uploads/x.exe
+```
+
+### 2.35 「実際に試すと」「実測すると」と書いた箇所を全部洗い出して再実測する
+
+記事中の実測主張は、執筆時の環境やバージョンでしか確かめていない場合がある。次のキーワードで機械的に抽出し、**1 件ずつ再現する**。
+
+```bash
+grep -nE '(実際に|実測|計測したところ|試すと|試したところ|確認したところ|検証したところ|手元の)' 対象.md
+```
+
+読者は「実測」と書かれた数値をそのまま信頼するため、裏付けのない主張が残っていると記事全体の信頼性を損なう。確率的な主張（例: GUID v7 の同一ミリ秒内で昇順になる割合は約半分）は、**十分な試行回数**で確認する。
+
+```csharp
+// 20 万ペアで検証 → 同一ミリ秒ペア 199,938 件中 昇順 99,923 件（50.0%）
+```
+
 ## 3. 外部依存の実在確認
 
 ### 3.1 NuGet パッケージ
