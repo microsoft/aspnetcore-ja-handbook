@@ -344,10 +344,12 @@ flowchart TB
 > [!IMPORTANT]
 > 上限を超えたときにクライアントへ返る HTTP ステータスは、**フォームを読み取る経路によって変わります**。フレームワークが常に同じステータスへ変換してくれるわけではありません。
 >
-> | 超過した上限 | MVC コントローラー<br>（`[ApiController]` と `[FromForm]`） | Minimal API<br>（`IFormFile` バインドや `ReadFormAsync`） |
-> | --- | --- | --- |
-> | `MaxRequestBodySize` | **400**（モデルバインディングの失敗として扱われる） | **413** |
-> | `FormOptions` の各上限 | **400**（同上） | **500**（未処理の `InvalidDataException`） |
+> Minimal API の場合、同じ Minimal API でも **引数にバインドさせるか、`HttpRequest` から自分でフォームを読むか** で結果が変わります。バインドを使うとフレームワークが例外を受け止めてくれますが、自分で読むと例外がそのまま外へ抜けます。
+>
+> | 超過した上限 | MVC コントローラー<br>（`[ApiController]` と `[FromForm]`） | Minimal API<br>（`IFormFile` / `IFormCollection` にバインド） | Minimal API<br>（`HttpRequest.ReadFormAsync` を自分で呼ぶ） |
+> | --- | --- | --- | --- |
+> | `MaxRequestBodySize` | **400**（モデルバインディングの失敗として扱われる） | **413** | **413** |
+> | `FormOptions` の各上限 | **400**（同上） | **400** | **500**（未処理の `InvalidDataException`） |
 >
 > MVC の場合は、いずれも次のような `ValidationProblemDetails` が返ります。例外の内容がそのままメッセージに含まれるため、原因の切り分けには役立ちます。
 >
@@ -360,7 +362,7 @@ flowchart TB
 > }
 > ```
 >
-> Minimal API で 400 を返したい場合は、`ReadFormAsync()` の呼び出しを `try` / `catch` で囲み、`InvalidDataException` を捕捉して自分でレスポンスを組み立ててください。
+> `ReadFormAsync()` を自分で呼ぶ場合に 500 を避けたいときは、呼び出しを `try` / `catch` で囲み、`InvalidDataException` を捕捉して自分でレスポンスを組み立ててください。
 
 アプリケーション全体で上限を変更する場合は `Program.cs` で設定します。
 
