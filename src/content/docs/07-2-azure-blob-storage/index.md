@@ -169,6 +169,13 @@ az role assignment create \
 | ストレージ BLOB データ共同作成者 (Storage Blob Data Contributor) | 読み取り・書き込み・削除 | アップロード機能を持つアプリ。本章の例はこれを想定 |
 | Storage Blob デリゲータ (Storage Blob Delegator) | ユーザー委任キーの取得 | 後述のユーザー委任 SAS（[有効期限付きのアクセス URL](#sas-による一時的なアクセス許可)）を発行するアプリ。データ用ロールと併せて割り当てる |
 
+> [!NOTE]
+> 上の表では、Azure ポータルに表示される日本語名を主に、英語名をかっこ内に併記しています。**Azure CLI の `--role` に指定できるのは英語名だけです。** ロール定義そのものが英語名で登録されているため、日本語名を渡すと `Role 'ストレージ BLOB データ共同作成者' doesn't exist.` というエラーになります。次のコマンドで、指定できる正式名を確認できます。
+>
+> ```bash
+> az role definition list --query "[?contains(roleName, 'Storage Blob')].roleName" -o tsv
+> ```
+
 > [!TIP]
 > ロールの割り当てが反映されるまで数分かかることがあります。設定直後に `403 Forbidden` が返る場合は、少し待ってから再試行してください。ローカル開発で権限設定が煩雑な場合は、後述の Azurite を使うとロール割り当て自体が不要になります。
 
@@ -376,6 +383,8 @@ private static string ResolveContentType(string fileName)
 > | キー名 | 英字またはアンダースコアで始まり、以降は英数字とアンダースコアのみ（ASCII）。大文字小文字は区別されず、`uploadedAt` と `UploadedAt` は同じキーとして扱われる | `uploadedAt`／`_uploadedAt` | `uploaded-at`（ハイフン）／`1st`（数字始まり） |
 > | 値 | ASCII のみ | `2026-01-01` | `報告書.pdf`（日本語） |
 > | 全体 | 1 つの BLOB につき合計 8 KB まで | — | — |
+>
+> 大文字小文字が区別されないことには落とし穴があります。`uploadedAt` と `UploadedAt` を **同時に指定してもエラーにはならず**、1 つのキーに値がカンマ区切りで連結されます（上の 2 つを指定すると `UploadedAt` の値が `lower, upper` のようになります）。HTTP ヘッダーの仕様上、同名ヘッダーが結合されるためです。意図せず値が壊れるので、**キー名の綴りはコード全体で統一してください**。
 >
 > 規則に反するキー名を指定すると、サーバーが 400 を返し `RequestFailedException`（`The metadata specified is invalid. It has characters that are not permitted.`）が発生します。
 >
