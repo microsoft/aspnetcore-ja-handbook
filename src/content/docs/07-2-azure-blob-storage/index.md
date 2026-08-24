@@ -1162,7 +1162,8 @@ public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, T
         if (downloadFileName is not null)
         {
             // ファイル名をそのまま文字列連結してはいけない。
-            // 日本語などの ASCII 以外を含むと不正なヘッダーになり、応答が壊れる。
+            // HTTP ヘッダーは ASCII しか運べないため、日本語などを含めると
+            // ダウンロード時のファイル名が壊れる。しかもここでは例外が出ない (後述)。
             // SetHttpFileName が RFC 6266 に従って
             // ASCII 版 (filename) と UTF-8 版 (filename*) の両方を組み立ててくれる。
             var contentDisposition = new ContentDispositionHeaderValue("attachment");
@@ -1231,6 +1232,11 @@ public sealed class UserDelegationSasProvider(BlobServiceClient serviceClient, T
     public void Dispose() => _semaphore.Dispose();
 }
 ```
+
+> [!WARNING]
+> **SAS に埋め込む `Content-Disposition` は、ファイル名を文字列連結で組み立てても例外が出ません。** `ASP.NET Core` の応答ヘッダーに直接代入した場合は、ASCII 以外を含んだ時点で `InvalidOperationException`（`Invalid non-ASCII or control character in header`）が発生してすぐ気づけます。しかし SAS の場合は値が URL のクエリ文字列（`rscd`）に入るだけなので、`ToSasQueryParameters` は何事もなく URL を返します。壊れるのは、その URL でダウンロードした利用者の手元にファイル名が届いたときです。
+>
+> 開発中に日本語のファイル名で試さないかぎり気づけないため、`SetHttpFileName` を使う習慣そのものが防御になります。`SetHttpFileName("決算報告書.pdf")` は `attachment; filename=_____.pdf; filename*=UTF-8''%E6%B1%BA...` のように、ASCII しか読めない古いクライアント向けの代替名と、UTF-8 で符号化した本来の名前を併記します。
 
 > [!NOTE]
 > `SemaphoreSlim` のように破棄が必要なフィールドを持つクラスは、`IDisposable` を実装しておきます。DI コンテナーは、自分が生成したインスタンスが `IDisposable` を実装していれば、そのスコープ（Singleton ならアプリケーション終了時）で自動的に `Dispose()` を呼びます。実装を忘れると .NET のコード アナライザーが CA1001 で警告します。
