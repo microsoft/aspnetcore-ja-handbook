@@ -526,6 +526,35 @@ await foreach (var it in container.GetBlobsAsync(
 
 逆に、記事のとおりに書いてもコンパイルが通らない場合は記事側の誤りなので、どちらに転んでも情報が得られる。
 
+### 2.44 「経路によって変わる」と書いてある表は、経路を細かく割って全マスを埋める
+
+記事が「〜によって挙動が変わります」と表で整理している場合、その**分類の粒度が足りているか**を疑う。分類を 1 段細かくすると、同じ列の中で結果が割れることがある。
+
+実例: 前編は上限超過時のステータスを「MVC コントローラー」「Minimal API」の 2 列で整理していたが、実測すると Minimal API の中で結果が割れた。
+
+| 超過した上限 | MVC | Minimal API<br>（バインド） | Minimal API<br>（`ReadFormAsync` を自分で呼ぶ） |
+| --- | --- | --- | --- |
+| `MaxRequestBodySize` | 400 | 413 | 413 |
+| `FormOptions` の各上限 | 400 | **400** | **500** |
+
+バインドを使うとフレームワークが例外を受け止めるが、自分で読むと例外が素通りする。**「フレームワークが介在するか」は分類軸になりやすい**ので、表を見たらこの軸で割ってみる。
+
+検証は 1 つのアプリに経路ごとのエンドポイントを並べて `curl` を回すのが速い。
+
+```csharp
+app.MapPost("/bind",  (IFormFile file) => Results.Text("OK")).DisableAntiforgery();
+app.MapPost("/form",  (IFormCollection f) => Results.Text("OK")).DisableAntiforgery();
+app.MapPost("/raw", async (HttpRequest r) => { await r.ReadFormAsync(); return Results.Text("OK"); });
+```
+
+### 2.45 検証アプリが 500 を返したら、まず自分のアプリの不備を疑う
+
+記事の主張と違う結果が出たとき、原因が**検証アプリ側の設定漏れ**であることがある。ステータスだけ見て記事が誤っていると判断してはいけない。**必ずサーバーのログで例外の種類まで確認する**。
+
+実例: Minimal API が記事の言う 413 ではなく 500 を返したので誤りかと思ったが、ログを見ると `Endpoint ... contains anti-forgery metadata, but a middleware was not found that supports anti-forgery.` だった。`IFormFile` をバインドすると antiforgery メタデータが自動で付くため、`UseAntiforgery()` も `DisableAntiforgery()` も無いと本題に入る前に 500 になる。設定後に測り直すと記事どおり 413 だった。
+
+検証アプリでは `builder.Logging.ClearProviders()` を安易に書かない。ログを消すと原因が見えなくなる。
+
 ## 3. 外部依存の実在確認
 
 ### 3.1 NuGet パッケージ
