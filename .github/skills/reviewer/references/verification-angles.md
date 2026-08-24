@@ -555,6 +555,34 @@ app.MapPost("/raw", async (HttpRequest r) => { await r.ReadFormAsync(); return R
 
 検証アプリでは `builder.Logging.ClearProviders()` を安易に書かない。ログを消すと原因が見えなくなる。
 
+### 2.46 一時的な副作用は「処理中」に観測する。終わってから見ても何も残っていない
+
+リソースの生成先や中間ファイルを検証するとき、**処理が終わってから覗いても消えている**。観測は処理中に行う。
+
+実例: 記事の「一時ファイルの出力先は `ASPNETCORE_TEMP` で指定できる」を検証したとき、アップロード完了後にそのディレクトリを `ls` したら空だったので、記事が誤りだと判断しかけた。実際にはリクエスト中だけ存在し、完了時に削除されていた。
+
+観測はハンドラーの中から行うのが確実。
+
+```csharp
+app.MapPost("/bind", (IFormFile file) =>
+{
+    var envTemp = Environment.GetEnvironmentVariable("ASPNETCORE_TEMP") ?? "(未設定)";
+    return Results.Text(
+        $"ASPNETCORE_TEMP 側: {string.Join(",", Directory.GetFiles(envTemp, "ASPNETCORE_*").Select(Path.GetFileName))}\n" +
+        $"既定の一時領域側: {string.Join(",", Directory.GetFiles(Path.GetTempPath(), "ASPNETCORE_*").Select(Path.GetFileName))}");
+}).DisableAntiforgery();
+```
+
+**候補となる場所を全部走査して比べる**こと。片方だけ見ても「そこに無い」ことしか分からない。ついでに、ハンドラーで例外を投げても一時ファイルが後始末されるかまで確認できる（実測では削除された）。
+
+### 2.47 「〜すると読めなくなる」は、実際に壊して例外型まで確かめる
+
+記事が「〜した後は使えません」と書いている箇所は、**実際にその使い方をして何が起きるか**を確かめる。読者が現場で出会うのは説明文ではなく例外メッセージなので、例外型まで書いてあるほうが役に立つ。
+
+実例: 「リクエストが完了した後に `IFormFile` を保持しても中身は読めなくなる」を検証するため、静的変数へ退避してから別のリクエストで `OpenReadStream()` を呼んだところ `ObjectDisposedException`（`Cannot access a disposed object.`）だった。記事の主張は正しかったが例外型が無かったため追記した。
+
+**正しい記述でも、具体性が足りなければ改善余地がある**。「主張が正しいか」だけでなく「読者が自分の状況と結び付けられるか」で見る。
+
 ## 3. 外部依存の実在確認
 
 ### 3.1 NuGet パッケージ
