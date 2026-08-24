@@ -583,6 +583,43 @@ app.MapPost("/bind", (IFormFile file) =>
 
 **正しい記述でも、具体性が足りなければ改善余地がある**。「主張が正しいか」だけでなく「読者が自分の状況と結び付けられるか」で見る。
 
+### 2.48 既定値はリフレクションではなく「オプション型を new して読む」だけで全件照合できる
+
+記事に散らばる「既定 30,000,000 バイト」「既定 1,024」のような数値は、**オプション型をそのまま `new` して表示する**だけで一括照合できる。MS Learn を 1 ページずつ読むより速く、確実。
+
+```csharp
+var f = new FormOptions();
+Console.WriteLine($"ValueCountLimit           = {f.ValueCountLimit:N0}");           // 1,024
+Console.WriteLine($"MultipartBodyLengthLimit  = {f.MultipartBodyLengthLimit:N0}");  // 134,217,728
+Console.WriteLine($"MemoryBufferThreshold     = {f.MemoryBufferThreshold:N0}");     // 65,536
+Console.WriteLine($"MultipartHeadersLengthLimit = {f.MultipartHeadersLengthLimit:N0}"); // 16,384
+var k = new KestrelServerLimits();
+Console.WriteLine($"MaxRequestBodySize        = {k.MaxRequestBodySize:N0}");        // 30,000,000
+var iis = new IISServerOptions();
+Console.WriteLine($"MaxRequestBodySize        = {iis.MaxRequestBodySize:N0}");      // 30,000,000
+```
+
+まず記事から `既定(値)?は?\s*[\d,]+` のような正規表現で数値の断定を全部抜き出し、この出力と突き合わせる。**Mermaid 図の中に書かれた既定値も抜き出す**こと（本文の表だけ直して図が古いまま、という不整合が起きやすい）。
+
+なお `IISServerOptions` は Windows 以外でも型として参照でき、既定値の確認だけならできる。
+
+### 2.49 セキュリティ機構は「効く経路」と「効かない経路」を両方 HTTP で撃つ
+
+「この検証は自動でかかります」と書かれている機構は、**かからない経路**が必ずある。記事がその抜け穴に言及しているかまで確認する。
+
+実例: Minimal API の antiforgery 検証を、同一アプリの 4 経路へトークン無しで POST した。
+
+| 経路 | `UseAntiforgery()` あり | 呼び忘れ |
+| --- | --- | --- |
+| `IFormFile` にバインド | **400** | **500** |
+| `[FromForm]` にバインド | **400** | **500** |
+| `HttpContext` から自力で読む | **200（素通り）** | 200 |
+| MVC コントローラー | 200（MVC は別系統） | 200 |
+
+ストリーミング受信は検証対象外なので素通りする。記事はこれを WARNING で明示していた。**「自動でかかる」と書いてある機構ほど、かからない経路を探す**。
+
+サービス登録の要否も分岐する。`UseAntiforgery()` は `AddAntiforgery()` が無いと起動時に `InvalidOperationException`。ただし `AddRazorPages()` は内部で登録するため成功し、`AddControllers()` だけでは失敗する。この種の「間接的に登録される」条件は、組み合わせを総当たりして確かめる。
+
 ## 3. 外部依存の実在確認
 
 ### 3.1 NuGet パッケージ
