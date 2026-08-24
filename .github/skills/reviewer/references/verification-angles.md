@@ -456,6 +456,43 @@ az role definition list --name "Storage Blob Data Contributor" --query "[].roleN
 
 記事が読者への親切心で日本語名を主に書いている場合、**CLI へ渡せるのは英語名だけである旨を明記**しないと、そのままコピーして詰まる。日本語表記を公式ページで照合する（3.8.3）のとは別に、**その表記が実際にコマンドで通るか**まで確かめること。
 
+### 2.39 「A に加えて B も必要」という記述は、B が本当に足りない分を埋めているか確かめる
+
+権限・ロール・パッケージ・設定を「併せて指定する」と書いている箇所は、**B が A に包含されていないか**を必ず確認する。Azure RBAC ならロール定義の `actions` を読めば決着がつく。
+
+```bash
+for r in "Storage Blob Data Contributor" "Storage Blob Data Reader" "Storage Blob Delegator"; do
+  az role definition list --name "$r" --query "[0].permissions[0].actions" -o tsv | grep -i delegation
+done
+```
+
+実例として、記事は「ユーザー委任 SAS を発行するアプリには Storage Blob デリゲータをデータ用ロールと併せて割り当てる」と書いていたが、`generateUserDelegationKey/action` は **データ用ロール 3 種すべてに含まれており**、追加は不要だった。
+
+### 2.40 権限は「持っているか」だけでなく「どのスコープで効くか」を確認する
+
+Azure のアクションには、**付与できるスコープのレベルが決まっている**ものがある。`generateUserDelegationKey` はストレージアカウント・リソースグループ・サブスクリプションのいずれかで付与されている必要があり、コンテナー単位のスコープでは効かない。
+
+このため「スコープは最小限に、できればコンテナー単位まで絞る」という一般論だけを書くと、**その指針に従った読者が SAS を発行できなくなる**。最小権限を勧める記述では、絞りすぎたときに壊れる機能がないかまで踏み込むこと。
+
+一次情報は REST API リファレンスの「Authorization」節にある。
+
+```bash
+curl -s -L "https://learn.microsoft.com/en-us/rest/api/storageservices/get-user-delegation-key" \
+ | python3 -c "import sys,re,html;t=re.sub(r'<[^>]+>',' ',re.sub(r'<script.*?</script>','',sys.stdin.read(),flags=re.S));print(re.sub(r'\s+',' ',html.unescape(t)))" \
+ | grep -o -E "[^.]{0,250}(Delegator|generateUserDelegationKey)[^.]{0,250}\."
+```
+
+### 2.41 自分の検証環境の権限が「強すぎて」証明にならない場合がある
+
+「ロール X だけで操作できるか」を確かめるとき、検証者自身がサブスクリプションの `Owner` を継承していると、**X を外しても成功してしまうため何も証明できない**。実測の前に、自分の実効ロールを必ず確認する。
+
+```bash
+az role assignment list --assignee-object-id "$(az ad signed-in-user show --query id -o tsv)" \
+  --scope "<リソース ID>" --include-inherited --query "[].{role:roleDefinitionName,scope:scope}" -o tsv
+```
+
+権限を落としたプリンシパルを用意できない場合（テナントのポリシーでサービスプリンシパルを作れないなど）は、**ロール定義や REST API リファレンスという宣言的な一次情報**で判断する。実測できないことを黙って「確認済み」と書かない。
+
 ## 3. 外部依存の実在確認
 
 ### 3.1 NuGet パッケージ
