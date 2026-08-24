@@ -445,6 +445,78 @@ MS Learn に書いてあることでも、記事の文脈でそのとおりに�
 
 マークダウンのソースだけを見ていても分からない問題があります。`npx astro build` した後の `dist/` の HTML を検証します。
 
+### 3.9 引用した外部規範の原文に、その記述が本当にあるか
+
+「OWASP は〜を推奨している」「RFC では〜と定められている」のように **外部の規範を根拠として数値や方針を書いた箇所** は、必ず原文を取得して該当記述を検索する。孫引きや記憶で書くと、原文にない数値を権威づけて書いてしまう。
+
+第7章では「OWASP は拡張子を含めて 255 文字未満に収めることを推奨」と書いていたが、File Upload Cheat Sheet の原文を取得して検索したところ **`255` という数字は 1 件も存在しなかった**。原文にあるのは「ファイル名の長さ制限を設けよ」「適切な値は保存先のシステムごとに異なる」までで、具体的な数値は示されていない。255 はファイルシステム側の上限に由来する別の事実だった。
+
+```bash
+curl -sL "https://cheatsheetseries.owasp.org/cheatsheets/File_Upload_Cheat_Sheet.html" -o /tmp/src.html
+python3 -c "
+import re,html
+t=re.sub(r'<[^>]+>',' ',open('/tmp/src.html',encoding='utf-8',errors='ignore').read())
+t=re.sub(r'\s+',' ',html.unescape(t))
+print('255 の出現数:', len(re.findall(r'\b255\b', t)))
+"
+```
+
+見つからなかった場合の直し方は 2 つある。
+
+| 対応 | 使う場面 |
+| --- | --- |
+| 引用の範囲を原文どおりに狭める | 原文が方針だけを述べている場合。数値は別の根拠（実測やベンダー仕様）として書き分ける |
+| 数値が書かれている一次ソースを探し直す | 数値自体は正しく、出典を取り違えていた場合 |
+
+第7章では前者を採り、OWASP の主張は「長さ制限を設けよ・値はシステム依存」に留め、255 は **APFS で実測した結果**（255 文字は作成でき 256 文字は失敗）を根拠として書き分けた。
+
+### 3.10 引用する数値は製品のソースコードで裏を取る
+
+MS Learn の記述は版が古いことがある。フレームワークの **既定値** は、公開されているソースコードの当該リリースブランチを直接読むのが最も確実。
+
+```bash
+B=https://raw.githubusercontent.com/dotnet/aspnetcore/release/10.0/src
+curl -s $B/Http/Http/src/Features/FormOptions.cs
+curl -s $B/Servers/Kestrel/Core/src/KestrelServerLimits.cs
+curl -s $B/Servers/IIS/IIS/src/IISServerOptions.cs
+curl -s $B/Http/WebUtilities/src/FormReader.cs
+curl -s $B/Http/WebUtilities/src/MultipartReader.cs
+```
+
+サーバー製品（IIS など）のようにソースが公開されていない場合は、設定リファレンスのページを `?accept=text/markdown` 付きで取得し、既定値の記述を抽出する。
+
+### 3.11 依存パッケージ・ツールのバージョン鮮度
+
+本文に書いたバージョン番号が執筆時点の最新かどうかを機械的に確認する。レジストリの Web API が塞がれている環境でも、パッケージマネージャー経由なら取得できることがある。
+
+```bash
+# NuGet: バージョン無指定で追加すると最新安定版が入る
+mkdir -p /tmp/vercheck && cd /tmp/vercheck && dotnet new classlib -o . --force
+dotnet add package Azure.Storage.Blobs && grep PackageReference *.csproj
+
+# npm
+npm view azurite version
+```
+
+最新でなかった場合、単に数字を更新するだけでなく **新しい版で API が変わっていないか** も確認する。
+
+### 3.12 記事内の外部リンクの到達性
+
+参考リンクや本文中のリンクは、章全体から機械的に抜き出して HTTP ステータスを確認する。リダイレクトは追う（`-L`）。
+
+```bash
+python3 -c "
+import re,glob
+u=set()
+for f in glob.glob('src/content/docs/07-*/index.md'):
+    u|=set(re.findall(r'\]\((https?://[^)]+)\)', open(f,encoding='utf-8').read()))
+print('\n'.join(sorted(u)))" > /tmp/links.txt
+while read -r u; do
+  c=$(curl -sL -o /dev/null -w '%{http_code}' --max-time 25 -A 'Mozilla/5.0' "$u")
+  [ "$c" = "200" ] && echo "OK   $u" || echo "!!$c $u"
+done < /tmp/links.txt
+```
+
 ### 4.1 アンカーリンクの突合
 
 目次や本文中の `](#...)` が、ビルド後の HTML に実在する見出し id と一致するかを機械的に突合します。日本語の見出しは URL エンコードの有無で不一致になることがあるため、デコードした形でも比較してください。
