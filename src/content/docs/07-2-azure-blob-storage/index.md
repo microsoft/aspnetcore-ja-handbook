@@ -364,7 +364,7 @@ while ((section = await reader.ReadNextSectionAsync(cancellationToken)) is not n
 >
 > - 確定前でも BLOB は存在し、他のプロセスからは 0 バイトのファイルとして見えます。途中で処理が失敗すると 0 バイトの BLOB が残ります。
 > - バージョン管理が有効な場合、1 回のアップロードで **0 バイトの過去バージョンと確定後の現行バージョンの 2 つ**が作られます。
-> - `overwrite: false` は指定できず、`ArgumentException` (`BlockBlobClient.OpenWrite only supports overwriting`) になります。上書きを防ぎたい場合は `BlockBlobOpenWriteOptions.OpenConditions` に `IfNoneMatch = ETag.All` を指定します（既存の BLOB があれば 409 `BlobAlreadyExists` になります）。
+> - `overwrite: false` は指定できず、`ArgumentException` (`BlockBlobClient.OpenWrite only supports overwriting`) になります。上書きを防ぎたい場合は `BlockBlobOpenWriteOptions.OpenConditions` に `IfNoneMatch = ETag.All` を指定します（既存の BLOB があれば 409 `BlobAlreadyExists` になります）。`ETag` は HTTP がリソースの版を表すために使う識別子で、詳しくは後述の[上書き制御](#上書き制御)で説明します。
 >
 > ただし、**同じ BLOB を何度も上書きする** 使い方には注意してください。バージョン管理が有効だと上書きのたびに以前の状態がバージョンとして残り、オブジェクトレプリケーションのポリシーを設定している場合はそのすべてがコピー先アカウントへ複製されるため、ストレージコストが膨らみます。Azure Blob の保管型バックアップ (vaulted backup) も内部でオブジェクトレプリケーションを使うため、同じことが起こります。
 
@@ -566,14 +566,54 @@ catch (RequestFailedException ex) when (ex.Status == StatusCodes.Status412Precon
 ```
 
 > [!WARNING]
-> Azure Storage のクライアントライブラリは、**同一 BLOB への同時書き込みをサポートしていません**。複数のプロセスが同じ BLOB に書き込む可能性がある場合は、上記の楽観的同時実行制御か、BLOB リースによる悲観的同時実行制御を実装してください。
+> Azure Storage のクライアントライブラリは、**同一 BLOB への同時書き込みをサポートしていません**。複数のプロセスが同じ BLOB に書き込む可能性がある場合は、上記の楽観的同時実行制御か、次に説明する BLOB リースによる悲観的同時実行制御を実装してください。
+
+**BLOB リース (Lease)** は、BLOB に対して **書き込みの排他ロック** を取得する仕組みです。リースを取得するとリース ID が発行され、以降その BLOB に書き込めるのはリース ID を提示したコードだけになります。楽観的同時実行制御が「衝突したら気付いてやり直す」方式なのに対し、リースは「そもそも他のコードに書かせない」方式です。
+
+```csharp
+using Azure.Storage.Blobs.Models;
+using Azure.Storage.Blobs.Specialized;
+
+BlobLeaseClient lease = blobClient.GetBlobLeaseClient();
+
+// 期間は 15〜60 秒の範囲で指定する。TimeSpan.FromSeconds(-1) は無期限
+string leaseId = (await lease.AcquireAsync(
+    TimeSpan.FromSeconds(30), cancellationToken: cancellationToken)).Value.LeaseId;
+
+try
+{
+    // リース ID を条件に渡した書き込みだけが成功する
+    var leasedUpload = new BlobUploadOptions
+    {
+        Conditions = new BlobRequestConditions { LeaseId = leaseId },
+    };
+
+    await blobClient.UploadAsync(updatedContent, leasedUpload, cancellationToken);
+}
+finally
+{
+    // 処理が終わったら必ず解放する
+    await lease.ReleaseAsync(cancellationToken: cancellationToken);
+}
+```
+
+リース中の BLOB に対する操作の結果は次のとおりです。**読み取りは制限されない** ため、リースは「書き込みの排他」だと理解してください。
+
+| リース中の操作 | 結果 |
+| --- | --- |
+| リース ID を渡さずに書き込む | HTTP 412 (`LeaseIdMissing`) |
+| 別のコードがリースを取得しようとする | HTTP 409 (`LeaseAlreadyPresent`) |
+| 内容を読み取る (`DownloadContentAsync`) | 成功する |
+| 15 秒未満または 60 秒を超える期間を指定する | HTTP 400 (`InvalidHeaderValue`) |
+
+処理が 60 秒を超える場合は `RenewAsync` でリースを更新し続けます。**解放を忘れると、期限が切れるまで他のコードがその BLOB を更新できなくなります**。無期限リースを解放し忘れた場合は、`BreakAsync` で強制的に解除するまで書き込めません。`try`／`finally` で確実に `ReleaseAsync` を呼ぶか、そもそも無期限リースを使わない設計にしてください。
 
 | 制御方式 | 条件ヘッダー | 用途 |
 | --- | --- | --- |
 | 常に上書き | なし | 冪等なアップロード、キャッシュ的な用途 |
 | 新規作成のみ | `IfNoneMatch = ETag.All` | 一意な名前を生成して保存する通常のアップロード |
 | 楽観的同時実行制御 | `IfMatch = originalETag` | 既存ファイルの更新 |
-| 悲観的同時実行制御 | BLOB リース | 長時間の排他が必要なバッチ処理 |
+| 悲観的同時実行制御 | `LeaseId = leaseId`（BLOB リース） | 長時間の排他が必要なバッチ処理 |
 
 ### Azurite によるローカル開発
 
