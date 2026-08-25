@@ -292,7 +292,7 @@ public static async Task<Uri> UploadAsync(
 | 先頭と末尾は英小文字か数字 | `a-b` | `-uploads`／`uploads-` |
 | ハイフンを連続させない | `up-loads` | `a--b` |
 
-規則に反する名前を指定すると、コンテナー作成の時点で `RequestFailedException`（`Status: 400`、`ErrorCode: InvalidResourceName` または `OutOfRangeInput`）が発生します。BLOB 名では大文字もスラッシュも使えるため、コンテナー名だけ規則が異なる点に注意してください。
+規則に反する名前を指定すると、コンテナー作成の時点で `RequestFailedException`（`Status: 400`）が発生します。エラーコードは違反の種類で分かれ、**使えない文字を含む場合は `InvalidResourceName`、長さが範囲外の場合は `OutOfRangeInput`** になります。BLOB 名では大文字もスラッシュも使えるため、コンテナー名だけ規則が異なる点に注意してください。
 
 ```csharp
 using Azure.Storage;
@@ -579,6 +579,16 @@ azurite --silent --location ./azurite-data
 > ```
 >
 > Docker で起動する場合は、イメージ名の後ろに同じオプションを続けるか、環境変数 `AZURITE_SKIP_API_VERSION_CHECK=true` を渡します。
+
+> [!WARNING]
+> Azurite はエミュレーターであり、**実際の Azure Storage が拒否する操作を通してしまうことがあります**。ローカルで動いたからといって本番でも同じ結果になるとは限りません。実際に試すと、次のように分かれました。
+>
+> | 操作 | Azurite | 実際の Azure Storage |
+> | --- | --- | --- |
+> | 1,024 文字を超える BLOB 名でアップロード | 成功する | `400 (OutOfRangeInput)` |
+> | アカウント側で匿名アクセスを許可していない状態でコンテナーを公開に設定 | 成功し、匿名の HTTP GET でも内容が読めてしまう | `409 (PublicAccessNotPermitted)` |
+>
+> 一方、コンテナー名の命名規則、メタデータのキー名の制約（`400 InvalidMetadata`）、`overwrite: false` の重複検出（`409 BlobAlreadyExists`）、`IfMatch` による楽観的同時実行制御（`412 ConditionNotMet`）は Azurite でも実際と同じ結果になります。**入力値の上限やアカウントレベルの設定が関わる検証は、実際のストレージアカウントで確認してください**。
 
 Azurite は既知の開発用アカウントキーを持つため、開発環境では接続文字列 `UseDevelopmentStorage=true` を使用します。
 
