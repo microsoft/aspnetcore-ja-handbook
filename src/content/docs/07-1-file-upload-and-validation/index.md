@@ -693,6 +693,17 @@ public sealed class DisableFormValueModelBindingAttribute : Attribute, IResource
 > [!NOTE]
 > このフィルターは省略できません。MVC では、アクションが `Request.Form` や `IFormFile` に触れなくても、**モデルバインディングの段階でフォームの値プロバイダーがボディを読み切ってしまう** ためです。フィルターを外して `MultipartReader` で読もうとすると、`IOException`（`Unexpected end of Stream, the content may have already been read by another component.`）が発生します。
 >
+> 引き金になるのは **アクションに引数があること** です。実際に試すと、次のように分かれました。
+>
+> | アクションの引数 | フィルターを外した場合 |
+> | --- | --- |
+> | 引数なし | 読み取れてしまう（例外にならない） |
+> | `[FromQuery] string? id` | `IOException` |
+> | `[FromForm] Dto d` | `IOException` |
+> | `string? title`（属性なし） | `IOException` |
+>
+> **フォームと無関係な `[FromQuery]` の引数が 1 つあるだけで発生します**。引数を 1 つも持たないアクションだけが偶然動いているにすぎず、`[ApiController]` の有無は関係ありませんでした。あとから引数を 1 つ足しただけで壊れるので、**ストリーミングを行うアクションには必ずこのフィルターを付けてください**。
+>
 > ストリーミングを行うアクションでは、あわせて `Request.Form` や `IFormFile` にも触れないでください。フォーム値が必要な場合は、`MultipartReader` で読み取ったセクションから自前で組み立てます。
 
 適用は、ストリーミングを行うアクション（またはコントローラー）に属性を付けるだけです。`[RequestSizeLimit]` や `[DisableRequestSizeLimit]` と併用する場合も、同じように属性として並べます。
