@@ -745,7 +745,7 @@ public sealed record StoredFile(string StoragePath, long Length, string ETag);
 ```
 
 > [!NOTE]
-> この節以降のコード例では `FileUploadSample.Storage` のような名前空間を明示しています。[前編の第 2 節](../07-1-file-upload-and-validation/index.md#2-アップロードファイルの検証)で作成した `FileUploadOptions`、`UploadValidator`、`FileSignatureValidator` も、同じ `FileUploadSample.Storage` に置く前提です。名前空間をそろえておけば、`using` を書かずに相互参照できます。
+> この節以降のコード例では `FileUploadSample.Storage` のような名前空間を明示しています。[前編の第 2 節](../07-1-file-upload-and-validation/index.md#2-アップロードファイルの検証)で作成した `FileUploadOptions`、`UploadValidator`、`FileSignatureValidator` は検証の責務なので、`FileUploadSample.Validation` に置く前提です。名前空間が分かれるため、ストレージ側のコードからこれらを参照するときは `using FileUploadSample.Validation;` が必要です。以降のコード例でこの `using` が付いているのはそのためです。
 
 > [!TIP]
 > インターフェイスからは `BlobClient` や `Stream` 以外の Azure 固有の型を排除します。こうすることで、上位のサービス層は Azure SDK への参照を持たずに済み、テストではインメモリ実装に差し替えられます。
