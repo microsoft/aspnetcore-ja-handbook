@@ -125,6 +125,7 @@ var serviceClient = new BlobServiceClient(
 割り当てのスコープ（適用範囲）は、**必要最小限にすることが重要** です。サブスクリプション全体ではなく、対象のストレージアカウント、可能であればコンテナー単位まで絞り込んでください。ただし、後述の[ユーザー委任 SAS](#sas-による一時的なアクセス許可) を発行する場合は、コンテナー単位まで絞ると SAS の発行に失敗します（理由は次の表のあとに説明します）。
 
 ```bash
+# Bash（Linux / macOS）
 # 例 1: ローカル開発。サインイン中の開発者アカウントに、
 #       特定のストレージアカウントに対する読み書き権限を与える
 az role assignment create \
@@ -143,6 +144,31 @@ az role assignment create \
   --assignee-object-id "$PRINCIPAL_ID" \
   --assignee-principal-type ServicePrincipal \
   --role "Storage Blob Data Contributor" \
+  --scope "/subscriptions/<サブスクリプション ID>/resourceGroups/<リソースグループ名>/providers/Microsoft.Storage/storageAccounts/<ストレージアカウント名>"
+```
+
+Windows の PowerShell では、行継続がバックスラッシュ (`\`) ではなくバッククォート (`` ` ``) である点と、コマンドの出力を変数に受け取る書き方が異なります。また `<` は PowerShell では将来の予約演算子とみなされるため、`<アプリ名>` のような差し替え用の箇所は引用符で囲む必要があります。同じ内容を PowerShell で書くと次のようになります。
+
+```powershell
+# PowerShell（Windows）
+# 例 1: ローカル開発。サインイン中の開発者アカウントに、
+#       特定のストレージアカウントに対する読み書き権限を与える
+az role assignment create `
+  --assignee-object-id "$(az ad signed-in-user show --query id -o tsv)" `
+  --assignee-principal-type User `
+  --role "Storage Blob Data Contributor" `
+  --scope "/subscriptions/<サブスクリプション ID>/resourceGroups/<リソースグループ名>/providers/Microsoft.Storage/storageAccounts/<ストレージアカウント名>"
+
+# 例 2: Azure App Service。まずシステム割り当てマネージド ID を有効化し、
+#       発行されたプリンシパル ID にロールを割り当てる
+$PRINCIPAL_ID = az webapp identity assign `
+  --name "<アプリ名>" --resource-group "<リソースグループ名>" `
+  --query principalId -o tsv
+
+az role assignment create `
+  --assignee-object-id "$PRINCIPAL_ID" `
+  --assignee-principal-type ServicePrincipal `
+  --role "Storage Blob Data Contributor" `
   --scope "/subscriptions/<サブスクリプション ID>/resourceGroups/<リソースグループ名>/providers/Microsoft.Storage/storageAccounts/<ストレージアカウント名>"
 ```
 
@@ -555,8 +581,7 @@ catch (RequestFailedException ex) when (ex.Status == StatusCodes.Status412Precon
 
 ```bash
 # Docker で起動する場合
-docker run -p 10000:10000 -p 10001:10001 -p 10002:10002 \
-    mcr.microsoft.com/azure-storage/azurite
+docker run -p 10000:10000 -p 10001:10001 -p 10002:10002 mcr.microsoft.com/azure-storage/azurite
 
 # npm でインストールして起動する場合
 npm install -g azurite
