@@ -675,7 +675,9 @@ public sealed class ArchiveService(IAzureClientFactory<BlobServiceClient> client
 ```
 
 > [!WARNING]
-> **すべてのクライアントに名前を付けると、名前なしの `BlobServiceClient` は DI から解決できなくなります**。この状態で `BlobServiceClient` をコンストラクターで直接受け取ろうとすると、`InvalidOperationException`（`No service for type 'Azure.Storage.Blobs.BlobServiceClient' has been registered.`）が発生します。
+> **すべてのクライアントに名前を付けると、名前なしの `BlobServiceClient` は DI から解決できなくなります**。この状態で `BlobServiceClient` をコンストラクターで直接受け取ろうとすると、`InvalidOperationException`（`Unable to find client registration with type 'BlobServiceClient' and name 'Default'.`）が発生します。名前を指定しない登録は `Default` という名前で扱われるため、このようなメッセージになります。
+>
+> なお、これは「型そのものが未登録」という一般的な DI のエラーとは別物です。`AddAzureClients` は `BlobServiceClient` を DI へ登録しており、解決しようとした時点で名前が見つからずに失敗します。そのため `ValidateOnBuild` では検出できません。
 >
 > 名前付き登録と併用したい場合は、既定として使うものを `WithName` なしで **もう一度登録** するか、後述の `BlobFileStorage` のようなクラス側を `IAzureClientFactory<BlobServiceClient>` を受け取る形に変更してください。
 
