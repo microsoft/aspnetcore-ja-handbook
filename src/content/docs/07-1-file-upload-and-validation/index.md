@@ -629,6 +629,13 @@ if (!MediaTypeHeaderValue.TryParse(context.Request.ContentType, out var mediaTyp
 }
 ```
 
+> [!NOTE]
+> `FormOptions.MultipartBoundaryLengthLimit`（既定 128）は `IFormFile` 経由の受信にしか効かず、`MultipartReader` を直接使う場合は適用されません。実際に境界文字列を長くしていくと、**4,088 文字までは何事もなく読み取れました**。
+>
+> まったく歯止めがないわけではなく、4,089 文字以上になると `MultipartReader` の **コンストラクターが** `ArgumentOutOfRangeException`（`Insufficient buffer space, the buffer must be larger than the boundary`）をスローします。読み取り用バッファ（既定 4,096 バイト）に境界文字列が収まらなくなるためです。
+>
+> ただしこれは実装上の副作用であり、**入力検証ではありません**。捕捉しなければ HTTP 500 になってしまうため、上のコードのように自分で 128 文字を上限として弾き、HTTP 400 を返してください。
+
 > [!TIP]
 > そもそもクライアントがフォーム値を一緒に送る必要がないなら、**multipart を使わない** という選択肢もあります。`PUT /files/{id}` のようにファイルの中身だけをリクエストボディとして送ってもらえば、`Request.Body` がそのままファイルのストリームになるため、解析は一切不要です。ファイル名などのメタデータは URL やヘッダーで渡します。ブラウザのフォームからではなく、SPA やモバイルアプリ、他システムからのアップロードであれば、この方式が最も単純です。
 >
@@ -810,7 +817,7 @@ public static class FileSignatureValidator
 > このメソッドは、`IFormFile.OpenReadStream()` のように **シークできるストリーム専用** です。`MultipartReader` によるストリーミング受信で得られる `section.Body` は `CanSeek` が `false` ですが、`Position = 0` や `Seek(0, SeekOrigin.Begin)` を呼んでも **例外は発生しません**。実際に試すと `Position` プロパティの値だけが 0 に戻り、読み取り位置は戻らないため、**先頭の数バイトが欠けたファイルが保存されます**。ストリーミング受信でシグネチャを検証する場合は、先頭バイトを読み取ったバッファを保存先へ書き出してから、残りを `CopyToAsync` で転送してください。
 
 > [!IMPORTANT]
-> このメソッドは、**シグネチャ辞書に載っていない拡張子に対して `false` を返します**。したがって、後述の許可拡張子リストに `.txt` や `.csv` のような項目を追加しただけでは、その形式のアップロードはすべて「内容が拡張子と一致しません」で拒否されます。
+> このメソッドは、**シグネチャ辞書に載っていない拡張子に対して `false` を返します**。したがって、前掲の `PermittedExtensions` に `.txt` や `.csv` のような項目を追加しただけでは、その形式のアップロードはすべて「内容が拡張子と一致しません」で拒否されます。
 
 シグネチャの定義そのものにも注意が必要です。JPEG のシグネチャを `FF D8 FF E0`（JFIF）のように 4 バイトで固定している例をよく見かけますが、4 バイト目は後続のマーカー種別であり、`E1`（Exif）や `EE`（Adobe）、`DB`（量子化テーブル）など多くの値を取ります。
 
