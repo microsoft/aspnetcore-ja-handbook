@@ -644,13 +644,19 @@ azurite --silent --location ./azurite-data
 > Status: 400 (InvalidHeaderValue)
 > ```
 >
-> メッセージは「Azurite を最新版に更新せよ」と促しますが、**Azurite が最新版でも解決しません**。実際に Azurite 3.36.0（npm の最新）と `Azure.Storage.Blobs` 12.29.1 の組み合わせで発生します。Azurite 側の API バージョンチェックを無効にして起動してください。
+> メッセージは「Azurite を最新版に更新せよ」と促しますが、**Azurite が最新版でも解決しません**。実際に Azurite 3.36.0（npm の最新）と `Azure.Storage.Blobs` 12.29.2（NuGet の最新）の組み合わせで発生します。Azurite 側の API バージョンチェックを無効にして起動してください。
 >
 > ```bash
 > azurite --silent --location ./azurite-data --skipApiVersionCheck
 > ```
 >
-> Docker で起動する場合は、イメージ名の後ろに同じオプションを続けるか、環境変数 `AZURITE_SKIP_API_VERSION_CHECK=true` を渡します。
+> Docker で起動する場合は注意が必要です。Azurite のイメージは `ENTRYPOINT` を持たず `CMD` だけで既定の引数を指定しているため、イメージ名の後ろにオプションを足すと**既定の引数がまるごと置き換わり**、ホストの待ち受け設定まで失われます。コマンド全体を書き直してください。
+>
+> ```bash
+> docker run -p 10000:10000 -p 10001:10001 -p 10002:10002 mcr.microsoft.com/azure-storage/azurite azurite -l /data --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --skipApiVersionCheck
+> ```
+>
+> 環境変数 `AZURITE_SKIP_API_VERSION_CHECK` は Azurite リポジトリの `main` ブランチの README に記載がありますが、**3.36.0 にはまだ含まれていません**。実際にこの環境変数だけを与えて起動しても、API バージョン検査は無効にならず同じ 400 が返ります。エラーメッセージ自体もコマンドラインパラメーターと Visual Studio Code の設定しか案内していません。
 
 > [!WARNING]
 > Azurite はエミュレーターであり、**実際の Azure Storage が拒否する操作を通してしまうことがあります**。ローカルで動いたからといって本番でも同じ結果になるとは限りません。実際に試すと、次のように分かれました。
