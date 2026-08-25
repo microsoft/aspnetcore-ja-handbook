@@ -865,6 +865,53 @@ for i, l in enumerate(lines, 1):
 
 「後述」なのに参照先が前にある、参照先の節がそもそも存在しない、章をまたいでいるのに章名がない、といった破綻が一覧で見える。第7章では 20 箇所すべてが正しい向きで実在していた。数分で終わるので、節の分割や並べ替えをした直後は必ず実行する。
 
+### 2.65 散文が語る名前空間と、コードが宣言する名前空間を突き合わせる
+
+「これらの型は同じ名前空間に置く前提です」のような**散文だけの約束事**は、コードを直すときに一緒に直されない。文章とコードで食い違っていても、どちらもそれらしく読めるので気づきにくい。機械的に突き合わせる。
+
+```python
+# 定義側: 型を宣言しているコードブロックの namespace を拾う
+for m in re.finditer(r'```csharp\n(.*?)```', text, re.S):
+    if re.search(r'class 型名\b', m.group(1)):
+        print(re.search(r'^namespace\s+(\S+);', m.group(1), re.M))
+# 利用側: using を書いているブロックを拾う
+```
+
+実例: 後編の NOTE は 3 つの型を `FileUploadSample.Storage` に置く前提と書いていたが、前編は 3 つとも `FileUploadSample.Validation` で宣言していた。しかも後編のコード例自身が `using FileUploadSample.Validation;` を書いており、**同じページの中で文章とコードが矛盾**していた。
+
+**利用側の `using` は、定義側の名前空間の答え合わせに使える**。文章が「同じ名前空間だから `using` は不要」と言っているのに `using` が書いてあれば、その時点で矛盾が確定する。散文とコードのどちらが正しいかは、コードを実際にビルドして決める。
+
+### 2.66 フレームワークが自動生成する要素は、規約違反と決めつける前にビルド結果を見る
+
+執筆規約に「末尾に前後の章へのリンクを配置」とあり、本文にそれが無いと違反に見える。しかし静的サイトジェネレーターが自動で付けている場合があり、本文に手書きすると**二重に表示される**。
+
+実例: Starlight は `pagination: true` で前後ページのリンクを自動生成する。ビルド結果の `rel="prev"` / `rel="next"` を見ると、第7章は前編→後編→（最終章）と正しくつながっていた。手書きしていた章は自動生成と重複していた。
+
+```python
+re.findall(r'<a[^>]*rel="(prev|next)"[^>]*href="([^"]+)"', html)
+```
+
+同様に、目次・見出しの `id`・パンくず・OGP なども生成側の仕事であることが多い。**規約の文言だけで判断せず、生成物で確認する**。
+
+### 2.67 図やダイアグラムは専用パーサーに通す
+
+Mermaid はクライアント側で描画されるため、**構文が壊れていてもサイトのビルドは成功する**。読者のブラウザーで初めてエラーになる。目視ではなくパーサーに通す。
+
+```bash
+npm install mermaid jsdom
+```
+
+```js
+import { JSDOM } from 'jsdom';
+const dom = new JSDOM('<!DOCTYPE html><body></body>', { pretendToBeVisual: true });
+global.window = dom.window; global.document = dom.window.document;
+const mermaid = (await import('mermaid')).default;
+mermaid.initialize({ startOnLoad: false });
+await mermaid.parse(src);   // 例外が出れば構文エラー
+```
+
+注意: Node 22 では `global.navigator` に代入できない（getter しかない）ので、代入行を書くと `TypeError` になる。`window` と `document` だけ渡せば動く。リポジトリ全体の図を一度に通すと、章をまたいだ回帰も拾える（第7章 8 図を含む全 43 図が構文エラーなしだった）。
+
 ## 3. 外部依存の実在確認
 
 ### 3.1 NuGet パッケージ
