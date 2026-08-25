@@ -284,7 +284,7 @@ app.Run();
 >
 > | 抜けているもの | 症状 |
 > | --- | --- |
-> | `AddAntiforgery()` | `UseAntiforgery()` の呼び出しで `InvalidOperationException` が発生し、**アプリが起動しません**。ただし `AddRazorPages()` を呼んでいる場合は内部で登録されるため発生しません（`AddControllers()` だけでは登録されません） |
+> | `AddAntiforgery()` | `UseAntiforgery()` の呼び出しで `InvalidOperationException` が発生し、**アプリが起動しません**。ただし `AddRazorPages()`、`AddControllersWithViews()`、`AddMvc()` のように **ビューを描画する構成** ではこれらが内部で登録するため発生しません。API 専用の `AddControllers()` では登録されないため、Minimal API や Web API のプロジェクトで問題になります |
 > | `UseAntiforgery()` | 起動は成功しますが、`IFormFile` や `[FromForm]` にバインドするエンドポイントへリクエストが届いた時点で `InvalidOperationException` が投げられ、**HTTP 500** が返ります |
 
 ブラウザのフォームから送信する場合は、`IAntiforgery` で生成したリクエストトークンを hidden フィールドとして埋め込みます。これが上記 (2) で検証される値です。
