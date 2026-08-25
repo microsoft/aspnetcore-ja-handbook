@@ -912,6 +912,67 @@ await mermaid.parse(src);   // 例外が出れば構文エラー
 
 注意: Node 22 では `global.navigator` に代入できない（getter しかない）ので、代入行を書くと `TypeError` になる。`window` と `document` だけ渡せば動く。リポジトリ全体の図を一度に通すと、章をまたいだ回帰も拾える（第7章 8 図を含む全 43 図が構文エラーなしだった）。
 
+### 2.68 「A の場合は～」という条件つきの記述は、同種の A' でも試す
+
+「`AddRazorPages()` を呼んでいる場合は非フォージェリサービスが内部で登録される」という記述は正しかったが、実測すると `AddControllersWithViews()` と `AddMvc()` でも同じことが起きた。**列挙が 1 つだけの記述** を見つけたら、同じ系統の API を総当たりして「規則」に言い換えられないかを確認する。個別の事実として書くより「ビューを描画する構成では登録される」という規則にしたほうが、読者が自分のケースを判定できる。
+
+### 2.69 記事の完全なコードファイルを機械抽出して一括コンパイルする
+
+`namespace X;` を含むコードブロックだけを抜き出せば「そのまま動くはずのファイル」が得られる。全部を 1 つのプロジェクトに入れてビルドすると、型名の衝突・メンバーの不足・`using` の過不足・章をまたいだ参照ずれが一度に出る。ブロック単位で目視するのとは検出力が違う。
+
+```python
+re.match(r'^(\s*)```csharp\s*$', line)          # 開始を検出し、次の ``` まで本文を取る
+re.search(r'^namespace\s+([\w.]+);', body, re.M)  # namespace 宣言があれば「完全なファイル」
+```
+
+### 2.70 シェルのコードブロックは対象 OS のシェルで実際にパースさせる
+
+`bash` と書かれたブロックが Windows の PowerShell でも動くとは限らない。次の 3 つは PowerShell でパースエラーになる。
+
+| 書き方 | PowerShell での結果 |
+| --- | --- |
+| 行継続の `\` | `ParserError: Missing expression after unary operator '--'` |
+| `VAR=$(cmd)` | `The module 'VAR=$(cmd)' could not be loaded.` |
+| 引用符なしの `<プレースホルダー>` | `The '<' operator is reserved for future use.` |
+
+PowerShell 本体は sudo なしで展開できる（`powershell-<ver>-osx-arm64.tar.gz` を取得して `tar xzf`）。実行せずに構文だけ確かめるには次を使う。
+
+```powershell
+$e = $null; $t = $null
+[System.Management.Automation.Language.Parser]::ParseFile('path.ps1', [ref]$t, [ref]$e) > $null
+$e | ForEach-Object { $_.Message }
+```
+
+同じ検査は Bash 側の `bash -n` で対になる。**両シェル向けの記事なら、両方のパーサーに通してから公開する。** ハンドブック内で PowerShell 版を併記している章としていない章が混在していないかも、`grep -c '```powershell'` で章ごとに数えると一目でわかる。
+
+### 2.71 図やテーブルは描画結果の DOM を直接読む
+
+Mermaid のノードラベルに書いた `\n` が本当に改行になるかは、ソースを眺めても判断できない（`<br/>` しか解釈しない実装もある）。プレビューサーバーに対してブラウザーで次を評価すると、描画後の実際のマークアップが取れる。
+
+```js
+document.querySelector('.nodeLabel').outerHTML
+// => <span class="nodeLabel"><p>メモリ or ディスクの<br>一時ファイル</p></span>
+```
+
+同じ手口で **テーブルの横はみ出し** も検出できる。`table.scrollWidth > table.parentElement.clientWidth` を全テーブルについて評価すれば、狭い画面で読めなくなる表が機械的に見つかる。
+
+### 2.72 記事が示す「実測値」は同じ手順で再現する
+
+「100 MB のファイルで実測すると、マネージドヒープの割り当ては数 MB に抑えられ、ディスクに 100 MB の一時ファイルが作られる」「一時ファイルは `ASPNETCORE_` で始まる名前になる」といった記述は、そのまま再現できる。
+
+```csharp
+long before = GC.GetTotalAllocatedBytes();
+var form = await req.ReadFormAsync();
+long after = GC.GetTotalAllocatedBytes();
+var files = Directory.GetFiles(Environment.GetEnvironmentVariable("ASPNETCORE_TEMP")!);
+```
+
+実測は 2.3 MB の割り当てと `ASPNETCORE_98dc0d65-....tmp = 104,857,443 bytes` で、記事の記述と一致した。ファイルシステムの上限のような OS 依存の数値も同様で、APFS の 255 文字上限は Python の 3 行で確かめられる。**「実測した」と書いてある箇所を全部拾い出し、追試していないものを潰す** とよい。
+
+### 2.73 他言語の比較は「存在するクラス」ではなく「実際に登録されるクラス」を見る
+
+Laravel の CSRF ミドルウェアは、11・12 に `ValidateCsrfToken` と `VerifyCsrfToken` の両方が存在し、13 には 3 つとも存在する。クラスの存在だけを調べると「どれが正しいのか」が決まらない。決め手になるのは **既定のミドルウェアスタックに登録されているクラス** で、これは `Illuminate/Foundation/Configuration/Middleware.php` を読めば一意に決まる。比較対象のフレームワークについて書くときは、API の存在ではなく **既定の構成でどれが使われるか** を典拠にする。
+
 ## 3. 外部依存の実在確認
 
 ### 3.1 NuGet パッケージ
