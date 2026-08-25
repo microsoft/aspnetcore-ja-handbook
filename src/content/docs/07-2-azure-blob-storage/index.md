@@ -424,13 +424,20 @@ private static string ResolveContentType(string fileName)
 >
 > | 対象 | 規則 | ✅ 有効な例 | ❌ 無効な例 |
 > | --- | --- | --- | --- |
-> | キー名 | 英字またはアンダースコアで始まり、以降は英数字とアンダースコアのみ（ASCII）。大文字小文字は区別されず、`uploadedAt` と `UploadedAt` は同じキーとして扱われる | `uploadedAt`／`_uploadedAt` | `uploaded-at`（ハイフン）／`1st`（数字始まり） |
+> | キー名 | 英字またはアンダースコアで始まり、以降は英数字とアンダースコアのみ（ASCII）。大文字小文字は区別されず、`uploadedAt` と `UploadedAt` は同じキーとして扱われる | `uploadedAt`／`_uploadedAt` | `uploaded-at`（ハイフン）／`1st`（数字始まり）／`ファイル名`（日本語） |
 > | 値 | ASCII のみ | `2026-01-01` | `報告書.pdf`（日本語） |
 > | 全体 | 1 つの BLOB につき合計 8 KB まで | — | — |
 >
 > 大文字小文字が区別されないことには落とし穴があります。`uploadedAt` と `UploadedAt` を **同時に指定してもエラーにはならず**、1 つのキーに値がカンマ区切りで連結されます（上の 2 つを指定すると `UploadedAt` の値が `lower, upper` のようになります）。HTTP ヘッダーの仕様上、同名ヘッダーが結合されるためです。意図せず値が壊れるので、**キー名の綴りはコード全体で統一してください**。
 >
-> 規則に反するキー名を指定すると、サーバーが 400 を返し `RequestFailedException`（`The metadata specified is invalid. It has characters that are not permitted.`）が発生します。
+> 規則に反するキー名を指定したときの失敗の仕方は、**キーが ASCII かどうかで変わります**。
+>
+> | キー名の例 | どこで失敗するか | 例外 |
+> | --- | --- | --- |
+> | `uploaded-at`（ASCII だが規則違反） | サーバーが 400 を返す | `RequestFailedException`（`The metadata specified is invalid. It has characters that are not permitted.`） |
+> | `ファイル名`（非 ASCII） | 送信前の HTTP ヘッダー組み立て | `InvalidOperationException`（`Unable to add header ... to header collection.`） |
+>
+> 非 ASCII のキーはリクエストとして成立しないため、サーバーの検証に到達する前に落ちます。エラーメッセージにキー名が出ないので原因が分かりにくく、**メタデータのキーは必ず ASCII の英数字とアンダースコアだけで組み立ててください**。
 >
 > 一方、値に ASCII 以外を含めた場合は、リクエストを送信する前の HTTP ヘッダー組み立ての段階で失敗します。このとき表に出る例外は `RequestFailedException` ではなく **`AggregateException`**（メッセージは `Retry failed after 6 tries.` で、内側に `Request headers must contain only ASCII characters.` という `RequestFailedException` が 6 件入っています）です。クライアント側の誤りであるにもかかわらず既定のリトライ設定に従って 6 回試行されるため、`catch (RequestFailedException)` では捕捉できない点に注意してください。
 >
