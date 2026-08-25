@@ -660,6 +660,13 @@ azurite --silent --location ./azurite-data
 > | 1,024 文字を超える BLOB 名でアップロード | 成功する | `400 (OutOfRangeInput)` |
 > | アカウント側で匿名アクセスを許可していない状態でコンテナーを公開に設定 | 成功し、匿名の HTTP GET でも内容が読めてしまう | `409 (PublicAccessNotPermitted)` |
 >
+> 逆に、Azurite だけが失敗する操作もあります。前述の[メタデータのキーの大文字小文字](#content-type-とメタデータの設定)（`uploadedAt` と `UploadedAt` の同時指定）を試すと、Azurite では共有キー署名の計算が合わずに次のエラーになり、カンマ連結の挙動を確認できません。異なる 2 つのキーや単独のキーでは成功するため、**大文字小文字だけが違う同名キーに限った Azurite 側の制限**です。
+>
+> ```text
+> Azure.RequestFailedException: Server failed to authenticate the request.
+> Make sure the value of the Authorization header is formed correctly including the signature.
+> ```
+>
 > 一方、コンテナー名の命名規則、メタデータのキー名の制約（`400 InvalidMetadata`）、`overwrite: false` の重複検出（`409 BlobAlreadyExists`）、`IfMatch` による楽観的同時実行制御（`412 ConditionNotMet`）は Azurite でも実際と同じ結果になります。**入力値の上限やアカウントレベルの設定が関わる検証は、実際のストレージアカウントで確認してください**。
 
 Azurite は既知の開発用アカウントキーを持つため、開発環境では接続文字列 `UseDevelopmentStorage=true` を使用します。
