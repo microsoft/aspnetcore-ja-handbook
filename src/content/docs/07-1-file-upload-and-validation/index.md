@@ -355,6 +355,19 @@ flowchart TB
 | `FormOptions.MemoryBufferThreshold` | 65,536 バイト（64 KB） | 閾値を超えた時点で、それまでメモリに保持していた分も含めて全量がディスク上の一時ファイルへ退避される |
 | `FormOptions.ValueCountLimit` | 1,024 個 | `InvalidDataException` がスローされる。ファイルもこの個数に含まれる |
 
+> [!NOTE]
+> `FormOptions` には値やキーの長さを制限する設定もありますが、**これらはファイルアップロードで使う multipart には効きません**。`ValueLengthLimit`（既定 4,194,304 バイト）と `KeyLengthLimit`（既定 2,048 バイト）が適用されるのは `application/x-www-form-urlencoded` だけです。
+>
+> 実際に両方の形式で試すと、次のように分かれました。
+>
+> | 送ったもの | `application/x-www-form-urlencoded` | `multipart/form-data` |
+> | --- | --- | --- |
+> | 4,194,305 バイトのフォーム値 | `InvalidDataException`（`Form value length limit 4194304 exceeded.`） | **そのまま受け取れる** |
+> | 2,049 文字のフィールド名 | `InvalidDataException`（`Form key length limit 2048 exceeded.`） | **そのまま受け取れる** |
+> | 1,025 個のフォーム項目 | `InvalidDataException`（`Form value count limit 1024 exceeded.`） | `InvalidDataException` |
+>
+> 個数の上限は両方に効くのに、長さの上限は片方にしか効かない点に注意してください。**multipart でフォーム値の長さを制限したい場合は、自分で検証する必要があります**。なお multipart には、各パートに付けられるヘッダーの個数を制限する `MultipartHeadersCountLimit`（既定 16）が別に用意されており、17 個以上のヘッダーを含むパートは `Multipart headers count limit 16 exceeded.` で拒否されます。
+
 > [!IMPORTANT]
 > 上限を超えたときにクライアントへ返る HTTP ステータスは、**フォームを読み取る経路によって変わります**。フレームワークが常に同じステータスへ変換してくれるわけではありません。
 >
