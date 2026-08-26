@@ -328,7 +328,8 @@ var options = new BlobUploadOptions
 {
     TransferOptions = new StorageTransferOptions
     {
-        // これ以下のサイズなら 1 回のリクエストでアップロードする閾値
+        // この値「未満」なら 1 回のリクエストでアップロードする閾値。
+        // ちょうど同じサイズのときは分割される
         InitialTransferSize = 8 * 1024 * 1024,
         // 分割する場合の 1 ブロックあたりの最大サイズ
         MaximumTransferSize = 4 * 1024 * 1024,
