@@ -439,7 +439,7 @@ private static string ResolveContentType(string fileName)
 >
 > 非 ASCII のキーはリクエストとして成立しないため、サーバーの検証に到達する前に落ちます。エラーメッセージにキー名が出ないので原因が分かりにくく、**メタデータのキーは必ず ASCII の英数字とアンダースコアだけで組み立ててください**。
 >
-> 一方、値に ASCII 以外を含めた場合は、リクエストを送信する前の HTTP ヘッダー組み立ての段階で失敗します。このとき表に出る例外は `RequestFailedException` ではなく **`AggregateException`**（メッセージは `Retry failed after 6 tries.` で、内側に `Request headers must contain only ASCII characters.` という `RequestFailedException` が 6 件入っています）です。クライアント側の誤りであるにもかかわらず既定のリトライ設定に従って 6 回試行されるため、`catch (RequestFailedException)` では捕捉できない点に注意してください。
+> 値に ASCII 以外を含めた場合も、同じくヘッダー組み立ての段階で失敗します。ただし落ち方が異なります。キーのときは 1 回で例外になりますが、値のときは **既定のリトライ設定に従って 6 回試行されてから** 諦めます。そのため表に出る例外は `RequestFailedException` ではなく **`AggregateException`** になり、メッセージは `Retry failed after 6 tries.`、その内側に `Request headers must contain only ASCII characters.` という `RequestFailedException` が 6 件入っています。クライアント側の誤りなのでリトライしても直らないうえ、`catch (RequestFailedException)` では捕捉できない点に注意してください。
 >
 > 日本語のファイル名などは、上記の例のように Base64 エンコードして保存するか、データベース側で管理してください。
 
