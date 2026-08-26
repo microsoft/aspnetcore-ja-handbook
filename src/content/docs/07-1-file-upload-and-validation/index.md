@@ -61,7 +61,16 @@ Content-Type: image/jpeg
 ```
 
 > [!IMPORTANT]
-> `enctype="multipart/form-data"` を指定し忘れると、ファイルは一切送信されません。このときの症状はエンドポイントの実装方法によって異なります。後述の Minimal API では **HTTP 415（Unsupported Media Type）** が返り、引数を `IFormFile?` と null 許容にしても 415 のままです。一方、後述の `[ApiController]` を付けたコントローラーでは **HTTP 400** が返ります（`IFormFile?` と null 許容で受け取っている場合は `null` になります）。「ファイルが受け取れない」「引数が `null` になる」という不具合の多くはこれが原因です。なお `IFormFile` は、アップロードされたファイル 1 件を表す ASP.NET Core のインターフェイスです（詳細は [IFormFile によるバッファリング受信](#iformfile-によるバッファリング受信) で後述します）。
+> `enctype="multipart/form-data"` を指定し忘れると、フォームは `application/x-www-form-urlencoded` として送信され、ファイルの中身は一切届きません（ファイル名だけが文字列として送られます）。このときの症状は受け取り方によって異なります。
+>
+> | 受け取り方 | 結果 |
+> | --- | --- |
+> | 後述の Minimal API のハンドラー引数 | **HTTP 415（Unsupported Media Type）** が本文なしで返る。`IFormFile?` と null 許容にしても 415 のまま |
+> | 後述の `[ApiController]` を付けたコントローラーで、アクションの引数に直接 `IFormFile` を宣言 | **HTTP 415** が本文なしで返り、アクションのコードには到達しない。null 許容にしても同じ |
+> | `[FromForm]` を明示した場合や、複合型のプロパティで受け取る場合 | リクエストは受理され、値が **`null`** の状態でアクションが実行される |
+> | `[ApiController]` を付けていないコントローラー | 同上（引数が `null` になる） |
+>
+> 「ファイルが受け取れない」「引数が `null` になる」という不具合の多くはこれが原因です。なお `IFormFile` は、アップロードされたファイル 1 件を表す ASP.NET Core のインターフェイスです（詳細は [IFormFile によるバッファリング受信](#iformfile-によるバッファリング受信) で後述します）。
 
 > [!NOTE]
 > **他言語との比較**
