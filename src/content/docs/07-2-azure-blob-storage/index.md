@@ -429,7 +429,7 @@ private static string ResolveContentType(string fileName)
 > | 値 | ASCII のみ | `2026-01-01` | `報告書.pdf`（日本語） |
 > | 全体 | 1 つの BLOB につき合計 8 KB まで | — | — |
 >
-> 大文字小文字が区別されないことには落とし穴があります。`uploadedAt` と `UploadedAt` を **同時に指定してもエラーにはならず**、1 つのキーに値がカンマ区切りで連結されます（上の 2 つを指定すると `UploadedAt` の値が `lower, upper` のようになります）。HTTP ヘッダーの仕様上、同名ヘッダーが結合されるためです。意図せず値が壊れるので、**キー名の綴りはコード全体で統一してください**。
+> 大文字小文字が区別されないことには落とし穴があります。`uploadedAt` と `UploadedAt` を **同時に指定しても、コードの側では何のエラーにもなりません**。SDK が送信前に 2 つを 1 つのヘッダーへまとめ、値をカンマ区切りで連結するためです（上の 2 つを指定すると `UploadedAt` の値が `lower, upper` のようになります）。HTTP ヘッダーの仕様上、同名ヘッダーが結合されるためこうなります。意図せず値が壊れるので、**キー名の綴りはコード全体で統一してください**。なお、接続文字列によるアクセスキー認証を使っている場合は、この結合が原因で要求の署名が合わなくなり `403` で失敗します。理由は後述の [Azurite によるローカル開発](#azurite-によるローカル開発) で説明します。
 >
 > 規則に反するキー名を指定したときの失敗の仕方は、**キーが ASCII かどうかで変わります**。
 >
@@ -666,13 +666,18 @@ azurite --silent --location ./azurite-data
 > | --- | --- | --- |
 > | 1,024 文字を超える BLOB 名でアップロード | 成功する | `400 (OutOfRangeInput)` |
 > | アカウント側で匿名アクセスを許可していない状態でコンテナーを公開に設定 | 成功し、匿名の HTTP GET でも内容が読めてしまう | `409 (PublicAccessNotPermitted)` |
+> | 合計 8 KB を超えるメタデータを設定 | 成功する | `400 (MetadataTooLarge)` |
 >
-> 逆に、Azurite だけが失敗する操作もあります。前述の[メタデータのキーの大文字小文字](#content-type-とメタデータの設定)（`uploadedAt` と `UploadedAt` の同時指定）を試すと、Azurite では共有キー署名の計算が合わずに次のエラーになり、カンマ連結の挙動を確認できません。異なる 2 つのキーや単独のキーでは成功するため、**大文字小文字だけが違う同名キーに限った Azurite 側の制限**です。
+> なお、前述の[メタデータのキーの大文字小文字](#content-type-とメタデータの設定)（`uploadedAt` と `UploadedAt` の同時指定）を、接続文字列によるアクセスキー認証で試すと次のエラーになります。
 >
 > ```text
 > Azure.RequestFailedException: Server failed to authenticate the request.
 > Make sure the value of the Authorization header is formed correctly including the signature.
 > ```
+>
+> **これは Azurite 固有の制限ではありません。** アクセスキー認証では、要求の署名をクライアント側で計算してサーバーが受信内容から検証し直します。ところが SDK が署名に使う値は結合直後の `lower,upper` であるのに対し、実際に送信されるのは HTTP ヘッダーとして整形された `lower, upper`（カンマの後ろに空白）です。両者が食い違うため、署名の検証は必ず失敗します。したがって **アクセスキー認証を使う限り、実際の Azure Storage でも同じ結果になります**。異なる 2 つのキーや単独のキーで成功するのは、ヘッダーの結合が起きず署名対象と送信内容が一致するためです。
+>
+> 要求に署名を含まない Microsoft Entra ID 認証では、この問題は起きません。Azurite を OAuth モードで起動して `TokenCredential` で接続すると同じ操作が成功し、メタデータが `UploadedAt` に `lower, upper` として格納されることを確認できます。前掲の「値がカンマ連結される」という挙動は、この認証方式でこそ表面化します。
 >
 > 一方、コンテナー名の命名規則、メタデータのキー名の制約（`400 InvalidMetadata`）、`overwrite: false` の重複検出（`409 BlobAlreadyExists`）、`IfMatch` による楽観的同時実行制御（`412 ConditionNotMet`）は Azurite でも実際と同じ結果になります。**入力値の上限やアカウントレベルの設定が関わる検証は、実際のストレージアカウントで確認してください**。
 
