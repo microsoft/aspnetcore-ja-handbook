@@ -997,6 +997,8 @@ Microsoft.Extensions.Options.OptionsValidationException: DataAnnotation validati
 > [!IMPORTANT]
 > `ValidateDataAnnotations()` が検証するのは、**`System.ComponentModel.DataAnnotations` の属性が付いたプロパティだけ** です。C# の `required` 修飾子は付けても検証されません。`required` はコンパイル時にオブジェクト初期化子での指定を強制する機能であり、構成バインダーはリフレクションで値を設定するため、この制約は働かないためです。
 >
+> 紛らわしいのは、**同じ `required` でも MVC のモデルバインディングでは必須として扱われる** ことです。本章前半の [`IFormFile` によるバッファリング受信](#iformfile-によるバッファリング受信)で示した `UploadRequest` は `required string Title` を持ちますが、`Title` を送らずにリクエストすると `The Title field is required.` というモデル検証エラーで HTTP 400 が返ります。`required` を見てくれないのは構成バインダーの側だけなので、「モデルでは効いたから構成でも効くはず」と考えないでください。
+>
 > ```csharp
 > // ❌ 検証されない。構成に値が無くても起動は成功し、null が入ったままになる
 > public required string[] PermittedExtensions { get; set; }
