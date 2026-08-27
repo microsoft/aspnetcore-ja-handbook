@@ -466,6 +466,8 @@ app.Use(async (context, next) =>
 
 > [!IMPORTANT]
 > この設定を **エンドポイントのハンドラーの中** で行っても効果はありません。ハンドラーが呼び出される時点で `IFormFile` へのバインドは完了しており、ボディはすでに読み取られているためです。このとき `IsReadOnly` は `true` になっているので、上記のような `if (feature is { IsReadOnly: false })` という書き方をすると、**エラーも警告も出ないまま設定が黙って無視されます**。同じ理由で、エンドポイントフィルター (`AddEndpointFilter`) も手遅れです。フィルターはパラメーターのバインドが終わった後に実行されます。
+>
+> かといって `if` によるガードを外せば設定できるわけでもありません。読み取り専用になった状態で代入すると `InvalidOperationException`（`The maximum request body size cannot be modified after the app has already started reading from the request body.`）がスローされ、捕捉しなければ HTTP 500 になります。**ガードしてもしなくても設定は反映されない** ため、上限の変更は必ずミドルウェアかエンドポイントのメタデータで行ってください。
 
 #### IIS でホストする場合の設定
 
