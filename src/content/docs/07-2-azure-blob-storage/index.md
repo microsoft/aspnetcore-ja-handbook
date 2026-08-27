@@ -9,7 +9,7 @@ description: "Azure Blob Storage への Microsoft Entra ID による認証とス
 
 ## 目次
 
-1. [Azure Blob Storage への保存](#1-azure-blob-storage-への保存)
+1. [Blob Storage への接続と基本操作](#1-blob-storage-への接続と基本操作)
    - [Blob Storage のオブジェクトモデル](#blob-storage-のオブジェクトモデル)
    - [パッケージの追加と認証](#パッケージの追加と認証)
    - [ストリームをそのままアップロードする](#ストリームをそのままアップロードする)
@@ -29,7 +29,7 @@ description: "Azure Blob Storage への Microsoft Entra ID による認証とス
 
 ---
 
-## 1. Azure Blob Storage への保存
+## 1. Blob Storage への接続と基本操作
 
 受け取ったファイルの保存先には、アプリケーションサーバーのローカルディスク、リレーショナルデータベースのバイナリ列、外部のオブジェクトストレージという 3 つの選択肢があります。
 
@@ -710,7 +710,7 @@ azurite --silent --location ./azurite-data
 
 ## 2. Blob Storage クライアントの DI 設計とアプリケーションへの組み込み
 
-「[1. Azure Blob Storage への保存](#1-azure-blob-storage-への保存)」では `BlobServiceClient` を直接 `new` して Blob Storage を操作しました。しかし実際のアプリケーションでは、クライアントを DI コンテナーで管理し、アプリのコードからは抽象化されたインターフェイス越しに使うのが定石です。ここでは、前節で扱った Blob Storage の操作を、そのまま実運用に耐える形へ組み立て直していきます。
+「[1. Blob Storage への接続と基本操作](#1-blob-storage-への接続と基本操作)」では `BlobServiceClient` を直接 `new` して Blob Storage を操作しました。しかし実際のアプリケーションでは、クライアントを DI コンテナーで管理し、アプリのコードからは抽象化されたインターフェイス越しに使うのが定石です。ここでは、前節で扱った Blob Storage の操作を、そのまま実運用に耐える形へ組み立て直していきます。
 
 ### AddAzureClients によるクライアント登録
 
