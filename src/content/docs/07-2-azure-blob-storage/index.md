@@ -137,7 +137,7 @@ az role assignment create \
 # 例 2: Azure App Service。まずシステム割り当てマネージド ID を有効化し、
 #       発行されたプリンシパル ID にロールを割り当てる
 PRINCIPAL_ID=$(az webapp identity assign \
-  --name <アプリ名> --resource-group <リソースグループ名> \
+  --name "<アプリ名>" --resource-group "<リソースグループ名>" \
   --query principalId -o tsv)
 
 az role assignment create \
@@ -147,7 +147,7 @@ az role assignment create \
   --scope "/subscriptions/<サブスクリプション ID>/resourceGroups/<リソースグループ名>/providers/Microsoft.Storage/storageAccounts/<ストレージアカウント名>"
 ```
 
-Windows の PowerShell では、行継続がバックスラッシュ (`\`) ではなくバッククォート (`` ` ``) である点と、コマンドの出力を変数に受け取る書き方が異なります。また `<` は PowerShell では将来の予約演算子とみなされるため、`<アプリ名>` のような差し替え用の箇所は引用符で囲む必要があります。同じ内容を PowerShell で書くと次のようになります。
+Windows の PowerShell では、行継続がバックスラッシュ (`\`) ではなくバッククォート (`` ` ``) である点と、コマンドの出力を変数に受け取る書き方が異なります。なお `<アプリ名>` のような差し替え用の箇所を引用符で囲んでいるのは、`<` と `>` が bash ではリダイレクト、PowerShell では予約演算子として扱われるためです。同じ内容を PowerShell で書くと次のようになります。
 
 ```powershell
 # PowerShell（Windows）
