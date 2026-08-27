@@ -254,7 +254,7 @@ CSRF とは、利用者が正規サイトにログインした状態のまま攻
 
 他言語のフレームワークにも同じ仕組みがあります。Django の `{% csrf_token %}` と `CsrfViewMiddleware`、Laravel の `@csrf` と CSRF 対策ミドルウェア（Laravel 13 の `PreventRequestForgery`、11・12 の `ValidateCsrfToken`、10 以前の `VerifyCsrfToken`）、Spring Security の `CsrfFilter` と `CsrfToken` に相当します。
 
-ASP.NET Core では、`AddAntiforgery()` でサービスを登録し、`UseAntiforgery()` ミドルウェアをパイプラインに追加することで有効になります。Minimal API では、このミドルウェアが `IFormFile` や `[FromForm]` にバインドするエンドポイントを自動的に検証対象とするため、**アプリ側に検証コードを書く必要はありません**。
+ASP.NET Core では、[非フォージェリ機能](https://learn.microsoft.com/ja-jp/aspnet/core/security/anti-request-forgery?view=aspnetcore-10.0)を `AddAntiforgery()` でサービスとして登録し、`UseAntiforgery()` ミドルウェアをパイプラインに追加することで有効になります。Minimal API では、このミドルウェアが `IFormFile` や `[FromForm]` にバインドするエンドポイントを自動的に検証対象とするため、**アプリ側に検証コードを書く必要はありません**。
 
 ```csharp
 using Microsoft.AspNetCore.Antiforgery;
@@ -391,7 +391,7 @@ flowchart TB
 >
 > `ReadFormAsync()` を自分で呼ぶ場合に 500 を避けたいときは、呼び出しを `try` / `catch` で囲み、`InvalidDataException` を捕捉して自分でレスポンスを組み立ててください。
 
-アプリケーション全体で上限を変更する場合は `Program.cs` で設定します。
+アプリケーション全体で上限を変更する場合は `Program.cs` で設定します（Kestrel 側の設定項目は [Kestrel Web サーバーのオプションを構成する](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/servers/kestrel/options?view=aspnetcore-10.0)にまとまっています）。
 
 ```csharp
 using Microsoft.AspNetCore.Http.Features;
@@ -1078,7 +1078,7 @@ public sealed class UploadValidator(IOptions<FileUploadOptions> options) : IUplo
 
 MVC コントローラーでは以前からデータ注釈（`[Required]`、`[Range]` など）によるモデル検証が動作しましたが（詳細は[第3章：入力検証 (バリデーション)](../03-mvc-web-and-api/index.md#入力検証-バリデーション)を参照）、Minimal API には同等の仕組みがなく、上記のような検証サービスを自分で呼び出す必要がありました。
 
-**ASP.NET Core 10 では、Minimal API でもデータ注釈による検証が利用できるようになりました。** `AddValidation()` を呼ぶだけで、ハンドラーの引数に付けた検証属性がフレームワークによって評価され、違反があればハンドラーに到達せず HTTP 400 と検証エラーの詳細が返ります。この仕組みの全体像は[第4章：バリデーション](../04-minimal-api/index.md#バリデーション)で扱っています。ここではファイルアップロード特有の使い方に絞って説明します。
+**ASP.NET Core 10 では、Minimal API でも[データ注釈による検証](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/validation?view=aspnetcore-10.0)が利用できるようになりました。** `AddValidation()` を呼ぶだけで、ハンドラーの引数に付けた検証属性がフレームワークによって評価され、違反があればハンドラーに到達せず HTTP 400 と検証エラーの詳細が返ります。この仕組みの全体像は[第4章：バリデーション](../04-minimal-api/index.md#バリデーション)で扱っています。ここではファイルアップロード特有の使い方に絞って説明します。
 
 ```csharp
 builder.Services.AddValidation();
@@ -1158,7 +1158,7 @@ public class ValidatedUploadRequest
 
 ### ウイルススキャンと隔離
 
-公式ドキュメント「ASP.NET Core でファイルをアップロードする」は、**アップロードされたファイルを保存する前にウイルス／マルウェアスキャナーを通すこと** を強く推奨しています。スキャンはサーバーリソースを消費するため、大量アップロードが発生するアプリケーションでは次のような非同期処理が推奨されます。
+公式ドキュメント「[ASP.NET Core でファイルをアップロードする](https://learn.microsoft.com/ja-jp/aspnet/core/mvc/models/file-uploads?view=aspnetcore-10.0)」は、**アップロードされたファイルを保存する前にウイルス／マルウェアスキャナーを通すこと** を強く推奨しています。アップロード機能に潜む危険の全体像は、[OWASP の Unrestricted File Upload](https://owasp.org/www-community/vulnerabilities/Unrestricted_File_Upload) にまとめられています。スキャンはサーバーリソースを消費するため、大量アップロードが発生するアプリケーションでは次のような非同期処理が推奨されます。
 
 ```mermaid
 flowchart TB

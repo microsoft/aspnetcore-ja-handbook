@@ -484,7 +484,7 @@ Blob Storage には BLOB を一覧・検索する手段がいくつかありま�
 > }
 > ```
 
-このうち **BLOB インデックスタグ** は、Blob Storage が標準で提供する検索用の索引機能です。タグとして設定したキーと値は Blob Storage 側で索引化され、`FindBlobsByTagsAsync` で「タグの値がこの条件に一致する BLOB」をコンテナーをまたいで探し出せます。「スキャン未完了のファイルを全部拾いたい」「特定のテナントのファイルだけ集めたい」といった用途がこれにあたります。
+このうち **[BLOB インデックスタグ](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-manage-find-blobs)** は、Blob Storage が標準で提供する検索用の索引機能です。タグとして設定したキーと値は Blob Storage 側で索引化され、`FindBlobsByTagsAsync` で「タグの値がこの条件に一致する BLOB」をコンテナーをまたいで探し出せます。「スキャン未完了のファイルを全部拾いたい」「特定のテナントのファイルだけ集めたい」といった用途がこれにあたります。
 
 一方、メタデータには索引が作られません。メタデータの値で BLOB を探そうとすると、全 BLOB を列挙して 1 件ずつクライアント側で条件に合うか確認することになり、件数が増えると現実的ではなくなります（`GetBlobsAsync(new GetBlobsOptions { Traits = BlobTraits.Metadata })` と指定すれば一覧の応答にメタデータを含められるので、BLOB ごとに `GetPropertiesAsync` を呼ぶ必要はありません。それでも全件を取得して絞り込む点は変わりません）。メタデータはあくまで、**BLOB のパスが既に分かっている状態で、その BLOB に付随する補足情報を取り出す** ための機能だと理解してください。
 
@@ -528,7 +528,7 @@ await blobClient.UploadAsync(stream, overwrite: true, cancellationToken);
 await blobClient.UploadAsync(stream, overwrite: false, cancellationToken);
 ```
 
-より細かく制御する場合は、`BlobRequestConditions` に条件付きヘッダーを指定します。ここで使う **ETag** は、HTTP がリソースの版を表すために用いる識別子で、Blob Storage では BLOB の内容が変わるたびに新しい値が振られます。`IfNoneMatch = ETag.All` は「どんな ETag とも一致しない場合だけ実行する」、つまり **その BLOB がまだ存在しない場合だけ書き込む** という指定です。
+より細かく制御する場合は、`BlobRequestConditions` に条件付きヘッダーを指定します。ここで使う **ETag** は、HTTP がリソースの版を表すために用いる識別子で（Blob Storage での同時実行制御の考え方は [BLOB の同時実行の管理](https://learn.microsoft.com/ja-jp/azure/storage/blobs/concurrency-manage)を参照）、Blob Storage では BLOB の内容が変わるたびに新しい値が振られます。`IfNoneMatch = ETag.All` は「どんな ETag とも一致しない場合だけ実行する」、つまり **その BLOB がまだ存在しない場合だけ書き込む** という指定です。
 
 ```csharp
 using Azure;
@@ -681,7 +681,7 @@ azurite --silent --location ./azurite-data
 >
 > 一方、コンテナー名の命名規則、メタデータのキー名の制約（`400 InvalidMetadata`）、`overwrite: false` の重複検出（`409 BlobAlreadyExists`）、`IfMatch` による楽観的同時実行制御（`412 ConditionNotMet`）は Azurite でも実際と同じ結果になります。**入力値の上限やアカウントレベルの設定が関わる検証は、実際のストレージアカウントで確認してください**。
 
-Azurite は既知の開発用アカウントキーを持つため、開発環境では接続文字列 `UseDevelopmentStorage=true` を使用します。
+[Azurite](https://learn.microsoft.com/ja-jp/azure/storage/common/storage-use-azurite) は既知の開発用アカウントキーを持つため、開発環境では接続文字列 `UseDevelopmentStorage=true` を使用します。
 
 ```json
 // appsettings.Development.json
@@ -1137,7 +1137,7 @@ public sealed class StoragePathBuilder(
 
 ### 公開と非公開のアクセス制御
 
-Blob Storage への匿名アクセス（公開読み取り）は、既定で **無効** です。有効化するには、ストレージアカウントとコンテナーの両方で設定を変更する必要があります。
+Blob Storage への匿名アクセス（公開読み取り）は、既定で **無効** です。有効化するには、ストレージアカウントとコンテナーの両方で設定を変更する必要があります（手順の詳細は [コンテナーと BLOB に対する匿名読み取りアクセスを構成する](https://learn.microsoft.com/ja-jp/azure/storage/blobs/anonymous-read-access-configure)を参照）。
 
 | ストレージアカウントの設定 | コンテナーのアクセスレベル | 結果 |
 | --- | --- | --- |
@@ -1206,7 +1206,7 @@ SAS には次の 3 種類があります。
 | **サービス SAS** | ストレージアカウントキー | 単一のサービス内のリソースに限定される。アカウントキーをアプリケーションが保持する必要がある |
 | **ユーザー委任 SAS** | ユーザー委任キー（Microsoft Entra ID 由来） | Blob Storage 専用。アカウントキーが不要で、**推奨** |
 
-ユーザー委任 SAS は、`BlobServiceClient.GetUserDelegationKeyAsync` で取得したキーで署名します。キーの有効期間は最大 7 日間で、SAS はキーの有効期限を超えて使えないため、ユーザー委任 SAS の期限も実質的に最大 7 日間です。
+[ユーザー委任 SAS](https://learn.microsoft.com/ja-jp/azure/storage/blobs/storage-blob-user-delegation-sas-create-dotnet) は、`BlobServiceClient.GetUserDelegationKeyAsync` で取得したキーで署名します。キーの有効期間は最大 7 日間で、SAS はキーの有効期限を超えて使えないため、ユーザー委任 SAS の期限も実質的に最大 7 日間です。
 
 > [!IMPORTANT]
 > **ユーザー委任キーが期限切れになると、SAS 自体の有効期限が残っていても認可エラーになります。** キーは取得コストがかかるためキャッシュするのが定石ですが、「キャッシュしたキーが、これから発行する SAS の有効期限まで生きているか」を基準に再利用の可否を判断しなければなりません。単に「キーの期限が数分後より先か」だけで判定すると、残り 5 分のキーで 10 分間有効な SAS を発行してしまい、5 分後に突然 403 が返るという再現しにくい不具合になります。
