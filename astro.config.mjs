@@ -86,7 +86,11 @@ export default defineConfig({
 				Sidebar: './src/components/Sidebar.astro',
 				SocialIcons: './src/components/PanelToggles.astro',
 			},
-			customCss: ['./src/styles/panel-toggle.css'],
+			customCss: [
+				'./src/styles/panel-toggle.css',
+				// 狭い画面で表がはみ出して横スクロールになるのを防ぐ。
+				'./src/styles/table-wrap.css',
+			],
 			head: [
 				{
 					// 描画前に折りたたみ状態を復元して、
