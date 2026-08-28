@@ -17,7 +17,7 @@ description: ".NET SDK / ランタイムの違いと LTS/STS のサポート期�
    - [macOS](#32-macos)
    - [Linux (Ubuntu)](#33-linux-ubuntu)
 4. [IDE 準備](#4-ide-準備)
-   - [Visual Studio](#41-visual-studio-windows-のみ)
+   - [Visual Studio](#41-visual-studiowindows-のみ)
    - [Visual Studio Code + C# Dev Kit](#42-visual-studio-code--c-dev-kit)
    - [JetBrains Rider](#43-jetbrains-rider)
 5. [.NET CLI 基本コマンド](#5-net-cli-基本コマンド)
