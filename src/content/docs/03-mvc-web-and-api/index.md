@@ -940,7 +940,7 @@ public class SampleActionFilter : IActionFilter
 
 > [!NOTE]
 > **DI（依存性の注入）** とは、クラスが必要とする依存オブジェクト（サービスなど）を外部から注入する設計パターンです。  
-> ASP.NET Core では DI コンテナが組み込まれており、コンストラクタの引数に型を宣言するだけで自動的にインスタンスが提供されます。  
+> ASP.NET Core では DI コンテナーが組み込まれており、コンストラクタの引数に型を宣言するだけで自動的にインスタンスが提供されます。  
 > **TODO** 詳細は DI の章を参照してください。
 
 作成したフィルターを有効化するには、 **フィルターを適用したい範囲** で登録します。  
@@ -958,7 +958,7 @@ builder.Services.AddControllers(options =>
     // DI が不要なフィルターはインスタンスを直接渡せる
     // options.Filters.Add(new AnotherFilter());
 
-    // DI が必要なフィルターは Add<T>() を使用（DI コンテナ経由でインスタンスを生成）
+    // DI が必要なフィルターは Add<T>() を使用（DI コンテナー経由でインスタンスを生成）
     options.Filters.Add<SampleActionFilter>();
 });
 
