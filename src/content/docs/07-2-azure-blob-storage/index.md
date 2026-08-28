@@ -1596,6 +1596,9 @@ flowchart TB
     D --> R["201 Created"]
 ```
 
+> [!IMPORTANT]
+> 上のコードはレコードを `ScanStatus.Pending` で作成し、`GetDownloadUrl` は `Clean` 以外を 409 で拒否します。`Pending` を `Clean` へ更新するのはウイルススキャンを行うバックグラウンドサービスの役割で、本章では[前編のウイルススキャンと隔離](../07-1-file-upload-and-validation/index.md#ウイルススキャンと隔離)で設計だけを示しています。スキャンを実装しないまま試すと、アップロードには成功してもダウンロード URL の取得が必ず 409 になります。動作確認だけを目的とする場合は、`UploadedFile.ScanStatus` の初期値を `Clean` にするか、`GetDownloadUrl` のこの判定を一時的に外してください。
+
 > [!TIP]
 > `IFileStorage` を抽象化しておけば、単体テストではインメモリ実装に差し替えられ、Azure への接続なしでコントローラーのロジックを検証できます。統合テストでは Azurite を起動して実際の Blob Storage API に対して検証すると、より高い信頼性が得られます。
 
