@@ -1158,7 +1158,7 @@ public class ValidatedUploadRequest
 
 ### ウイルススキャンと隔離
 
-公式ドキュメント「[ASP.NET Core でファイルをアップロードする](https://learn.microsoft.com/ja-jp/aspnet/core/mvc/models/file-uploads?view=aspnetcore-10.0)」は、**アップロードされたファイルを保存する前にウイルス／マルウェアスキャナーを通すこと** を強く推奨しています。アップロード機能に潜む危険の全体像は、[OWASP の Unrestricted File Upload](https://owasp.org/www-community/vulnerabilities/Unrestricted_File_Upload) にまとめられています。スキャンはサーバーリソースを消費するため、大量アップロードが発生するアプリケーションでは次のような非同期処理が推奨されます。
+公式ドキュメント「[ASP.NET Core でファイルをアップロードする](https://learn.microsoft.com/ja-jp/aspnet/core/mvc/models/file-uploads?view=aspnetcore-10.0)」は、**アップロードされたファイルを保存する前にウイルス／マルウェアスキャナーを通すこと** を強く推奨しています。アップロード機能に潜む危険の全体像は、[OWASP の Unrestricted File Upload](https://owasp.org/www-community/vulnerabilities/Unrestricted_File_Upload) にまとめられています。スキャンはサーバーリソースを消費するため、大量アップロードが発生するアプリケーションでは次のような非同期処理が推奨されます。なお、以下の図と手順に出てくる「コンテナー」は、Docker などの実行環境のことではなく、Azure Blob Storage がファイルを入れておく区画を指します（後編の [Blob Storage のオブジェクトモデル](../07-2-azure-blob-storage/index.md#blob-storage-のオブジェクトモデル) で解説します）。
 
 ```mermaid
 flowchart TB
