@@ -253,7 +253,7 @@ app.MapPost("/products", (Product newProd, IProductRepository repo) =>
 });
 ```
 
-**フォームデータ** や **ファイルアップロード** （`IFormFile`）にも対応しており、必要に応じて `[FromForm]` 属性を付与して明示的にフォーム由来であることを指定できます。
+**フォームデータ** や **ファイルアップロード** （`IFormFile`）にも対応しており、必要に応じて `[FromForm]` 属性を付与して明示的にフォーム由来であることを指定できます。ファイル受信の詳細や検証方法は[第7章（前編）：Minimal API でのファイル受信](../07-1-file-upload-and-validation/index.md#minimal-api-でのファイル受信)を参照してください。
 
 ```csharp
 // Program.cs
