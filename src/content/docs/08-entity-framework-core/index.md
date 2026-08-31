@@ -284,6 +284,27 @@ public class Contributor
 > [!IMPORTANT]
 > プロジェクトで **null 許容参照型 (Nullable Reference Types)** が有効（`<Nullable>enable</Nullable>`。.NET 6 以降のテンプレートでは既定）になっていると、EF Core は `string` を NOT NULL 列、`string?` を NULL 許容列として扱います。意図しない NOT NULL 制約を避けるため、null を許す列は必ず `?` を付けます。
 
+> [!TIP]
+> **コード分析ルールとの衝突について。** プロジェクトで `<AnalysisLevel>latest-all</AnalysisLevel>` のように厳しいコード分析を有効にすると、上のエンティティ定義に対して次のような警告が出ます（実測で確認）。
+>
+> | ルール | 内容 |
+> | --- | --- |
+> | `CA1002` | `List<Post>` ではなく `Collection<T>` を公開すべき |
+> | `CA2227` | コレクションプロパティのセッターを削除して読み取り専用にすべき |
+> | `CA1056` | `Url` プロパティは `string` ではなく `Uri` にすべき |
+>
+> これらは汎用のライブラリ設計を想定したルールであり、**EF Core のエンティティには当てはまりません。** EF Core はコレクションナビゲーションの設定やリレーションシップの修正のためにセッターを利用しますし、`Uri` 型は標準では列にマッピングされません。エンティティを置いたフォルダーに対して、`.editorconfig` でこれらのルールを無効化するのが実務上の対応です。
+>
+> ```ini
+> # プロジェクト直下の Models フォルダーを対象にする場合
+> [Models/*.cs]
+> dotnet_diagnostic.CA1002.severity = none
+> dotnet_diagnostic.CA2227.severity = none
+> dotnet_diagnostic.CA1056.severity = none
+> ```
+>
+> パスは **`.editorconfig` を置いた場所からの相対パス** で解釈されます。`Models` がプロジェクト直下にあるとき、`[**/Models/*.cs]` と書くと**マッチせず抑制されません**（実測で確認）。意図したファイルに効いているかどうかは、ビルドして警告が消えることで必ず確かめてください。
+
 ### DbContext の定義
 
 `DbContext` は、エンティティのセット（`DbSet<T>`）を公開し、クエリと保存の起点となるクラスです。
@@ -403,6 +424,21 @@ public class BlogsController(BloggingContext context) : ControllerBase
 
 `AddDbContext` は `DbContext` を **Scoped** サービスとして登録します。ASP.NET Core では 1 つの HTTP リクエストが 1 つのスコープに対応するため、リクエストごとに `DbContext` インスタンスが作られ、リクエスト終了時に破棄されます。
 
+> [!IMPORTANT]
+> Scoped であることの帰結として、**`DbContext` を Singleton サービスのコンストラクターで受け取ることはできません。** そうすると、アプリケーションの起動時に次の例外が発生します（開発環境ではスコープの検証が既定で有効になっているため、リクエストを受ける前に検出されます）。
+>
+> ```text
+> System.InvalidOperationException: Cannot consume scoped service
+> 'Microsoft.EntityFrameworkCore.DbContextOptions`1[BloggingContext]'
+> from singleton 'MyBackgroundService'.
+> ```
+>
+> この状況の解決策は後述の `IServiceScopeFactory` か `IDbContextFactory<T>` です。なお、`AddDbContext` でプロバイダー（`UseSqlServer` など）の指定を忘れた場合は、解決時に別の例外になります。
+>
+> ```text
+> System.InvalidOperationException: No database provider has been configured for this DbContext.
+> ```
+
 ```mermaid
 sequenceDiagram
     participant C as クライアント
@@ -426,7 +462,20 @@ sequenceDiagram
 - EF Core が投げる `InvalidOperationException` はコンテキストを回復不能な状態にすることがあり、握りつぶして処理を続行してはいけない
 
 > [!WARNING]
-> `Task.WhenAll` で複数のクエリを同じ `DbContext` インスタンスに対して並列実行すると、`InvalidOperationException`（A second operation was started on this context instance...）が発生します。並列にクエリを実行したい場合は、後述する `IDbContextFactory<T>` でインスタンスを分けます。
+> `DbContext` は **スレッドセーフではありません。** 同じインスタンスに対して複数の操作を同時に実行すると、次の例外が発生します。
+>
+> ```text
+> System.InvalidOperationException: A second operation was started on this context instance
+> before a previous operation completed. This is usually caused by different threads
+> concurrently using the same instance of DbContext.
+> ```
+>
+> 並列にクエリを実行したい場合は、後述する `IDbContextFactory<T>` でインスタンスを分けます。
+
+> [!WARNING]
+> やっかいなのは、**この例外がいつも出るとは限らない**ことです。SQLite のように同期的な I/O を行うプロバイダーでは、`Task.WhenAll(context.Blogs.ToListAsync(), context.Posts.ToListAsync())` のような書き方をしても各クエリが順番に完了してしまい、例外が発生しないことがあります（実際に 20 回試行して 1 度も発生しませんでした）。一方、`Task.Run` で明確に別スレッドから実行すると確実に例外になります。
+>
+> つまり **SQLite を使った単体テストでは問題が表面化せず、本番の SQL Server で初めて落ちる**、ということが起こり得ます。「テストが通ったから安全」と考えず、1 つの `DbContext` インスタンスを複数の処理で共有しない設計を徹底してください。
 
 Singleton サービスやバックグラウンドサービスから `DbContext` を使う場合は、`IServiceScopeFactory` でスコープを作るか、`IDbContextFactory<T>` を使います。
 
@@ -434,6 +483,9 @@ Singleton サービスやバックグラウンドサービスから `DbContext` 
 builder.Services.AddDbContextFactory<BloggingContext>(options =>
     options.UseSqlServer(connectionString));
 ```
+
+> [!IMPORTANT]
+> `AddDbContextFactory` は、`IDbContextFactory<BloggingContext>` を **Singleton** として登録すると同時に、`BloggingContext` そのものも **Scoped** で登録します（実測で確認）。したがって、コントローラーで `BloggingContext` を直接受け取ることも、バックグラウンドサービスでファクトリーからインスタンスを作ることも、両方できます。ただし **ファクトリーで作ったインスタンスは DI コンテナーが破棄してくれない**ため、下の例のように `await using` で必ず自分で破棄してください。
 
 ```csharp
 public class ReportGenerator(IDbContextFactory<BloggingContext> contextFactory)
@@ -1688,7 +1740,7 @@ Console.WriteLine(query.ToQueryString());
 
 #### メトリクスで全体像をつかむ
 
-個々のクエリを見る前に、アプリケーション全体の傾向を数値で押さえます。EF Core は `Microsoft.EntityFrameworkCore` という名前の [Meter](https://learn.microsoft.com/ja-jp/dotnet/core/diagnostics/metrics) を通じて次のカウンターを公開しています（EF Core 10.0.11 で実際に列挙して確認）。
+個々のクエリを見る前に、アプリケーション全体の傾向を数値で押さえます。EF Core は `Microsoft.EntityFrameworkCore` という名前の [`Meter`](https://learn.microsoft.com/ja-jp/dotnet/core/diagnostics/metrics)（.NET の計測 API の単位。詳しくは「メトリックの概要」を参照）を通じて次のカウンターを公開しています（EF Core 10.0.11 で実際に列挙して確認）。
 
 | メトリクス名 | 意味 |
 | --- | --- |
@@ -2463,13 +2515,13 @@ flowchart TB
 
 ### 読み取り専用レプリカ
 
-- [読み取りスケールアウトを使用して読み取り専用クエリの負荷を分散する | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/azure-sql/database/read-scale-out)
+- [レプリカからのクエリ読み取り | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/azure-sql/database/read-scale-out)
 - [アクティブ geo レプリケーション | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/azure-sql/database/active-geo-replication-overview)
-- [Always On 可用性グループのセカンダリレプリカでの読み取り専用アクセス | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/database-engine/availability-groups/windows/active-secondaries-readable-secondary-replicas-always-on-availability-groups)
+- [ワークロードをセカンダリ可用性グループレプリカにオフロードする | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/database-engine/availability-groups/windows/active-secondaries-readable-secondary-replicas-always-on-availability-groups)
 
 ### テスト
 
 - [EF Core アプリケーションのテスト | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/testing/)
 - [運用データベースシステムに対するテスト | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/testing/testing-with-the-database)
-- [EF Core を使用しないテスト | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/testing/testing-without-the-database)
+- [運用データベースシステムを使用しないテスト | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/testing/testing-without-the-database)
 - [ASP.NET Core での統合テスト | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/test/integration-tests?view=aspnetcore-10.0)
