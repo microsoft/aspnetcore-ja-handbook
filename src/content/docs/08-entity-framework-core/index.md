@@ -645,6 +645,8 @@ public class Tag
 }
 ```
 
+結合テーブルの名前を明示したい場合は、`UsingEntity` で指定します。指定しない場合、EF Core は規約に従って `PostTag` という名前のテーブルを生成します。
+
 ```csharp
 modelBuilder.Entity<Post>()
     .HasMany(p => p.Tags)
@@ -736,6 +738,8 @@ public class Author
 }
 ```
 
+複合型は所有型と違って独立したエンティティにならないため、`OwnsOne` ではなく `ComplexProperty` で構成します。
+
 ```csharp
 modelBuilder.Entity<Author>()
     .ComplexProperty(a => a.Address);
@@ -771,6 +775,27 @@ EF Core 10 では、`UseAzureSql` を使っているか、**互換性レベル 1
 > options.UseSqlServer(connectionString, o => o.UseCompatibilityLevel(160));
 > ```
 
+> [!NOTE]
+> 同じく EF Core 10 では、Azure SQL Database と SQL Server 2025 の `vector` データ型がサポートされました。エンティティに `SqlVector<float>` 型のプロパティを持たせると埋め込み (embedding) を保存でき、`EF.Functions.VectorDistance` で類似度検索を書けます。セマンティック検索や RAG のような AI ワークロードで使う機能で、本章の範囲を超えるためここでは紹介にとどめます。
+>
+> ```csharp
+> public class Doc
+> {
+>     public int Id { get; set; }
+>
+>     [Column(TypeName = "vector(1536)")]
+>     public SqlVector<float> Embedding { get; set; }
+> }
+>
+> // コサイン距離が近い順に取得する
+> var similar = await context.Docs
+>     .OrderBy(d => EF.Functions.VectorDistance("cosine", d.Embedding, queryVector))
+>     .Take(10)
+>     .ToListAsync(cancellationToken);
+> ```
+>
+> `SqlVector<T>` は `Microsoft.Data.SqlTypes` 名前空間にあります。
+
 ### グローバルクエリフィルターと名前付きクエリフィルター
 
 論理削除（ソフトデリート）やマルチテナントのように、「すべてのクエリに自動的に適用したい条件」はグローバルクエリフィルターで表現します。
@@ -785,6 +810,8 @@ public class Blog
 }
 ```
 
+このエンティティに対して、論理削除された行を除外するフィルターを設定します。
+
 ```csharp
 modelBuilder.Entity<Blog>().HasQueryFilter(b => !b.IsDeleted);
 ```
@@ -798,6 +825,8 @@ modelBuilder.Entity<Blog>()
     .HasQueryFilter("SoftDeletionFilter", b => !b.IsDeleted)
     .HasQueryFilter("TenantFilter", b => b.TenantId == tenantId);
 ```
+
+名前を付けておくと、無効化したいフィルターだけを個別に選べます。
 
 ```csharp
 // 論理削除のフィルターだけを無効化し、テナントのフィルターは維持する
@@ -901,7 +930,7 @@ dotnet ef database update
 > The project targets multiple frameworks. Use the --framework option to specify which target framework to use.
 > ```
 >
-> ライブラリープロジェクトに `DbContext` を置いていて複数ターゲットにしている場合など、EF Core 9 から移行すると CI が突然失敗します。次のようにフレームワークを明示してください。
+> ライブラリプロジェクトに `DbContext` を置いていて複数ターゲットにしている場合など、EF Core 9 から移行すると CI が突然失敗します。次のようにフレームワークを明示してください。
 >
 > ```bash
 > dotnet ef migrations add AddPostPublishedAt --framework net10.0
@@ -984,6 +1013,8 @@ dotnet ef migrations script AddNewTables AddAuditTable
 dotnet ef migrations bundle --self-contained --runtime linux-x64 --output efbundle
 ```
 
+生成したバンドルは、デプロイ先で実行可能ファイルとして起動します。
+
 ```bash
 # デプロイ先で実行
 ./efbundle --connection "$CONNECTION_STRING"
@@ -1064,7 +1095,7 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 
 ### 設計時 DbContext ファクトリ
 
-`dotnet ef` コマンドは、設計時に `DbContext` のインスタンスを生成する必要があります。通常はアプリケーションの `Program.cs` からホストを構築して解決しますが、それが難しい構成（クラスライブラリーにマイグレーションを置く場合など）では `IDesignTimeDbContextFactory<T>` を実装します。
+`dotnet ef` コマンドは、設計時に `DbContext` のインスタンスを生成する必要があります。通常はアプリケーションの `Program.cs` からホストを構築して解決しますが、それが難しい構成（クラスライブラリにマイグレーションを置く場合など）では `IDesignTimeDbContextFactory<T>` を実装します。
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -1367,6 +1398,23 @@ var page = await context.Posts
 
 > [!IMPORTANT]
 > ページングでは、並び順が一意になるようにしてください。並び順が同値の行があると、ページ間で行の順序が不定になります。上の例のように、末尾に主キーを加えるのが確実です。
+
+> [!WARNING]
+> `pageNumber` と `pageSize` をクエリ文字列などの外部入力から受け取る場合は、**必ず範囲を検証してください**。EF Core は不正な値でも例外を投げず、黙って想定外の結果を返します。SQLite で実測したところ、20 件のデータに対して次の結果になりました。
+>
+> | 入力 | 生成される値 | 結果 |
+> | --- | --- | --- |
+> | `pageNumber=0`, `pageSize=10` | `Skip(-10).Take(10)` | 1 ページ目と同じ 10 件（負の `Skip` は無視される） |
+> | `pageNumber=1`, `pageSize=-5` | `Skip(-10).Take(-5)` | **全 20 件が返る** |
+>
+> 特に危険なのは `pageSize` に負の値を渡された場合です。`Take` による件数制限が実質的に効かなくなり、テーブル全体が返るため、**一覧 API がそのままサービス拒否の窓口になります**。次のように上限つきで丸めてください。
+>
+> ```csharp
+> pageNumber = Math.Max(pageNumber, 1);
+> pageSize = Math.Clamp(pageSize, 1, 100);
+> ```
+>
+> ASP.NET Core のモデルバインディングを使う場合は、[第 3 章](../03-mvc-web-and-api/index.md)で扱った検証属性（`[Range(1, 100)]` など）を DTO に付けて、コントローラーに入る前に弾くのが確実です。
 
 ### LeftJoin / RightJoin 演算子
 
@@ -1747,7 +1795,20 @@ builder.Property(b => b.LastUpdatedAt).IsConcurrencyToken();
 ```
 
 > [!WARNING]
-> `rowversion` と違い、この方式では **値の更新はアプリケーション側の責任** です。`SaveChanges` をオーバーライドするなどして、更新のたびに必ず新しい値（現在時刻や新しい `Guid`）を設定してください。設定を忘れるとトークンが変化せず、競合が検出されないまま上書きが起こります。
+> `rowversion` と違い、この方式では **値の更新はアプリケーション側の責任** です。設定を忘れるとトークンが変化せず、競合が検出されないまま上書きが起こります。実際に SQLite で、トークンを更新しない場合は競合が検出されずに上書きされ、下記のように `SaveChangesAsync` をオーバーライドして毎回更新した場合にのみ `DbUpdateConcurrencyException` が発生することを確認しています。
+>
+> ```csharp
+> public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+> {
+>     foreach (var entry in ChangeTracker.Entries<Blog>()
+>                  .Where(e => e.State == EntityState.Modified))
+>     {
+>         entry.Entity.LastUpdatedAt = DateTime.UtcNow;
+>     }
+>
+>     return base.SaveChangesAsync(cancellationToken);
+> }
+> ```
 
 > [!NOTE]
 > **Hibernate / JPA** の `@Version` と `jakarta.persistence.OptimisticLockException`（Hibernate 固有の例外ではなく Jakarta Persistence 仕様の標準例外です）、**Django** の `select_for_update()`（こちらは悲観的ロック）が対応する仕組みです。EF Core が既定で提供するのは楽観的同時実行制御であり、悲観的ロックが必要な場合は `FromSql` で `WITH (UPDLOCK)` などのヒントを指定するか、明示的なトランザクションと分離レベルで制御します。
@@ -2067,6 +2128,8 @@ flowchart LR
     PRI -. "非同期レプリケーション" .-> REP
 ```
 
+読み取り側のレプリカに接続するには、接続文字列に `ApplicationIntent=ReadOnly` を指定します。
+
 ```text
 Server=tcp:myserver.database.windows.net,1433;Database=Blogging;Authentication=Active Directory Default;ApplicationIntent=ReadOnly;
 ```
@@ -2174,6 +2237,8 @@ builder.Services.AddDbContext<BloggingReadContext>(options =>
     options.UseSqlServer(readConnection, sql => sql.EnableRetryOnFailure())
            .UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking));
 ```
+
+対応する `appsettings.json` は次のようになります。
 
 ```json
 {
@@ -2355,7 +2420,7 @@ public async Task Can_add_blog()
 ```
 
 > [!TIP]
-> CI 環境で本番と同じデータベースを用意するには、**Testcontainers** のようなライブラリーで Docker コンテナーを起動する方法が便利です。テストの開始時にコンテナーを起動し、終了時に破棄することで、環境に依存しない再現性の高いテストを構築できます。
+> CI 環境で本番と同じデータベースを用意するには、**Testcontainers** のようなライブラリで Docker コンテナーを起動する方法が便利です。テストの開始時にコンテナーを起動し、終了時に破棄することで、環境に依存しない再現性の高いテストを構築できます。
 
 ### SQLite インメモリを使ったテスト
 
