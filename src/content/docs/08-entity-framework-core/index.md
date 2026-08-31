@@ -411,7 +411,7 @@ EF Core が使う文字列: Data Source=localhost;Initial Catalog=Test;Integrate
 
 ほとんどの場合は影響しませんが、**同じデータベースに EF Core と Dapper や ADO.NET などを併用している場合は注意が必要です。** SqlClient は接続文字列が異なると別の接続プールを使うため、両者が別々のプールに分かれます。この状態で `TransactionScope` を使うと、SqlClient が 2 つの異なるデータベースとみなして、これまで不要だった **分散トランザクションへの昇格** が発生することがあります。
 
-回避するには、接続文字列に `Application Name` を明示的に指定します。一度指定すると EF Core は上書きせず、渡した接続文字列がそのまま使われます（実測で確認済み）。
+回避するには、接続文字列に `Application Name` を明示的に指定します。一度指定すると EF Core は上書きせず、渡した接続文字列がそのまま使われます。SQL Server 2022 に接続して `sys.dm_exec_sessions` の `program_name` を確認したところ、指定しない場合は `EFCore/10.0.11 (macOS 26.6.2 Arm64)`、明示した場合は `BloggingApi` となり、サーバー側から見える値も切り替わることを確認しています。
 
 ```json
 {
@@ -754,7 +754,7 @@ modelBuilder.Entity<Author>()
 
 `OwnsMany(...).ToJson()` のように所有型を JSON として保存する場合や、`string[]` のようなプリミティブコレクションを保存する場合、EF Core 9 までの SQL Server プロバイダーはこれを `nvarchar(max)` 列に格納していました。
 
-EF Core 10 では、`UseAzureSql` を使っているか、**互換性レベル 170 以上**を構成している場合に限り、SQL Server の新しい `json` データ型にマッピングされます。
+EF Core 10 では、`UseAzureSql` を使っているか、**互換性レベル 170 以上**を構成している場合に限り、SQL Server の新しい `json` データ型にマッピングされます。逆に言えば、この条件を満たさない環境では EF Core 10 でも従来どおり `nvarchar(max)` のままです。実際に SQL Server 2022（互換性レベル 160）に対して `ToJson()` を使った所有型を作成したところ、列は `nvarchar(max)` になり、`{"Author":"x","Tags":["t1","t2"]}` という JSON がそのまま格納されることを確認しています。
 
 ```sql
 -- EF Core 9 まで
@@ -922,6 +922,17 @@ dotnet ef database update
 
 > [!WARNING]
 > すでに本番データベースへ適用したマイグレーションを `dotnet ef migrations remove` で削除してはいけません。適用済みの変更を取り消したい場合は、`dotnet ef database update <1 つ前のマイグレーション名>` でロールバックしてから削除するか、打ち消す新しいマイグレーションを追加します。
+>
+> なお、`dotnet ef` が接続できるデータベースにそのマイグレーションが適用済みであれば、ツール自身が次のように削除を拒否します（SQL Server 2022 で実測）。
+>
+> ```text
+> The migration '20260831053228_InitialCreate' has already been applied to the database.
+> Revert it and try again. If the migration has been applied to other databases,
+> consider reverting its changes using a new migration instead.
+> ```
+>
+> **危険なのは、ツールが見ている開発用データベースには未適用でも、本番などの別のデータベースには適用済みという状況です。** この場合ツールは何の警告もなく削除できてしまい、本番側にだけ存在する変更が履歴から消えます。メッセージの後半が「他のデータベースに適用済みなら、打ち消す新しいマイグレーションを検討せよ」と述べているのはこのためです。実際に `dotnet ef database update 0` でロールバックしたあとであれば、`remove` は正常に完了します。
+
 
 > [!IMPORTANT]
 > EF Core 10 では、プロジェクトが `<TargetFramework>` ではなく **`<TargetFrameworks>`（複数形）で複数のフレームワークを対象にしている場合、`--framework` オプションの指定が必須** になりました。指定しないと `dotnet ef` は次のエラーで停止します（実測で確認済み）。
@@ -1021,7 +1032,11 @@ dotnet ef migrations bundle --self-contained --runtime linux-x64 --output efbund
 ```
 
 > [!TIP]
-> EF Core 9 以降、マイグレーションの実行はデータベース全体のロックで保護されます（SQL スクリプトによる適用は除く）。これにより、複数のインスタンスが同時にマイグレーションを試みても、実行は 1 つに直列化されます。
+> EF Core 9 以降、マイグレーションの実行はデータベース全体のロックで保護されます（SQL スクリプトによる適用は除く）。これにより、複数のインスタンスが同時にマイグレーションを試みても、実行は 1 つに直列化されます。実際に SQL Server 2022 へ `dotnet ef database update` を実行すると、適用の前に次のメッセージが表示され、ロックの取得が行われていることが確認できます。
+>
+> ```text
+> Acquiring an exclusive lock for migration application.
+> ```
 
 ### 起動時マイグレーションの是非
 
@@ -1047,7 +1062,13 @@ app.Run();
 - 別のアプリケーションがデータベースにアクセスしている最中にマイグレーションが走ると、深刻な問題を引き起こす可能性がある
 
 > [!WARNING]
-> `MigrateAsync()` の前に `EnsureCreatedAsync()` を呼び出してはいけません。`EnsureCreatedAsync()` はマイグレーションを迂回してスキーマを作成するため、その後の `MigrateAsync()` が失敗します。`EnsureCreated` はテストやプロトタイプ専用と考えてください。
+> `MigrateAsync()` の前に `EnsureCreatedAsync()` を呼び出してはいけません。`EnsureCreatedAsync()` はマイグレーションを迂回してスキーマを作成するため、その後の `MigrateAsync()` が失敗します。SQL Server 2022 で実際に順番に呼び出したところ、`__EFMigrationsHistory` には何も記録されていないまま `Blogs` テーブルだけが存在する状態になり、`MigrateAsync()` は次の `SqlException` で失敗しました。
+>
+> ```text
+> There is already an object named 'Blogs' in the database.
+> ```
+>
+> `EnsureCreated` はテストやプロトタイプ専用と考えてください。
 
 ### 初期データの投入（シード）
 
@@ -1694,6 +1715,9 @@ await context.Posts
 
 > [!IMPORTANT]
 > `ExecuteUpdateAsync` / `ExecuteDeleteAsync` はチェンジトラッカーを経由しません。そのため、`DbContext` がすでに追跡しているエンティティの状態は更新されず、`SaveChangesAsync` によるカスケード削除や監査ログ（`SaveChangesAsync` のオーバーライド）も動作しません。実行後は `ChangeTracker.Clear()` を呼ぶか、新しい `DbContext` を使って読み直してください。
+>
+> **さらに重要な点として、これらは後述する同時実行トークン (`rowversion`) も検証しません。** SQL Server 2022 で実際に確認したところ、他のユーザーが先に更新して `Version` が変化したあとでも `ExecuteUpdateAsync` は影響行数 1 を返し、例外を出さずに相手の変更を上書きしました。生成される UPDATE 文の WHERE 句には、ラムダで指定した条件しか含まれないためです。ロストアップデートを防ぎたい行の更新には、一括更新ではなくエンティティを読み込む通常の `SaveChangesAsync` を使ってください。
+
 
 ### 楽観的同時実行制御
 
@@ -1721,12 +1745,18 @@ Fluent API では次のように書きます。
 builder.Property(b => b.Version).IsRowVersion();
 ```
 
-これにより、UPDATE 文の WHERE 句に読み込み時の `Version` が含まれ、更新対象の行が 0 行だった場合に `DbUpdateConcurrencyException` が発生します。
+これにより、UPDATE 文の WHERE 句に読み込み時の `Version` が含まれ、更新対象の行が 0 行だった場合に `DbUpdateConcurrencyException` が発生します。実際に SQL Server 2022 に対して発行された SQL は次のとおりです。
 
 ```sql
 UPDATE [Blogs] SET [Name] = @p0
+OUTPUT INSERTED.[Version]
 WHERE [Id] = @p1 AND [Version] = @p2;
 ```
+
+`OUTPUT INSERTED.[Version]` によって、更新後に採番された新しい `Version` がその場でアプリケーション側に返され、追跡中のエンティティに反映されます。そのため、連続して更新しても再読み込みは不要です。
+
+> [!NOTE]
+> `[Timestamp]` を付けたプロパティに対して EF Core が生成する列の型は `rowversion` ですが、`INFORMATION_SCHEMA.COLUMNS` で確認すると `timestamp` と表示されます。これは `rowversion` の旧称が `timestamp` であるためで、両者は同じ型です。日付や時刻とはまったく関係がないため、名前に惑わされないでください。
 
 例外の処理例です。ここでは「クライアント側の変更を採用して保存し直す」戦略 (Client Wins) を示します。
 
@@ -1951,10 +1981,29 @@ int[] ids = [1, 2, 3];
 var blogs = await context.Blogs.Where(b => ids.Contains(b.Id)).ToListAsync();
 ```
 
-| バージョン | 既定の翻訳 | 生成される SQL |
+| バージョン | 既定の翻訳 | 生成される SQL（要点） |
 | --- | --- | --- |
-| EF Core 9 まで | JSON 配列を 1 つのパラメーターとして送る | `WHERE [b].[Id] IN (SELECT [value] FROM OPENJSON(@ids))` |
+| EF Core 9 まで | JSON 配列を 1 つのパラメーターとして送る | `WHERE [b].[Id] IN (SELECT [i].[value] FROM OPENJSON(@ids) WITH (...) AS [i])` |
 | EF Core 10 以降 | 要素ごとに個別のパラメーターを送る | `WHERE [b].[Id] IN (@ids1, @ids2, @ids3)` |
+
+SQL Server 2022 に対して実際に発行された SQL は次のとおりです。EF Core 9 までの方式では、配列全体が 1 つの `nvarchar` パラメーターとして渡され、`OPENJSON` で行に展開されていることが分かります。
+
+```sql
+-- EF Core 10 の既定（MultipleParameters）
+DECLARE @ids1 int = 1;
+DECLARE @ids2 int = 2;
+DECLARE @ids3 int = 3;
+SELECT [b].[Id], [b].[Name] FROM [Blogs] AS [b]
+WHERE [b].[Id] IN (@ids1, @ids2, @ids3)
+
+-- EF Core 9 までの既定（Parameter）
+DECLARE @ids nvarchar(4000) = N'[1,2,3]';
+SELECT [b].[Id], [b].[Name] FROM [Blogs] AS [b]
+WHERE [b].[Id] IN (
+    SELECT [i].[value]
+    FROM OPENJSON(@ids) WITH ([value] int '$') AS [i]
+)
+```
 
 新しい既定はデータベースのクエリプランナーに件数の情報を渡せるため、多くの場合はより良い実行プランが選ばれます。一方で、**要素数が毎回変わるとパラメーターの個数も変わり、SQL の形が変化するためクエリプランのキャッシュが効きにくくなります。** 要素数が数百から数千に及ぶコレクションを扱う場合は、以前の方式のほうが有利なこともあります。
 
@@ -2170,6 +2219,11 @@ var updateability = await context.Database
 | 分析・集計バッチ | レプリカ |
 
 また、読み取り専用レプリカ上のトランザクションは常にスナップショット分離レベルで実行され、書き込みはできません。レプリカに接続した `DbContext` で `SaveChangesAsync` を呼ぶとエラーになります。
+
+> [!WARNING]
+> ただし、**`ApplicationIntent=ReadOnly` そのものに書き込みを禁止する働きはありません。** これは「読み取り専用のエンドポイントにルーティングしてほしい」という接続時のヒントにすぎず、書き込みを拒否しているのはルーティング先のレプリカ側です。ローカル開発環境の SQL Server のように可用性グループも読み取りスケールアウトも構成されていないサーバーに対しては、この指定は単に無視されます。実際に SQL Server 2022 の単体インスタンスへ `ApplicationIntent=ReadOnly` を付けて接続し、`SaveChangesAsync` で行を追加したところ、例外は発生せず **書き込みが成功しました**。
+>
+> つまり、読み取り専用のつもりで書いたコードに書き込みが紛れ込んでいても、開発環境では気づけず本番で初めて失敗します。この点からも、後述する読み取り専用 `DbContext` を型として分離し、`AsNoTracking` を既定にして設計段階で防ぐ方法が有効です。
 
 ### EF Core 側での読み書き分離
 
