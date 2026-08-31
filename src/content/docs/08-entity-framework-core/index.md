@@ -98,9 +98,9 @@ EF Core は大きく次の 3 つの役割を担います。
 
 ```mermaid
 flowchart LR
-    APP["アプリケーションコード\nLINQ / SaveChanges"]
-    CTX["DbContext\n変更追跡・クエリパイプライン"]
-    PROV["データベースプロバイダー\nSqlServer / Npgsql / SQLite ..."]
+    APP["アプリケーションコード<br>LINQ / SaveChanges"]
+    CTX["DbContext<br>変更追跡・クエリパイプライン"]
+    PROV["データベースプロバイダー<br>SqlServer / Npgsql / SQLite ..."]
     DB[("データベース")]
 
     APP --> CTX
@@ -448,7 +448,7 @@ public class ReportGenerator(IDbContextFactory<BloggingContext> contextFactory)
 ```
 
 > [!NOTE]
-> **Spring Boot** の `EntityManager` はリクエストスコープのプロキシとして注入され、トランザクション境界で永続化コンテキストが管理されます。EF Core の `DbContext` は明示的に Scoped として登録され、`SaveChangesAsync` の呼び出しが保存の契機になる点が異なります。**Django** の ORM はスレッドローカルな接続を暗黙的に使いますが、EF Core はインスタンスの寿命を DI コンテナーが管理します。
+> **Spring Boot** の `EntityManager` は `@PersistenceContext` によって注入されますが、そのスコープはリクエスト単位ではなく **トランザクションスコープ** です（Jakarta Persistence の仕様が「特に指定しなければトランザクションスコープの永続化コンテキストが使われる」と定めています）。EF Core の `DbContext` は明示的に Scoped として登録され、`SaveChangesAsync` の呼び出しが保存の契機になる点が異なります。**Django** の ORM は 1 つのスレッドが 1 つの接続を保持する形で暗黙的に接続を管理しますが、EF Core はインスタンスの寿命を DI コンテナーが管理します。
 
 ### 規約・データ注釈・Fluent API
 
@@ -456,8 +456,8 @@ EF Core はモデルを 3 段階で構成します。優先順位は下にある
 
 ```mermaid
 flowchart TB
-    A["1. 規約 (Conventions)\n命名規則から自動的に推論"] --> B["2. データ注釈 (Data Annotations)\nエンティティクラスに属性を付与"]
-    B --> C["3. Fluent API\nOnModelCreating で明示的に構成"]
+    A["1. 規約 (Conventions)<br>命名規則から自動的に推論"] --> B["2. データ注釈 (Data Annotations)<br>エンティティクラスに属性を付与"]
+    B --> C["3. Fluent API<br>OnModelCreating で明示的に構成"]
 ```
 
 | 段階 | 例 | 特徴 |
@@ -757,7 +757,7 @@ public override async Task<int> SaveChangesAsync(CancellationToken cancellationT
 > 親 (`Blog`) がフィルターで除外されているのに子 (`Post`) が除外されないと、`Post` を起点にしたクエリで親が読み込めず、予期しない結果になります。ナビゲーションを省略可能にするか、関係する両方のエンティティに対応するフィルターを定義してください。
 
 > [!NOTE]
-> **Django** の `Manager` によるデフォルトクエリセットの絞り込みや、**Laravel** の Eloquent におけるグローバルスコープ、**Hibernate** の `@Where` / `@FilterDef` が同種の機能に相当します。EF Core 10 の名前付きフィルターは、Hibernate の名前付きフィルターに近い粒度の制御を提供します。
+> **Django** の `Manager` によるデフォルトクエリセットの絞り込みや、**Laravel** の Eloquent におけるグローバルスコープが同種の機能に相当します。**Hibernate** では、常に適用される静的な制約が `@SQLRestriction`（`@Where` は Hibernate 6.3 で非推奨になりました）、セッション単位で有効・無効を切り替えられる動的なフィルターが `@FilterDef` / `@Filter` と、2 つの仕組みに分かれています。EF Core 10 の名前付きフィルターは、後者の `@FilterDef` / `@Filter` に近い粒度の制御を提供します。
 
 ---
 
@@ -769,10 +769,10 @@ public override async Task<int> SaveChangesAsync(CancellationToken cancellationT
 
 ```mermaid
 flowchart LR
-    M1["モデル\n（現在の C# コード）"] --> DIFF{差分検出}
-    SNAP["モデルスナップショット\nModelSnapshot.cs"] --> DIFF
-    DIFF --> MIG["マイグレーションファイル\nUp() / Down()"]
-    MIG --> HIST["__EFMigrationsHistory\n適用済みマイグレーションの記録"]
+    M1["モデル<br>（現在の C# コード）"] --> DIFF{差分検出}
+    SNAP["モデルスナップショット<br>ModelSnapshot.cs"] --> DIFF
+    DIFF --> MIG["マイグレーションファイル<br>Up() / Down()"]
+    MIG --> HIST["__EFMigrationsHistory<br>適用済みマイグレーションの記録"]
     HIST --> DB[("データベース")]
 ```
 
@@ -971,7 +971,7 @@ dotnet ef migrations add InitialCreate --project BloggingApi.Data --startup-proj
 ```
 
 > [!NOTE]
-> **Spring Boot** では Flyway や Liquibase がマイグレーションを担い、SQL または XML/YAML でスキーマ変更を記述します。**Django** の `makemigrations` / `migrate`、**Laravel** の `php artisan make:migration` / `migrate` は EF Core のマイグレーションとほぼ同じ役割で、モデルの差分検出まで自動化されている点も共通しています。
+> **Spring Boot** では Flyway や Liquibase がマイグレーションを担い、SQL または XML/YAML でスキーマ変更を記述します。**Django** の `makemigrations` / `migrate` は、EF Core と同じく **モデルの差分を自動検出してマイグレーションファイルを生成する** 方式です。一方 **Laravel** の `php artisan make:migration` / `migrate` は、適用状況の管理とロールバックの仕組みこそ似ていますが、生成されるのは空のマイグレーションであり、`Schema` ファサードを使って変更内容を **自分で記述します**。モデルからの差分検出は行われません。
 
 ---
 
@@ -1350,11 +1350,11 @@ EF Core の更新は、チェンジトラッカーが記録した状態をもと
 
 ```mermaid
 flowchart LR
-    Q["クエリで読み込み\n(State = Unchanged)"] --> M["プロパティを変更\n(State = Modified)"]
-    A["context.Add\n(State = Added)"] --> S
+    Q["クエリで読み込み<br>(State = Unchanged)"] --> M["プロパティを変更<br>(State = Modified)"]
+    A["context.Add<br>(State = Added)"] --> S
     M --> S["SaveChangesAsync"]
-    R["context.Remove\n(State = Deleted)"] --> S
-    S --> SQL["INSERT / UPDATE / DELETE\n1 つのトランザクション"]
+    R["context.Remove<br>(State = Deleted)"] --> S
+    S --> SQL["INSERT / UPDATE / DELETE<br>1 つのトランザクション"]
 ```
 
 ```csharp
@@ -1374,8 +1374,10 @@ context.Blogs.Remove(target);
 await context.SaveChangesAsync(cancellationToken);
 ```
 
-関連エンティティを一緒に追加すると、EF Core が外部キーを解決して正しい順序で INSERT します。
+> [!NOTE]
+> `DbSet` には `AddAsync` もありますが、**通常は同期の `Add` を使ってください。** `Add` はデータベースにアクセスせず、チェンジトラッカーに状態を登録するだけだからです。公式ドキュメントは `AddAsync` について「このメソッドが async なのは、SQL Server の `SequenceHiLo` のように**データベースへ非同期にアクセスする特殊な値ジェネレーター**を使えるようにするためだけであり、それ以外のすべてのケースでは非 async のメソッドを使うべき」と明記しています。`Update` / `Remove` / `Attach` には async 版そのものが存在しません。
 
+関連エンティティを一緒に追加すると、EF Core が外部キーを解決して正しい順序で INSERT します。
 ```csharp
 var blog = new Blog
 {
@@ -1616,7 +1618,7 @@ builder.Property(b => b.LastUpdatedAt).IsConcurrencyToken();
 > `rowversion` と違い、この方式では **値の更新はアプリケーション側の責任** です。`SaveChanges` をオーバーライドするなどして、更新のたびに必ず新しい値（現在時刻や新しい `Guid`）を設定してください。設定を忘れるとトークンが変化せず、競合が検出されないまま上書きが起こります。
 
 > [!NOTE]
-> **Hibernate / JPA** の `@Version` と `OptimisticLockException`、**Django** の `select_for_update()`（こちらは悲観的ロック）が対応する仕組みです。EF Core が既定で提供するのは楽観的同時実行制御であり、悲観的ロックが必要な場合は `FromSql` で `WITH (UPDLOCK)` などのヒントを指定するか、明示的なトランザクションと分離レベルで制御します。
+> **Hibernate / JPA** の `@Version` と `jakarta.persistence.OptimisticLockException`（Hibernate 固有の例外ではなく Jakarta Persistence 仕様の標準例外です）、**Django** の `select_for_update()`（こちらは悲観的ロック）が対応する仕組みです。EF Core が既定で提供するのは楽観的同時実行制御であり、悲観的ロックが必要な場合は `FromSql` で `WITH (UPDLOCK)` などのヒントを指定するか、明示的なトランザクションと分離レベルで制御します。
 
 ### 接続の回復性とトランザクションの併用
 
@@ -1900,10 +1902,10 @@ Azure SQL Database の **読み取りスケールアウト (Read Scale-Out)** �
 flowchart LR
     APP["ASP.NET Core アプリケーション"]
     subgraph W["書き込み系"]
-        WC["WriteDbContext\nApplicationIntent=ReadWrite"]
+        WC["WriteDbContext<br>ApplicationIntent=ReadWrite"]
     end
     subgraph R["読み取り系"]
-        RC["ReadDbContext\nApplicationIntent=ReadOnly"]
+        RC["ReadDbContext<br>ApplicationIntent=ReadOnly"]
     end
     PRI[("プライマリ")]
     REP[("読み取り専用レプリカ")]
@@ -2087,7 +2089,7 @@ flowchart TB
     START["EF Core を使うコードのテスト"]
     START --> A["データベースに対してテストする"]
     START --> B["データベースを使わずにテストする"]
-    A --> A1["本番と同じデータベース\n（ローカル / Docker / Testcontainers）"]
+    A --> A1["本番と同じデータベース<br>（ローカル / Docker / Testcontainers）"]
     A --> A2["SQLite インメモリ"]
     B --> B1["リポジトリを導入してテストダブルに差し替える"]
 ```
@@ -2265,8 +2267,11 @@ public class BlogRepository(BloggingContext context) : IBlogRepository
             .OrderByDescending(b => b.Rating)
             .ToListAsync(cancellationToken);
 
-    public async Task AddAsync(Blog blog, CancellationToken cancellationToken)
-        => await context.Blogs.AddAsync(blog, cancellationToken);
+    public Task AddAsync(Blog blog, CancellationToken cancellationToken)
+    {
+        context.Blogs.Add(blog);
+        return Task.CompletedTask;
+    }
 
     public async Task SaveChangesAsync(CancellationToken cancellationToken)
         => await context.SaveChangesAsync(cancellationToken);
@@ -2299,6 +2304,9 @@ public class FakeBlogRepository : IBlogRepository
 
 > [!NOTE]
 > リポジトリを挟むと単体テストは容易になりますが、EF Core の `DbSet` はすでにリポジトリパターンの実装であり、層をもう 1 つ追加することになります。プロジェクトの規模とテスト方針を踏まえ、「データベースに対する統合テストで十分か」「ロジックの単体テストを高速に回したいか」を判断してください。
+
+> [!TIP]
+> [第6章](../06-dependency-injection/index.md) では DI の説明としてリポジトリを取り上げ、各メソッドの中で `SaveChangesAsync` を呼ぶ形を示しました。実際のデータアクセス層では、上の例のように **`SaveChangesAsync` をリポジトリの外（あるいは専用のメソッド）に切り出すことを推奨します。** 1 回の処理で複数のリポジトリを更新したいとき、メソッドごとに保存してしまうと、それぞれが別のトランザクションになり、途中で失敗したときに一部だけ反映された状態が残るからです。トランザクションの境界は、リポジトリではなく呼び出し側（アプリケーション層）が決めるべきものです。
 
 ### WebApplicationFactory を使った統合テスト
 
@@ -2372,13 +2380,13 @@ public class BlogsApiTests(BloggingApiFactory factory) : IClassFixture<BloggingA
 ```mermaid
 flowchart TB
     subgraph API["プレゼンテーション層（Web API プロジェクト）"]
-        CTRL["コントローラー / Minimal API\nDTO の入出力"]
+        CTRL["コントローラー / Minimal API<br>DTO の入出力"]
     end
     subgraph APPL["アプリケーション層"]
-        SVC["アプリケーションサービス\nユースケースとトランザクション境界"]
+        SVC["アプリケーションサービス<br>ユースケースとトランザクション境界"]
     end
     subgraph DOM["ドメイン層"]
-        ENT["エンティティ / 値オブジェクト\nビジネスルール"]
+        ENT["エンティティ / 値オブジェクト<br>ビジネスルール"]
         REPO_IF["リポジトリインターフェイス"]
     end
     subgraph INFRA["インフラストラクチャ層"]
