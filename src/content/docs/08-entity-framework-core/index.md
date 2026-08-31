@@ -58,6 +58,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [まず計測する](#まず計測する)
    - [インデックスを正しく張る](#インデックスを正しく張る)
    - [DbContext プーリング](#dbcontext-プーリング)
+   - [コレクションのパラメーター化と IN 句の翻訳](#コレクションのパラメーター化と-in-句の翻訳)
    - [コンパイル済みクエリ](#コンパイル済みクエリ)
    - [コンパイル済みモデル](#コンパイル済みモデル)
    - [バッファリングとストリーミング](#バッファリングとストリーミング)
@@ -240,10 +241,12 @@ public class Blog
     public int Id { get; set; }
     public required string Name { get; set; }
     public required string Url { get; set; }
+    public int Rating { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 
     // ナビゲーションプロパティ（1 対多の「多」側）
     public List<Post> Posts { get; set; } = [];
+    public List<Contributor> Contributors { get; set; } = [];
 }
 
 public class Post
@@ -257,6 +260,15 @@ public class Post
     public int BlogId { get; set; }
 
     // ナビゲーションプロパティ（1 対多の「1」側）
+    public Blog? Blog { get; set; }
+}
+
+public class Contributor
+{
+    public int Id { get; set; }
+    public required string DisplayName { get; set; }
+
+    public int BlogId { get; set; }
     public Blog? Blog { get; set; }
 }
 ```
@@ -341,6 +353,28 @@ app.Run();
 
 > [!WARNING]
 > 本番環境の接続文字列に ID とパスワードを直接書かないでください。ローカル開発ではユーザーシークレット、本番環境では環境変数や Azure Key Vault、あるいは Microsoft Entra ID によるパスワードレス認証を使います。構成プロバイダーの優先順位とシークレット管理については [第5章：アプリ設定 (Configuration)](../05-configuration/index.md) を参照してください。
+
+#### EF Core 10 は接続文字列に Application Name を追加する
+
+EF Core 10 からは、接続文字列に `Application Name` が指定されていない場合、EF Core が自身と SqlClient のバージョン情報を含む値を **自動的に追加** します。実際に SQL Server プロバイダーで確認すると、次のように書き換えられます。
+
+```text
+渡した接続文字列   : Server=localhost;Database=Test;Trusted_Connection=True;TrustServerCertificate=True
+EF Core が使う文字列: Data Source=localhost;Initial Catalog=Test;Integrated Security=True;
+                     Trust Server Certificate=True;Application Name="EFCore/10.0.11 (macOS 26.6.2 Arm64)"
+```
+
+ほとんどの場合は影響しませんが、**同じデータベースに EF Core と Dapper や ADO.NET などを併用している場合は注意が必要です。** SqlClient は接続文字列が異なると別の接続プールを使うため、両者が別々のプールに分かれます。この状態で `TransactionScope` を使うと、SqlClient が 2 つの異なるデータベースとみなして、これまで不要だった **分散トランザクションへの昇格** が発生することがあります。
+
+回避するには、接続文字列に `Application Name` を明示的に指定します。一度指定すると EF Core は上書きせず、渡した接続文字列がそのまま使われます（実測で確認済み）。
+
+```json
+{
+  "ConnectionStrings": {
+    "BloggingDatabase": "Server=...;Database=Blogging;Trusted_Connection=True;Application Name=BloggingApi"
+  }
+}
+```
 
 登録した `DbContext` は、コントローラーやサービスにコンストラクターインジェクションで注入します。
 
@@ -586,10 +620,49 @@ public enum PostStatus
     Archived
 }
 
-// 構成側
+public class Post
+{
+    public int Id { get; set; }
+    public required string Title { get; set; }
+    public PostStatus Status { get; set; }
+
+    // この章の後半（一括更新・一括削除、関連データの読み込み）で使う
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? ArchivedAt { get; set; }
+    public List<Comment> Comments { get; set; } = [];
+}
+
+public class Comment
+{
+    public int Id { get; set; }
+    public required string Body { get; set; }
+
+    public int PostId { get; set; }
+    public Post? Post { get; set; }
+
+    public int AuthorId { get; set; }
+    public Author? Author { get; set; }
+}
+```
+
+> [!NOTE]
+> 「エンティティクラスの定義」で示した `Post` に、`Status` と後続の節で使うプロパティを追加した形です。この章では、説明する内容に応じてエンティティへプロパティを足しながら進めます。
+
+`IEntityTypeConfiguration<Post>` の `Configure` メソッド（引数名 `builder`）の中で、次のように構成します。
+
+```csharp
 builder.Property(p => p.Status)
     .HasConversion<string>()
     .HasMaxLength(20);
+```
+
+これにより `Status` 列は `int` ではなく `"Draft"` のような文字列として保存され、SQL を直接見たときにも意味が分かるようになります。
+
+エンティティの一部を別のテーブルや別の型として切り出したい場合は **所有型 (Owned Entity Type)** を使います。所有型は独自の主キーを持たず、常に所有側のエンティティを通じてのみアクセスされます。
+
+```csharp
+modelBuilder.Entity<Author>()
+    .OwnsOne(a => a.Address);
 ```
 
 住所のように、それ自体は識別子を持たず、親エンティティのテーブルに展開したい値の集まりには **複合型 (Complex Type)** を使います。
@@ -618,7 +691,7 @@ modelBuilder.Entity<Author>()
 これにより `Authors` テーブルに `Address_PostalCode`、`Address_Prefecture`、`Address_Line1` という列が作られます。
 
 > [!NOTE]
-> EF Core 10 では複合型のサポートが大きく拡張され、`struct` や `record struct` を複合型として使えるようになったほか、JSON 列へのマッピングやテーブル分割にも対応しました。従来の **所有型 (Owned Entity Type)** と似ていますが、複合型は独立した識別子を持たず、値としてのセマンティクスを持つ点が異なります。
+> EF Core 10 では複合型のサポートが大きく拡張され、`struct` や `record struct` を複合型として使えるようになったほか、JSON 列へのマッピングやテーブル分割にも対応しました。所有型と複合型はどちらも「エンティティの一部を別の型に切り出す」ものですが、所有型は内部的に独立したエンティティ型として扱われる（隠しキーを持つ）のに対し、複合型は識別子を持たない純粋な値です。**公式ドキュメントは、値としてのセマンティクスが欲しい用途ではすでに所有型を使っている場合も複合型への移行を推奨しています。**
 
 ### グローバルクエリフィルターと名前付きクエリフィルター
 
@@ -630,6 +703,7 @@ public class Blog
     public int Id { get; set; }
     public required string Name { get; set; }
     public bool IsDeleted { get; set; }
+    public int TenantId { get; set; }
 }
 ```
 
@@ -741,6 +815,20 @@ dotnet ef database update
 
 > [!WARNING]
 > すでに本番データベースへ適用したマイグレーションを `dotnet ef migrations remove` で削除してはいけません。適用済みの変更を取り消したい場合は、`dotnet ef database update <1 つ前のマイグレーション名>` でロールバックしてから削除するか、打ち消す新しいマイグレーションを追加します。
+
+> [!IMPORTANT]
+> EF Core 10 では、プロジェクトが `<TargetFramework>` ではなく **`<TargetFrameworks>`（複数形）で複数のフレームワークを対象にしている場合、`--framework` オプションの指定が必須** になりました。指定しないと `dotnet ef` は次のエラーで停止します（実測で確認済み）。
+>
+> ```text
+> The project targets multiple frameworks. Use the --framework option to specify which target framework to use.
+> ```
+>
+> ライブラリープロジェクトに `DbContext` を置いていて複数ターゲットにしている場合など、EF Core 9 から移行すると CI が突然失敗します。次のようにフレームワークを明示してください。
+>
+> ```bash
+> dotnet ef migrations add AddPostPublishedAt --framework net10.0
+> dotnet ef database update --framework net10.0
+> ```
 
 ### 生成されたマイグレーションを読む
 
@@ -1219,16 +1307,25 @@ await context.Database.ExecuteSqlAsync(
 ```
 
 > [!WARNING]
-> `FromSqlRaw` / `ExecuteSqlRaw` は文字列をそのまま SQL として扱うため、ユーザー入力を連結すると **SQL インジェクション** の脆弱性になります。EF Core 10 では、生の SQL API に連結された文字列を渡すコードに対してコンパイル時のアナライザー警告が出るようになりました。可変値は必ずパラメーターとして渡し、どうしても `Raw` 系を使う場合は `new SqlParameter(...)` を明示的に指定してください。
+> `FromSqlRaw` / `ExecuteSqlRaw` は文字列をそのまま SQL として扱うため、ユーザー入力を連結すると **SQL インジェクション** の脆弱性になります。可変値は必ずパラメーターとして渡し、どうしても `Raw` 系を使う場合は `new SqlParameter(...)` を明示的に指定してください。
+>
+> EF Core 10 では、生の SQL API に連結された文字列を渡すコードに対してコンパイル時のアナライザー警告 **`EF1003`** が出るようになりました。実際に文字列連結を渡してビルドすると、次の警告が報告されます（実測で確認済み）。
+>
+> ```text
+> warning EF1003: Method 'FromSqlRaw' inserts concatenated strings directly into the SQL,
+> without any protection against SQL injection. Consider using 'FromSql' instead...
+> ```
+>
+> CI では `<WarningsAsErrors>EF1003</WarningsAsErrors>` を設定して、この警告をビルドエラーに昇格させておくと確実です。
 
 ```csharp
-// 危険：絶対に書かない
-var blogs = await context.Blogs
+// 危険：絶対に書かない（EF1003 警告が出る）
+var unsafeBlogs = await context.Blogs
     .FromSqlRaw("SELECT * FROM [Blogs] WHERE [Url] = '" + userInput + "'")
     .ToListAsync(cancellationToken);
 
 // 安全：パラメーター化する
-var blogs = await context.Blogs
+var safeBlogs = await context.Blogs
     .FromSqlRaw("SELECT * FROM [Blogs] WHERE [Url] = {0}", userInput)
     .ToListAsync(cancellationToken);
 ```
@@ -1459,7 +1556,7 @@ UPDATE [Blogs] SET [Name] = @p0
 WHERE [Id] = @p1 AND [Version] = @p2;
 ```
 
-例外の処理例です。ここでは「データベース側の値を優先する」戦略を示します。
+例外の処理例です。ここでは「クライアント側の変更を採用して保存し直す」戦略 (Client Wins) を示します。
 
 ```csharp
 public async Task<bool> UpdateBlogAsync(int id, string newName, CancellationToken cancellationToken)
@@ -1484,7 +1581,9 @@ public async Task<bool> UpdateBlogAsync(int id, string newName, CancellationToke
                 return false;
             }
 
-            // データベースの現在値を「元の値」として設定し、再試行できる状態にする
+            // 「元の値」だけをデータベースの現在値に差し替える。
+            // 変更後の値 (CurrentValues) はクライアントのものが残るため、
+            // 次の SaveChanges でクライアントの変更が採用される (Client Wins)
             entry.OriginalValues.SetValues(databaseValues);
         }
 
@@ -1502,11 +1601,19 @@ public async Task<bool> UpdateBlogAsync(int id, string newName, CancellationToke
 | Store Wins | データベース側の値を採用し、クライアントの変更を破棄する。`entry.Reload()` |
 | ユーザーに提示 | 現在値と変更値を画面に表示し、ユーザーに選択させる |
 
-`rowversion` が使えないプロバイダーでは、任意のプロパティを同時実行トークンにできます。
+> [!WARNING]
+> `OriginalValues.SetValues(databaseValues)` と `Reload()` は名前が似ていますが結果は正反対です。前者は「元の値」だけを差し替えるため、変更後の値 (`CurrentValues`) はクライアントのものが残り、保存するとデータベース側の変更が **上書きされて失われます**。後者は現在値ごと読み直すため、クライアントの変更が破棄されます。取り違えるとデータを失うため、どちらの動作を意図しているかを必ず確認してください。
+>
+> なお、この 2 つの挙動は SQLite に `IsConcurrencyToken` を設定したエンティティで実際に競合させ、最終的にデータベースへ残る値が入れ替わることを確認しています。
+
+`rowversion` が使えないプロバイダーでは、任意のプロパティを同時実行トークンにできます。次の例は、エンティティに `LastUpdatedAt` プロパティを追加したうえで、それをトークンとして使う想定です。
 
 ```csharp
 builder.Property(b => b.LastUpdatedAt).IsConcurrencyToken();
 ```
+
+> [!WARNING]
+> `rowversion` と違い、この方式では **値の更新はアプリケーション側の責任** です。`SaveChanges` をオーバーライドするなどして、更新のたびに必ず新しい値（現在時刻や新しい `Guid`）を設定してください。設定を忘れるとトークンが変化せず、競合が検出されないまま上書きが起こります。
 
 > [!NOTE]
 > **Hibernate / JPA** の `@Version` と `OptimisticLockException`、**Django** の `select_for_update()`（こちらは悲観的ロック）が対応する仕組みです。EF Core が既定で提供するのは楽観的同時実行制御であり、悲観的ロックが必要な場合は `FromSql` で `WITH (UPDLOCK)` などのヒントを指定するか、明示的なトランザクションと分離レベルで制御します。
@@ -1577,6 +1684,24 @@ Console.WriteLine(query.ToQueryString());
 > [!TIP]
 > パフォーマンス問題の多くは、EF Core 自体ではなく「不要な列を取りすぎている」「N+1 が起きている」「インデックスがない」という設計上の問題に起因します。ここまでで説明した `AsNoTracking`、投影、`Include`、`AsSplitQuery`、ページングを先に見直してください。
 
+#### メトリクスで全体像をつかむ
+
+個々のクエリを見る前に、アプリケーション全体の傾向を数値で押さえます。EF Core は `Microsoft.EntityFrameworkCore` という名前の [Meter](https://learn.microsoft.com/ja-jp/dotnet/core/diagnostics/metrics) を通じて次のカウンターを公開しています（EF Core 10.0.11 で実際に列挙して確認）。
+
+| メトリクス名 | 意味 |
+| --- | --- |
+| `microsoft.entityframeworkcore.active_dbcontexts` | 生存している `DbContext` の数 |
+| `microsoft.entityframeworkcore.queries` | 実行されたクエリの累計 |
+| `microsoft.entityframeworkcore.savechanges` | `SaveChanges` の累計 |
+| `microsoft.entityframeworkcore.compiled_query_cache_hits` | クエリキャッシュにヒットした回数 |
+| `microsoft.entityframeworkcore.compiled_query_cache_misses` | クエリキャッシュを外した回数 |
+| `microsoft.entityframeworkcore.execution_strategy_operation_failures` | 再試行戦略が捉えた失敗の回数 |
+| `microsoft.entityframeworkcore.optimistic_concurrency_failures` | 楽観的同時実行制御の競合回数 |
+
+特に重要なのが **クエリキャッシュのヒット率** です。EF Core は LINQ 式から SQL への変換結果をキャッシュしており、起動直後を過ぎればヒット率はほぼ 100% になるはずです。`compiled_query_cache_misses` が増え続ける場合は、クエリの形が毎回変わってキャッシュが効いていないことを示します。値を `EF.Constant()` でインライン化している箇所や、クエリを文字列連結で組み立てている箇所を疑ってください。
+
+`active_dbcontexts` が想定より多いままなら `DbContext` が破棄されずに残っている可能性があり、`optimistic_concurrency_failures` の増加は同時更新の競合が実際に起きていることを示します。これらは OpenTelemetry や Application Insights にそのまま送れます。
+
 ### インデックスを正しく張る
 
 クエリの絞り込みや並べ替えに使う列にはインデックスを作成します。
@@ -1613,12 +1738,52 @@ builder.Services.AddDbContextPool<BloggingContext>(
 > [!WARNING]
 > プールされた `DbContext` インスタンスは再利用されるため、実質的に Singleton のように扱われます。`OnConfiguring` は最初の 1 回しか呼ばれず、リクエストごとに変化する状態（テナント ID や現在のユーザーなど）をコンストラクターやフィールドに保持する設計とは相性が悪くなります。そのような場合は、`AddDbContext` を使うか、状態をリセットするフックを実装してください。
 
+### コレクションのパラメーター化と IN 句の翻訳
+
+`Contains` でコレクションを絞り込み条件に使うと、EF Core はそれを `IN` 句へ変換します。**この変換方法は EF Core 10 で既定値が変わりました。**
+
+```csharp
+int[] ids = [1, 2, 3];
+var blogs = await context.Blogs.Where(b => ids.Contains(b.Id)).ToListAsync();
+```
+
+| バージョン | 既定の翻訳 | 生成される SQL |
+| --- | --- | --- |
+| EF Core 9 まで | JSON 配列を 1 つのパラメーターとして送る | `WHERE [b].[Id] IN (SELECT [value] FROM OPENJSON(@ids))` |
+| EF Core 10 以降 | 要素ごとに個別のパラメーターを送る | `WHERE [b].[Id] IN (@ids1, @ids2, @ids3)` |
+
+新しい既定はデータベースのクエリプランナーに件数の情報を渡せるため、多くの場合はより良い実行プランが選ばれます。一方で、**要素数が毎回変わるとパラメーターの個数も変わり、SQL の形が変化するためクエリプランのキャッシュが効きにくくなります。** 要素数が数百から数千に及ぶコレクションを扱う場合は、以前の方式のほうが有利なこともあります。
+
+翻訳方法は `DbContext` 全体でも、クエリ単位でも切り替えられます。
+
+```csharp
+// DbContext 全体で切り替える
+options.UseSqlServer(connectionString,
+    o => o.UseParameterizedCollectionMode(ParameterTranslationMode.Parameter));
+```
+
+```csharp
+// クエリ単位で切り替える
+await context.Blogs.Where(b => EF.Parameter(ids).Contains(b.Id)).ToListAsync();          // JSON 配列パラメーター 1 つ
+await context.Blogs.Where(b => EF.MultipleParameters(ids).Contains(b.Id)).ToListAsync(); // 個別パラメーター（EF Core 10 の既定）
+await context.Blogs.Where(b => EF.Constant(ids).Contains(b.Id)).ToListAsync();           // 定数としてインライン化
+```
+
+| `ParameterTranslationMode` | 動作 |
+| --- | --- |
+| `MultipleParameters` | 要素ごとのパラメーター。EF Core 10 の既定 |
+| `Parameter` | JSON 配列パラメーター 1 つ。EF Core 8・9 の既定 |
+| `Constant` | 値を SQL に直接埋め込む。EF Core 7 までの既定 |
+
+> [!WARNING]
+> `ParameterTranslationMode.Constant` と `EF.Constant()` は値を SQL に埋め込むため、要素数の組み合わせだけ異なる SQL が生成されます。プランキャッシュを圧迫するうえ、クエリキャッシュのヒット率も下がります。値の種類が少ないと分かっている場合に限って使ってください。
+
 ### コンパイル済みクエリ
 
 EF Core は同じ形のクエリに対して内部でクエリプランをキャッシュしますが、LINQ 式ツリーの走査とキャッシュキーの計算コストは毎回発生します。ホットパスのクエリでは **コンパイル済みクエリ** によりこのコストを削減できます。
 
 ```csharp
-public class BlogRepository
+public class BlogQueries
 {
     private static readonly Func<BloggingContext, int, IAsyncEnumerable<Blog>> GetBlogsByRating =
         EF.CompileAsyncQuery((BloggingContext context, int rating) =>
@@ -1680,17 +1845,27 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 
 ### ログとセキュリティ
 
-EF Core 10 では、生成される SQL ログの扱いが変更されました。従来はクエリ内のインライン定数（LINQ に直接書いた値）がログにそのまま出力されていましたが、EF Core 10 以降は既定で `?` に置き換えられます。
+EF Core は、既定ではパラメーター値をログに出力しません。ログには `@p0` のようなプレースホルダーだけが残ります。
 
 ```text
--- EF Core 9 まで
-SELECT [b].[Id], [b].[Name] FROM [Blogs] AS [b] WHERE [b].[Name] = N'Contoso'
-
--- EF Core 10 以降（既定）
-SELECT [b].[Id], [b].[Name] FROM [Blogs] AS [b] WHERE [b].[Name] = ?
+SELECT [b].[Id], [b].[Name] FROM [Blogs] AS [b] WHERE [b].[Name] = @p0
 ```
 
-デバッグのために実際の値を見たい場合は `EnableSensitiveDataLogging()` を有効にします。
+ただし EF Core は、状況によってはパラメーターを送らずに値を SQL に **インライン化** することがあります。`EF.Constant()` を明示的に使った場合が代表例です。EF Core 9 まではインライン化された値がログにそのまま出力されていましたが、EF Core 10 以降は既定で `?` に置き換えられるようになりました。
+
+```text
+-- EF.Constant(name) を使ったクエリ
+-- EF Core 9 まで
+... WHERE [b].[Name] = N'Contoso'
+
+-- EF Core 10 以降（既定）
+... WHERE [b].[Name] = ?
+```
+
+> [!IMPORTANT]
+> このリダクションの対象は **本来パラメーターになるはずの値がインライン化されたもの** に限られます。`Where(b => b.Name == "Contoso")` のように LINQ 式へ直接書いたリテラルは、クエリごとに変化しない真の定数として扱われるため **リダクションされず、ログにそのまま出力されます**（EF Core 10.0.11 で実測）。ログに出したくない値をクエリへ直接埋め込まないでください。
+
+デバッグのために実際のパラメーター値を見たい場合は `EnableSensitiveDataLogging()` を有効にします。
 
 ```csharp
 builder.Services.AddDbContext<BloggingContext>(options =>
@@ -2239,6 +2414,7 @@ flowchart TB
 
 - [Entity Framework Core | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/)
 - [EF Core 10 の新機能 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-10.0/whatsnew)
+- [EF Core 10 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-10.0/breaking-changes)
 - [データベースプロバイダー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/)
 - [DbContext の有効期間、構成、初期化 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/dbcontext-configuration/)
 - [接続文字列 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-strings)
