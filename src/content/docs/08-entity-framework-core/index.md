@@ -34,6 +34,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [本番環境への適用戦略](#本番環境への適用戦略)
    - [SQL スクリプトとマイグレーションバンドル](#sql-スクリプトとマイグレーションバンドル)
    - [起動時マイグレーションの是非](#起動時マイグレーションの是非)
+   - [初期データの投入（シード）](#初期データの投入シード)
    - [設計時 DbContext ファクトリ](#設計時-dbcontext-ファクトリ)
 4. [クエリ操作と LINQ](#4-クエリ操作と-linq)
    - [基本的なクエリ](#基本的なクエリ)
@@ -375,28 +376,6 @@ app.Run();
 > [!WARNING]
 > 本番環境の接続文字列に ID とパスワードを直接書かないでください。ローカル開発ではユーザーシークレット、本番環境では環境変数や Azure Key Vault、あるいは Microsoft Entra ID によるパスワードレス認証を使います。構成プロバイダーの優先順位とシークレット管理については [第5章：アプリ設定 (Configuration)](../05-configuration/index.md) を参照してください。
 
-#### EF Core 10 は接続文字列に Application Name を追加する
-
-EF Core 10 からは、接続文字列に `Application Name` が指定されていない場合、EF Core が自身と SqlClient のバージョン情報を含む値を **自動的に追加** します。実際に SQL Server プロバイダーで確認すると、次のように書き換えられます。
-
-```text
-渡した接続文字列   : Server=localhost;Database=Test;Trusted_Connection=True;TrustServerCertificate=True
-EF Core が使う文字列: Data Source=localhost;Initial Catalog=Test;Integrated Security=True;
-                     Trust Server Certificate=True;Application Name="EFCore/10.0.11 (macOS 26.6.2 Arm64)"
-```
-
-ほとんどの場合は影響しませんが、**同じデータベースに EF Core と Dapper や ADO.NET などを併用している場合は注意が必要です。** SqlClient は接続文字列が異なると別の接続プールを使うため、両者が別々のプールに分かれます。この状態で `TransactionScope` を使うと、SqlClient が 2 つの異なるデータベースとみなして、これまで不要だった **分散トランザクションへの昇格** が発生することがあります。
-
-回避するには、接続文字列に `Application Name` を明示的に指定します。一度指定すると EF Core は上書きせず、渡した接続文字列がそのまま使われます（実測で確認済み）。
-
-```json
-{
-  "ConnectionStrings": {
-    "BloggingDatabase": "Server=...;Database=Blogging;Trusted_Connection=True;Application Name=BloggingApi"
-  }
-}
-```
-
 登録した `DbContext` は、コントローラーやサービスにコンストラクターインジェクションで注入します。
 
 ```csharp
@@ -419,6 +398,28 @@ public class BlogsController(BloggingContext context) : ControllerBase
 
 > [!TIP]
 > 上記は C# 12 の **プライマリコンストラクター** を使った書き方です。フィールドへの代入を書かずに `context` をメソッド内で参照できます。詳細は [第6章：プライマリコンストラクターによる注入（C# 12）](../06-dependency-injection/index.md#プライマリコンストラクターによる注入c-12) を参照してください。
+
+#### EF Core 10 は接続文字列に Application Name を追加する
+
+EF Core 10 からは、接続文字列に `Application Name` が指定されていない場合、EF Core が自身と SqlClient のバージョン情報を含む値を **自動的に追加** します。実際に SQL Server プロバイダーで確認すると、次のように書き換えられます。
+
+```text
+渡した接続文字列   : Server=localhost;Database=Test;Trusted_Connection=True;TrustServerCertificate=True
+EF Core が使う文字列: Data Source=localhost;Initial Catalog=Test;Integrated Security=True;
+                     Trust Server Certificate=True;Application Name="EFCore/10.0.11 (macOS 26.6.2 Arm64)"
+```
+
+ほとんどの場合は影響しませんが、**同じデータベースに EF Core と Dapper や ADO.NET などを併用している場合は注意が必要です。** SqlClient は接続文字列が異なると別の接続プールを使うため、両者が別々のプールに分かれます。この状態で `TransactionScope` を使うと、SqlClient が 2 つの異なるデータベースとみなして、これまで不要だった **分散トランザクションへの昇格** が発生することがあります。
+
+回避するには、接続文字列に `Application Name` を明示的に指定します。一度指定すると EF Core は上書きせず、渡した接続文字列がそのまま使われます（実測で確認済み）。
+
+```json
+{
+  "ConnectionStrings": {
+    "BloggingDatabase": "Server=...;Database=Blogging;Trusted_Connection=True;Application Name=BloggingApi"
+  }
+}
+```
 
 ### DbContext のライフタイムとスレッド安全性
 
@@ -745,6 +746,31 @@ modelBuilder.Entity<Author>()
 > [!NOTE]
 > EF Core 10 では複合型のサポートが大きく拡張され、`struct` や `record struct` を複合型として使えるようになったほか、JSON 列へのマッピングやテーブル分割にも対応しました。所有型と複合型はどちらも「エンティティの一部を別の型に切り出す」ものですが、所有型は内部的に独立したエンティティ型として扱われる（隠しキーを持つ）のに対し、複合型は識別子を持たない純粋な値です。**公式ドキュメントは、値としてのセマンティクスが欲しい用途ではすでに所有型を使っている場合も複合型への移行を推奨しています。**
 
+#### EF Core 10 の JSON 列は `json` 型になる（Azure SQL の破壊的変更）
+
+`OwnsMany(...).ToJson()` のように所有型を JSON として保存する場合や、`string[]` のようなプリミティブコレクションを保存する場合、EF Core 9 までの SQL Server プロバイダーはこれを `nvarchar(max)` 列に格納していました。
+
+EF Core 10 では、`UseAzureSql` を使っているか、**互換性レベル 170 以上**を構成している場合に限り、SQL Server の新しい `json` データ型にマッピングされます。
+
+```sql
+-- EF Core 9 まで
+[Tags] nvarchar(max)
+
+-- EF Core 10（UseAzureSql または互換性レベル 170 以上）
+[Tags] json
+```
+
+> [!WARNING]
+> **既存のテーブルがある状態で `UseAzureSql` を使って EF Core 10 にアップグレードすると、既存の `nvarchar(max)` の JSON 列をすべて `json` に変更するマイグレーションが生成されます。** 公式ドキュメントはこの変更操作自体は問題なく適用できるとしていますが、データベースに対する小さくない変更である点に注意してください。
+>
+> また、`json` 型には `nvarchar(max)` との**動作の違い**があります。たとえば SQL Server は JSON 配列に対する `DISTINCT` 演算子をサポートしていないため、それを行おうとするクエリは失敗します。
+>
+> 従来どおり `nvarchar(max)` を使いたい場合は、`UseAzureSql` ではなく `UseSqlServer` を使うか、次のように互換性レベルを明示的に 170 未満に構成します。
+>
+> ```csharp
+> options.UseSqlServer(connectionString, o => o.UseCompatibilityLevel(160));
+> ```
+
 ### グローバルクエリフィルターと名前付きクエリフィルター
 
 論理削除（ソフトデリート）やマルチテナントのように、「すべてのクエリに自動的に適用したい条件」はグローバルクエリフィルターで表現します。
@@ -991,6 +1017,50 @@ app.Run();
 
 > [!WARNING]
 > `MigrateAsync()` の前に `EnsureCreatedAsync()` を呼び出してはいけません。`EnsureCreatedAsync()` はマイグレーションを迂回してスキーマを作成するため、その後の `MigrateAsync()` が失敗します。`EnsureCreated` はテストやプロトタイプ専用と考えてください。
+
+### 初期データの投入（シード）
+
+マスターデータや動作確認用の初期データを投入する方法は 2 つあります。
+
+1 つ目は `HasData` です。モデルの一部として宣言し、マイグレーションの中に `InsertData` として埋め込まれます。主キーを明示的に指定する必要があります。
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Blog>().HasData(
+        new Blog { Id = 1, Name = "既定のブログ", Url = "https://example.com" });
+}
+```
+
+`HasData` はマイグレーションの差分計算に組み込まれるため、値を書き換えると次のマイグレーションで `UpdateData` が生成されます。一方で、実行時にしか決まらない値（現在時刻や外部 API から取得する値）は扱えません。
+
+2 つ目は EF Core 9 で追加された `UseSeeding` / `UseAsyncSeeding` です。こちらは通常の `DbContext` 操作としてデータを投入するため、任意のロジックを書けます。`MigrateAsync()` や `EnsureCreatedAsync()` の実行時に呼び出されます。
+
+```csharp
+builder.Services.AddDbContext<BloggingContext>(options =>
+    options.UseSqlServer(connectionString)
+           .UseSeeding((context, _) =>
+           {
+               if (!context.Set<Blog>().Any(b => b.Name == "既定のブログ"))
+               {
+                   context.Set<Blog>().Add(new Blog { Name = "既定のブログ" });
+                   context.SaveChanges();
+               }
+           })
+           .UseAsyncSeeding(async (context, _, cancellationToken) =>
+           {
+               if (!await context.Set<Blog>().AnyAsync(b => b.Name == "既定のブログ", cancellationToken))
+               {
+                   context.Set<Blog>().Add(new Blog { Name = "既定のブログ" });
+                   await context.SaveChangesAsync(cancellationToken);
+               }
+           }));
+```
+
+> [!WARNING]
+> `UseSeeding` と `UseAsyncSeeding` は **両方を登録してください**。実際に SQLite で試したところ、`EnsureCreated()`（同期）では `UseSeeding` だけが呼ばれ、`EnsureCreatedAsync()`（非同期）では `UseAsyncSeeding` だけが呼ばれました。片方しか登録していないと、呼び出し側の API によってシードが実行されません。
+>
+> また、これらのデリゲートは毎回の実行で呼ばれる可能性があるため、上記のように **既に存在するかを確認してから追加** してください。この点は `HasData` と異なり、EF Core が重複を防いでくれません。
 
 ### 設計時 DbContext ファクトリ
 
@@ -1660,6 +1730,16 @@ public async Task<bool> UpdateBlogAsync(int id, string newName, CancellationToke
 >
 > なお、この 2 つの挙動は SQLite に `IsConcurrencyToken` を設定したエンティティで実際に競合させ、最終的にデータベースへ残る値が入れ替わることを確認しています。
 
+Store Wins にしたい場合は、`OriginalValues.SetValues` の代わりに `ReloadAsync` を呼びます。エンティティの現在値がデータベースの値で置き換わるため、クライアントの変更は失われます。
+
+```csharp
+foreach (var entry in ex.Entries)
+{
+    // 現在値ごとデータベースから読み直す (Store Wins)
+    await entry.ReloadAsync(cancellationToken);
+}
+```
+
 `rowversion` が使えないプロバイダーでは、任意のプロパティを同時実行トークンにできます。次の例は、エンティティに `LastUpdatedAt` プロパティを追加したうえで、それをトークンとして使う想定です。
 
 ```csharp
@@ -1688,6 +1768,15 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 
 > [!WARNING]
 > 再試行を有効にした状態で `BeginTransactionAsync` による明示的トランザクションを使うと、`InvalidOperationException` が発生します。再試行戦略は個々の操作を再実行するため、トランザクション全体をやり直す必要があることを EF Core が判断できないためです。
+>
+> 注意したいのは **例外が出るタイミング** です。`BeginTransactionAsync` の時点では何も起きず、その後の `SaveChangesAsync` で初めて次の例外になります（実測で確認）。
+>
+> ```text
+> System.InvalidOperationException: The configured execution strategy 'SqlServerRetryingExecutionStrategy'
+> does not support user-initiated transactions. Use the execution strategy returned by
+> 'DbContext.Database.CreateExecutionStrategy()' to execute all the operations in the transaction
+> as a retriable unit.
+> ```
 
 この場合は、実行戦略を取得してトランザクション全体をその中で実行します。
 
@@ -1877,6 +1966,15 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 
 > [!WARNING]
 > コンパイル済みモデルにはいくつかの制限があります。グローバルクエリフィルター、遅延読み込みプロキシ、変更追跡プロキシ、カスタムの `IModelCacheKeyFactory` はサポートされません。また、モデルを変更するたびに再生成が必要で、再生成を忘れると実行時に古いモデルが使われます。エンティティが数十個程度のアプリケーションでは効果が小さいため、起動時間が実測で問題になっている場合にのみ検討してください。
+>
+> グローバルクエリフィルターを設定したモデルに対して `dotnet ef dbcontext optimize` を実行すると、実際に次のエラーで失敗することを確認しています。
+>
+> ```text
+> System.InvalidOperationException: The entity type 'Blog' has a query filter configured.
+> Compiled model can't be generated, because query filters are not supported.
+> ```
+>
+> つまり「生成はできたが一部の機能が無視される」のではなく、**生成そのものが失敗します**。前述したグローバルクエリフィルターを使っている場合は、コンパイル済みモデルを併用できない点に注意してください。
 
 ### バッファリングとストリーミング
 
@@ -1891,7 +1989,9 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 ```
 
 > [!IMPORTANT]
-> ストリーミング中は接続とデータリーダーが開いたままになります。ループの中で同じ `DbContext` に対して別のクエリを実行しないでください。また、`EnableRetryOnFailure` を有効にしている場合、EF Core は再試行のために結果を内部でバッファリングするため、ストリーミングのメモリ削減効果は得られません。
+> ストリーミング中は接続とデータリーダーが開いたままになります。ループの中で同じ `DbContext` に対して別のクエリを実行しないでください。
+>
+> また、`EnableRetryOnFailure` を有効にしている場合、公式ドキュメントは「再試行を有効にすると EF が結果セットを内部でバッファリングするため、大量の行を返すクエリではメモリ使用量が大きく増える可能性がある」と明記しています（[接続の回復性](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-resiliency)）。つまり、再試行と併用するとストリーミングによるメモリ削減効果は得られません。この挙動は内部実装によるものでアプリケーション側から直接観測することが難しいため、本書では実測ではなく公式ドキュメントの記述として紹介しています。
 
 ### 非同期 API を使う
 
@@ -1954,10 +2054,10 @@ Azure SQL Database の **読み取りスケールアウト (Read Scale-Out)** �
 flowchart LR
     APP["ASP.NET Core アプリケーション"]
     subgraph W["書き込み系"]
-        WC["WriteDbContext<br>ApplicationIntent=ReadWrite"]
+        WC["BloggingContext<br>ApplicationIntent=ReadWrite"]
     end
     subgraph R["読み取り系"]
-        RC["ReadDbContext<br>ApplicationIntent=ReadOnly"]
+        RC["BloggingReadContext<br>ApplicationIntent=ReadOnly"]
     end
     PRI[("プライマリ")]
     REP[("読み取り専用レプリカ")]
@@ -2290,12 +2390,35 @@ public sealed class SqliteContextFactory : IDisposable
 >
 > また、SQLite には SQL Server と異なる制約があります。特に次の点は実際に踏みやすいため注意してください。
 >
-> - **`DateTimeOffset` を比較や `ORDER BY` に使えません。** SQLite プロバイダーは `DateTimeOffset` の値を格納できますが、クエリでの比較や並べ替えは翻訳できず、実行時に例外になります。エンティティで `DateTimeOffset` を使っている場合、その列に対する絞り込みや並べ替えは SQLite ではテストできません。
+> - **`DateTimeOffset` を比較や `ORDER BY` に使えません。** SQLite プロバイダーは `DateTimeOffset` の値を格納できますが、クエリでの比較や並べ替えは翻訳できず、実行時に次の例外になります（実測で確認）。エンティティで `DateTimeOffset` を使っている場合、その列に対する絞り込みや並べ替えは SQLite ではテストできません。
+>
+>   ```text
+>   System.InvalidOperationException: The LINQ expression 'DbSet<Ev>()
+>       .Where(e => e.At > @pivot)' could not be translated. Either rewrite the query in a form
+>   that can be translated, or switch to client evaluation explicitly by inserting a call to
+>   'AsEnumerable', 'AsAsyncEnumerable', 'ToList', or 'ToListAsync'.
+>   ```
 > - `rowversion` による同時実行トークンは SQL Server 固有の機能で、SQLite では自動的に更新されません。
 > - `decimal` の精度、`ALTER TABLE` の対応範囲、スキーマ（名前空間）の扱いが異なります。
 > - `dotnet ef migrations script --idempotent` は SQLite ではサポートされません。
 >
 > SQL Server 固有の機能を使っている箇所は、実データベースに対する統合テストで確認してください。
+
+> [!WARNING]
+> **EF Core 10（Microsoft.Data.Sqlite 10.0）では、SQLite のタイムゾーンの扱いに重大度「高」の破壊的変更が入りました。** オフセットを持たないテキストのタイムスタンプ（例: `2026-08-31 12:00:00`）を `DateTimeOffset` として読み出したとき、以前は **ローカルタイムゾーン** の値とみなしていましたが、EF Core 10 からは **UTC** とみなすようになりました。
+>
+> 実際に日本時間（UTC+9）の環境で、オフセットなしの値が入った列を読み出して比較すると、次のように解釈が 9 時間ずれます（実測で確認）。
+>
+> ```text
+> EF Core 10 の既定 : 2026-08-31T12:00:00+00:00 （UTC 12:00 とみなす）
+> EF Core 9 までの挙動: 2026-08-31T12:00:00+09:00 （UTC 03:00 とみなす）
+> ```
+>
+> EF Core が書き込んだ値にはオフセットが付くため往復は一致しますが、**他のシステムや旧バージョンが書き込んだオフセットなしのデータを読む場合は結果が変わります。** すぐに修正できない場合の一時的な回避策として、次の `AppContext` スイッチで従来の挙動に戻せます（公式は「最後の手段」と位置づけています）。
+>
+> ```csharp
+> AppContext.SetSwitch("Microsoft.Data.Sqlite.Pre10TimeZoneHandling", isEnabled: true);
+> ```
 
 ### リポジトリパターンとモック
 
@@ -2365,6 +2488,7 @@ public class FakeBlogRepository : IBlogRepository
 ASP.NET Core の統合テストでは、`WebApplicationFactory<TEntryPoint>` でアプリケーション全体を起動し、テスト用のデータベースに差し替えます。
 
 ```csharp
+using System.Data.Common;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
