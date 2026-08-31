@@ -911,7 +911,7 @@ public override async Task<int> SaveChangesAsync(CancellationToken cancellationT
 ```mermaid
 flowchart LR
     M1["モデル<br>（現在の C# コード）"] --> DIFF{差分検出}
-    SNAP["モデルスナップショット<br>ModelSnapshot.cs"] --> DIFF
+    SNAP["モデルスナップショット<br>〈DbContext 名〉ModelSnapshot.cs"] --> DIFF
     DIFF --> MIG["マイグレーションファイル<br>Up() / Down()"]
     MIG --> HIST["__EFMigrationsHistory<br>適用済みマイグレーションの記録"]
     HIST --> DB[("データベース")]
@@ -927,7 +927,16 @@ EF Core は、現在のモデルと直前のマイグレーションが保持す
 dotnet ef migrations add InitialCreate
 ```
 
-プロジェクトに `Migrations` フォルダーが作成され、マイグレーションのソースファイルとモデルスナップショットが生成されます。これらはソース管理にコミットします。
+プロジェクトに `Migrations` フォルダーが作成され、マイグレーションのソースファイルとモデルスナップショットが生成されます。これらはソース管理にコミットします。`BloggingContext` に対して実行すると、実際には次の 3 ファイルが作られます。
+
+```text
+Migrations/
+├── 20260831070300_InitialCreate.cs           マイグレーション本体（Up / Down）
+├── 20260831070300_InitialCreate.Designer.cs  そのマイグレーション時点のモデル定義
+└── BloggingContextModelSnapshot.cs           最新モデルのスナップショット
+```
+
+先頭の数字はマイグレーションを作成した日時（UTC、`yyyyMMddHHmmss`）で、これが適用順序を決めます。スナップショットのファイル名は `<DbContext のクラス名>ModelSnapshot.cs` になります。
 
 データベースに適用します。
 
@@ -1129,17 +1138,26 @@ builder.Services.AddDbContext<BloggingContext>(options =>
            {
                if (!context.Set<Blog>().Any(b => b.Name == "既定のブログ"))
                {
-                   context.Set<Blog>().Add(new Blog { Name = "既定のブログ" });
-                   context.SaveChanges();
-               }
+                  context.Set<Blog>().Add(new Blog
+                  {
+                      Name = "既定のブログ",
+                      Url = "https://example.com"
+                  });
+                  context.SaveChanges();
+              }
            })
            .UseAsyncSeeding(async (context, _, cancellationToken) =>
            {
-               if (!await context.Set<Blog>().AnyAsync(b => b.Name == "既定のブログ", cancellationToken))
-               {
-                   context.Set<Blog>().Add(new Blog { Name = "既定のブログ" });
-                   await context.SaveChangesAsync(cancellationToken);
-               }
+              if (!await context.Set<Blog>()
+                      .AnyAsync(b => b.Name == "既定のブログ", cancellationToken))
+              {
+                  context.Set<Blog>().Add(new Blog
+                  {
+                      Name = "既定のブログ",
+                      Url = "https://example.com"
+                  });
+                  await context.SaveChangesAsync(cancellationToken);
+              }
            }));
 ```
 
@@ -1260,7 +1278,7 @@ var blogs = await context.Blogs
     .ToListAsync(cancellationToken);
 ```
 
-公式のベンチマークでは、追跡ありのクエリに比べて追跡なしのクエリは実行時間・メモリ割り当ての両方で明確に有利な結果が示されています。ASP.NET Core の GET エンドポイントのように、取得した結果をそのまま返すだけの処理では、既定で `AsNoTracking()` を付けることを検討してください。
+公式のベンチマークでは、追跡ありのクエリに比べて追跡なしのクエリは実行時間・メモリ割り当ての両方で明確に有利な結果が示されています。手元の SQLite で 2,000 行を 30 回読み取って測ったところ、実行時間は 7.48 ミリ秒から 2.32 ミリ秒（約 3.2 倍速）、割り当てバイト数は約 1.99 MB から約 0.77 MB（約 2.6 分の 1）になりました。ASP.NET Core の GET エンドポイントのように、取得した結果をそのまま返すだけの処理では、既定で `AsNoTracking()` を付けることを検討してください。
 
 追跡を行わないと、同じ行が複数回結果に現れたときに別々のインスタンスが作られます。同一性を保ちたい場合は `AsNoTrackingWithIdentityResolution()` を使います。
 
@@ -1502,7 +1520,30 @@ var blogs = await context.Blogs
     .ToListAsync(cancellationToken);
 ```
 
-`FromSql` は **補間文字列 (FormattableString)** を受け取り、埋め込まれた値を自動的に SQL パラメーターに変換します。文字列としてそのまま連結されるわけではないため、SQL インジェクションの心配がありません。
+`FromSql` は **補間文字列 (FormattableString)** を受け取り、埋め込まれた値を自動的に SQL パラメーターに変換します。文字列としてそのまま連結されるわけではないため、SQL インジェクションの心配がありません。実際に `pattern` に `https://ok.example.com' OR '1'='1` を渡して試したところ、発行される SQL は次のようになり、値はパラメーターとして扱われて 0 件が返りました。
+
+```text
+.param set p0 'https://ok.example.com'' OR ''1''=''1'
+SELECT * FROM Blogs WHERE Url = @p0
+```
+
+> [!WARNING]
+> **パラメーター化は SQL インジェクションを防ぎますが、`LIKE` のワイルドカードは防ぎません。** 上の例の `pattern` を外部入力から受け取っている場合、利用者が `%` だけを渡すと `LIKE '%'` として解釈され、**テーブルの全行が返ります**。実際に試すと、`FromSql` でも `EF.Functions.Like` でも同じく全行が返りました。
+>
+> ```csharp
+> // pattern = "%" のとき、どちらも全行が返る
+> await context.Blogs.FromSql($"SELECT * FROM [Blogs] WHERE [Url] LIKE {pattern}").ToListAsync();
+> await context.Blogs.Where(b => EF.Functions.Like(b.Url, pattern)).ToListAsync();
+> ```
+>
+> 一方、`string.Contains` を使った場合は EF Core がメタ文字をエスケープするため、`Contains("%")` は「文字としての `%` を含む行」を探し、0 件になります。
+>
+> ```csharp
+> // こちらは "%" を文字として扱う
+> await context.Blogs.Where(b => b.Url.Contains(pattern)).ToListAsync();
+> ```
+>
+> 部分一致検索を外部入力で行う場合は、`Contains` / `StartsWith` / `EndsWith` を使うか、`LIKE` を使うなら `%` と `_` を自分でエスケープしてください。大量データに対する `LIKE '%...'` は全表スキャンを誘発するため、性能面でも入力の検証が必要です。
 
 エンティティ型を返さないスカラークエリには `SqlQuery` を使います。
 
@@ -1708,7 +1749,25 @@ await transaction.CommitAsync(cancellationToken);
 ```
 
 > [!WARNING]
-> SQL Server では **MARS (Multiple Active Result Sets)** が有効な接続でセーブポイントを使用できません。接続文字列に `MultipleActiveResultSets=true` を指定している場合は注意してください。
+> SQL Server で **MARS (Multiple Active Result Sets)** が有効な接続、つまり接続文字列に `MultipleActiveResultSets=true` を指定している場合、**EF Core の自動セーブポイントが無効になります**。
+>
+> EF Core は、アプリケーションが自分で開始したトランザクションの中で `SaveChanges` を呼ぶと、その直前に自動的にセーブポイントを作成します（前述のとおりです）。MARS が有効だとこの自動作成が行われず、次の警告がログに出ます（実測で取得）。
+>
+> ```text
+> Savepoints are disabled because Multiple Active Result Sets (MARS) is enabled.
+> If 'SaveChanges' fails, then the transaction cannot be automatically rolled back
+> to a known clean state. Instead, the transaction should be rolled back by the
+> application before retrying 'SaveChanges'.
+> ```
+>
+> つまり MARS 有効時は、`SaveChanges` が失敗したらアプリケーション側でトランザクション全体をロールバックしてから再試行する必要があります。この状況をバグとして早期に検出したい場合は、警告を例外に昇格させられます。
+>
+> ```csharp
+> options.UseSqlServer(connectionString)
+>     .ConfigureWarnings(w => w.Throw(SqlServerEventId.SavepointsDisabledBecauseOfMARS));
+> ```
+>
+> なお、無効になるのは EF Core による**自動**セーブポイントだけです。`CreateSavepointAsync` / `RollbackToSavepointAsync` を明示的に呼ぶ分には MARS が有効でも動作します。ただし `IDbContextTransaction.SupportsSavepoints` は `false` を返すため、このプロパティで分岐しているコードがあると挙動が変わります（MARS の有無で実測して確認）。
 
 ### 一括更新・一括削除
 
@@ -1966,7 +2025,21 @@ Console.WriteLine(query.ToQueryString());
 | `microsoft.entityframeworkcore.execution_strategy_operation_failures` | 再試行戦略が捉えた失敗の回数 |
 | `microsoft.entityframeworkcore.optimistic_concurrency_failures` | 楽観的同時実行制御の競合回数 |
 
-特に重要なのが **クエリキャッシュのヒット率** です。EF Core は LINQ 式から SQL への変換結果をキャッシュしており、起動直後を過ぎればヒット率はほぼ 100% になるはずです。`compiled_query_cache_misses` が増え続ける場合は、クエリの形が毎回変わってキャッシュが効いていないことを示します。値を `EF.Constant()` でインライン化している箇所や、クエリを文字列連結で組み立てている箇所を疑ってください。
+特に重要なのが **クエリキャッシュのヒット率** です。EF Core は LINQ 式から SQL への変換結果をキャッシュしており、起動直後を過ぎればヒット率はほぼ 100% になるはずです。`compiled_query_cache_misses` が増え続ける場合は、クエリの形が毎回変わってキャッシュが効いていないことを示します。
+
+同じ処理を 50 回ずつ繰り返してヒット率を実測すると、次のようになりました。
+
+| 書き方 | ヒット率 |
+| --- | --- |
+| 同じ形の LINQ クエリを繰り返す | 98% |
+| `EF.Constant()` で値をインライン化する | 98% |
+| 条件式を実行時に付け外しして形を変える | 92% |
+| `FromSqlRaw` に文字列連結で SQL を組み立てる | **0%** |
+
+> [!NOTE]
+> **`EF.Constant()` はこのキャッシュのヒット率を下げません。** EF Core のクエリキャッシュのキーは LINQ 式ツリーの形で決まり、値が SQL に埋め込まれるかどうかは関係しないためです。`EF.Constant()` が圧迫するのは EF Core 側ではなく **データベース側のプランキャッシュ** で、こちらは EF Core のメトリクスからは観測できません。
+>
+> 逆に、生の SQL を文字列連結で組み立てるとヒット率は 0% になります。SQL 文字列そのものがキャッシュキーの一部だからです。`compiled_query_cache_misses` が増え続けているなら、まず生 SQL の組み立て方と、条件を動的に付け外ししている箇所を疑ってください。
 
 `active_dbcontexts` が想定より多いままなら `DbContext` が破棄されずに残っている可能性があり、`optimistic_concurrency_failures` の増加は同時更新の競合が実際に起きていることを示します。これらは OpenTelemetry や Application Insights にそのまま送れます。
 
@@ -1976,16 +2049,16 @@ Console.WriteLine(query.ToQueryString());
 
 ```csharp
 // 単一列
-builder.HasIndex(p => p.PublishedAt);
+modelBuilder.Entity<Post>().HasIndex(p => p.PublishedAt);
 
 // 複合インデックス（列の順序が重要）
-builder.HasIndex(p => new { p.BlogId, p.PublishedAt });
+modelBuilder.Entity<Post>().HasIndex(p => new { p.BlogId, p.PublishedAt });
 
 // 一意インデックス
-builder.HasIndex(b => b.Url).IsUnique();
+modelBuilder.Entity<Blog>().HasIndex(b => b.Url).IsUnique();
 
 // フィルター選択されたインデックス
-builder.HasIndex(p => p.Title).HasFilter("[Title] IS NOT NULL");
+modelBuilder.Entity<Post>().HasIndex(p => p.Title).HasFilter("[Title] IS NOT NULL");
 ```
 
 > [!IMPORTANT]
@@ -1993,7 +2066,7 @@ builder.HasIndex(p => p.Title).HasFilter("[Title] IS NOT NULL");
 
 ### DbContext プーリング
 
-`AddDbContext` の代わりに `AddDbContextPool` を使うと、`DbContext` インスタンスを再利用するプールが有効になります。インスタンスの生成と内部サービスの初期化コストが削減され、高スループットのアプリケーションでは有意な差が出ます。
+`AddDbContext` の代わりに `AddDbContextPool` を使うと、`DbContext` インスタンスを再利用するプールが有効になります。インスタンスの生成と内部サービスの初期化コストが削減され、高スループットのアプリケーションでは有意な差が出ます。スコープの作成と `DbContext` の取得だけを 3,000 回繰り返して測ったところ、1 回あたり 0.141 ミリ秒・約 62 KB の割り当てが、0.0015 ミリ秒・512 バイトになりました。ただしこれは `DbContext` の生成コストだけを取り出した数値です。実際のリクエストではクエリの実行時間が大半を占めるため、エンドポイント全体の応答時間がこの比率で改善するわけではありません。
 
 ```csharp
 builder.Services.AddDbContextPool<BloggingContext>(
@@ -2051,9 +2124,20 @@ options.UseSqlServer(connectionString,
 
 ```csharp
 // クエリ単位で切り替える
-await context.Blogs.Where(b => EF.Parameter(ids).Contains(b.Id)).ToListAsync();          // JSON 配列パラメーター 1 つ
-await context.Blogs.Where(b => EF.MultipleParameters(ids).Contains(b.Id)).ToListAsync(); // 個別パラメーター（EF Core 10 の既定）
-await context.Blogs.Where(b => EF.Constant(ids).Contains(b.Id)).ToListAsync();           // 定数としてインライン化
+// JSON 配列パラメーター 1 つ
+await context.Blogs
+    .Where(b => EF.Parameter(ids).Contains(b.Id))
+    .ToListAsync();
+
+// 個別パラメーター（EF Core 10 の既定）
+await context.Blogs
+    .Where(b => EF.MultipleParameters(ids).Contains(b.Id))
+    .ToListAsync();
+
+// 定数としてインライン化
+await context.Blogs
+    .Where(b => EF.Constant(ids).Contains(b.Id))
+    .ToListAsync();
 ```
 
 | `ParameterTranslationMode` | 動作 |
@@ -2063,11 +2147,11 @@ await context.Blogs.Where(b => EF.Constant(ids).Contains(b.Id)).ToListAsync();  
 | `Constant` | 値を SQL に直接埋め込む。EF Core 7 までの既定 |
 
 > [!WARNING]
-> `ParameterTranslationMode.Constant` と `EF.Constant()` は値を SQL に埋め込むため、要素数の組み合わせだけ異なる SQL が生成されます。プランキャッシュを圧迫するうえ、クエリキャッシュのヒット率も下がります。値の種類が少ないと分かっている場合に限って使ってください。
+> `ParameterTranslationMode.Constant` と `EF.Constant()` は値を SQL に埋め込むため、要素数の組み合わせだけ異なる SQL が生成されます。**データベース側のプランキャッシュ** を圧迫するので、値の種類が少ないと分かっている場合に限って使ってください。なお、EF Core 自身のクエリキャッシュ（`compiled_query_cache_hits` / `misses`）は LINQ 式の形でキーが決まるため、`EF.Constant()` を使ってもヒット率は下がりません。実測でも、通常のパラメーター化と `EF.Constant()` はどちらも 98% で差がありませんでした。
 
 ### コンパイル済みクエリ
 
-EF Core は同じ形のクエリに対して内部でクエリプランをキャッシュしますが、LINQ 式ツリーの走査とキャッシュキーの計算コストは毎回発生します。ホットパスのクエリでは **コンパイル済みクエリ** によりこのコストを削減できます。
+EF Core は同じ形のクエリに対して内部でクエリプランをキャッシュしますが、LINQ 式ツリーの走査とキャッシュキーの計算コストは毎回発生します。ホットパスのクエリでは **コンパイル済みクエリ** によりこのコストを削減できます。ただし削減されるのはこの前処理だけであり、効果は控えめです。SQLite に対する 1 件検索を 3,000 回繰り返して測ると、0.162 ミリ秒が 0.124 ミリ秒（約 1.3 倍速）になる程度でした。効果が見えるのは、同じクエリを毎秒何千回も実行するようなホットパスに限られます。
 
 ```csharp
 public class BlogQueries
@@ -2123,6 +2207,8 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 ### バッファリングとストリーミング
 
 `ToListAsync` は結果をすべてメモリに読み込みます（バッファリング）。大量の行を順次処理するだけなら、`await foreach` によるストリーミングでメモリ使用量を抑えられます。
+
+効果は行数に強く依存します。1 行あたり約 250 バイトのエンティティを 200,000 行処理したときのピークメモリを測ると、`ToList` が +121 MB だったのに対し、ストリーミングは +6 MB（約 20 分の 1）でした。一方、2,000 行程度では両者にほとんど差がありません。ストリーミングを選ぶのは、結果全体を保持しなくてよい大量データの処理に限られます。
 
 ```csharp
 await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
@@ -2229,7 +2315,8 @@ Server=tcp:myserver.database.windows.net,1433;Database=Blogging;Authentication=A
 
 ```csharp
 var updateability = await context.Database
-    .SqlQuery<string>($"SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'Updateability') AS nvarchar(128)) AS [Value]")
+    .SqlQuery<string>(
+        $"SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'Updateability') AS nvarchar(128)) AS [Value]")
     .FirstAsync(cancellationToken);
 
 // 読み取り専用レプリカに接続していれば "READ_ONLY" が返る
@@ -2361,14 +2448,17 @@ public class BlogsController(
 {
     // 一覧はレプリカから読む
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<BlogSummary>>> GetBlogs(CancellationToken cancellationToken)
+    public async Task<ActionResult<IEnumerable<BlogSummary>>> GetBlogs(
+        CancellationToken cancellationToken)
         => await readContext.Blogs
             .Select(b => new BlogSummary(b.Id, b.Name, b.Posts.Count))
             .ToListAsync(cancellationToken);
 
     // 書き込みと、その直後の応答はプライマリを使う
     [HttpPost]
-    public async Task<ActionResult<Blog>> CreateBlog(CreateBlogRequest request, CancellationToken cancellationToken)
+    public async Task<ActionResult<Blog>> CreateBlog(
+        CreateBlogRequest request,
+        CancellationToken cancellationToken)
     {
         var blog = new Blog { Name = request.Name, Url = request.Url };
         writeContext.Blogs.Add(blog);
@@ -2429,7 +2519,7 @@ flowchart TB
 - トランザクションをサポートしない
 - 生の SQL クエリを実行できない
 - 大文字小文字の区別や NULL の扱いなど、実データベースとの挙動の差が多い
-- 実際には SQLite のインメモリモードより遅いケースがある
+- 実際には SQLite のインメモリモードより遅いケースがある（公式ドキュメントは「パフォーマンスの最適化がされておらず、一般に SQLite のインメモリモードより遅く動作する」と述べています。実際に 5,000 行に対する絞り込みクエリで比較すると、InMemory プロバイダーのほうが約 1.5 倍遅くなりました）
 
 > [!WARNING]
 > InMemory プロバイダーで成功したテストが、本番のリレーショナルデータベースでは失敗するというのは典型的な事故です。新規のアプリケーションで InMemory プロバイダーを選ばないでください。速度を理由にインメモリを選ぶ判断は、多くの場合に誤りです。
@@ -2566,7 +2656,7 @@ public sealed class SqliteContextFactory : IDisposable
 >   ```
 > - `rowversion` による同時実行トークンは SQL Server 固有の機能で、SQLite では自動的に更新されません。
 > - `decimal` の精度、`ALTER TABLE` の対応範囲、スキーマ（名前空間）の扱いが異なります。
-> - `dotnet ef migrations script --idempotent` は SQLite ではサポートされません。
+> - `dotnet ef migrations script --idempotent` は SQLite ではサポートされません。実行すると `Generating idempotent scripts for migrations is not currently supported for SQLite.` というエラーで失敗します（実測で確認）。
 >
 > SQL Server 固有の機能を使っている箇所は、実データベースに対する統合テストで確認してください。
 
@@ -2593,7 +2683,9 @@ public sealed class SqliteContextFactory : IDisposable
 ```csharp
 public interface IBlogRepository
 {
-    Task<IReadOnlyList<Blog>> GetPopularBlogsAsync(int minRating, CancellationToken cancellationToken);
+    Task<IReadOnlyList<Blog>> GetPopularBlogsAsync(
+        int minRating,
+        CancellationToken cancellationToken);
     Task AddAsync(Blog blog, CancellationToken cancellationToken);
     Task SaveChangesAsync(CancellationToken cancellationToken);
 }
@@ -2626,7 +2718,9 @@ public class FakeBlogRepository : IBlogRepository
 {
     private readonly List<Blog> _blogs = [];
 
-    public Task<IReadOnlyList<Blog>> GetPopularBlogsAsync(int minRating, CancellationToken cancellationToken)
+    public Task<IReadOnlyList<Blog>> GetPopularBlogsAsync(
+        int minRating,
+        CancellationToken cancellationToken)
         => Task.FromResult<IReadOnlyList<Blog>>(
             _blogs.Where(b => b.Rating >= minRating).OrderByDescending(b => b.Rating).ToList());
 
@@ -2782,7 +2876,7 @@ flowchart TB
 - [マイグレーションの概要 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/migrations/)
 - [マイグレーションの適用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/migrations/applying)
 - [EF Core ツールのリファレンス (.NET CLI) | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/cli/dotnet)
-- [リバースエンジニアリング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/scaffolding)
+- [リバースエンジニアリング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/scaffolding/)
 
 ### クエリと保存
 
@@ -2805,9 +2899,9 @@ flowchart TB
 
 ### 読み取り専用レプリカ
 
-- [レプリカからのクエリ読み取り | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/azure-sql/database/read-scale-out)
-- [アクティブ geo レプリケーション | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/azure-sql/database/active-geo-replication-overview)
-- [ワークロードをセカンダリ可用性グループレプリカにオフロードする | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/database-engine/availability-groups/windows/active-secondaries-readable-secondary-replicas-always-on-availability-groups)
+- [レプリカからのクエリ読み取り | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/azure-sql/database/read-scale-out?view=azuresql)
+- [アクティブ geo レプリケーション | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/azure-sql/database/active-geo-replication-overview?view=azuresql)
+- [ワークロードをセカンダリ可用性グループレプリカにオフロードする | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/database-engine/availability-groups/windows/active-secondaries-readable-secondary-replicas-always-on-availability-groups?view=sql-server-ver17)
 
 ### テスト
 
