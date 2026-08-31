@@ -409,7 +409,29 @@ EF Core が使う文字列: Data Source=localhost;Initial Catalog=Test;Integrate
                      Trust Server Certificate=True;Application Name="EFCore/10.0.11 (macOS 26.6.2 Arm64)"
 ```
 
-ほとんどの場合は影響しませんが、**同じデータベースに EF Core と Dapper や ADO.NET などを併用している場合は注意が必要です。** SqlClient は接続文字列が異なると別の接続プールを使うため、両者が別々のプールに分かれます。この状態で `TransactionScope` を使うと、SqlClient が 2 つの異なるデータベースとみなして、これまで不要だった **分散トランザクションへの昇格** が発生することがあります。
+ほとんどの場合は影響しませんが、**同じデータベースに EF Core と Dapper や ADO.NET などを併用している場合は注意が必要です。** SqlClient は接続文字列が異なると別の接続プールを使うため、両者が別々のプールに分かれます。この状態で `TransactionScope` を使うと、SqlClient が 2 つの異なるリソースとみなして、これまで不要だった **分散トランザクションへの昇格** を試みます。
+
+> [!WARNING]
+> **.NET 7 以降、暗黙の昇格は既定で無効化されています。** そのため実際に起きるのは「昇格して動き続ける」ことではなく、**その場で例外が投げられてアプリケーションが止まる** ことです。Windows Server 2022 + SQL Server 2022 + .NET 10 で `TransactionScope` の中から接続文字列の違う接続を 2 本開いたところ、2 本目の `Open()` で次の例外が発生しました。
+>
+> ```text
+> System.NotSupportedException: Implicit distributed transactions have not been enabled.
+> If you're intentionally starting a distributed transaction, set
+> TransactionManager.ImplicitDistributedTransactions to true.
+> ```
+>
+> `TransactionManager.ImplicitDistributedTransactions = true`（Windows 専用の API です）を設定したうえで同じコードを実行すると、2 本目の `Open()` の直後に `Transaction.Current.TransactionInformation.DistributedIdentifier` が `Guid.Empty` から実際の GUID に変わり、MSDTC への昇格が起きたことを確認できました。Linux や macOS では MSDTC 自体が存在しないため、この設定を有効にしても昇格はできません。
+
+同じ環境で条件を変えて測ったところ、昇格するかどうかは次のように分かれました。
+
+| `TransactionScope` 内での操作 | 昇格するか |
+| --- | --- |
+| 同じ接続文字列の接続を 2 本 **同時に** 開く | 昇格する |
+| 同じ接続文字列で、1 本目を閉じてから 2 本目を開く | **昇格しない** |
+| `Application Name` だけが違う接続を 2 本同時に開く | 昇格する |
+| `Application Name` だけが違う接続を、1 本目を閉じてから 2 本目を開く | **昇格する** |
+
+つまり、接続を律儀に閉じてから次を開く書き方をしていれば以前は昇格しなかったのに、EF Core 10 が `Application Name` を自動で足したことで昇格するようになる、というのがこの破壊的変更の実害です。
 
 回避するには、接続文字列に `Application Name` を明示的に指定します。一度指定すると EF Core は上書きせず、渡した接続文字列がそのまま使われます。SQL Server 2022 に接続して `sys.dm_exec_sessions` の `program_name` を確認したところ、指定しない場合は `EFCore/10.0.11 (macOS 26.6.2 Arm64)`、明示した場合は `BloggingApi` となり、サーバー側から見える値も切り替わることを確認しています。
 
@@ -756,6 +778,18 @@ modelBuilder.Entity<Author>()
 
 EF Core 10 では、`UseAzureSql` を使っているか、**互換性レベル 170 以上**を構成している場合に限り、SQL Server の新しい `json` データ型にマッピングされます。逆に言えば、この条件を満たさない環境では EF Core 10 でも従来どおり `nvarchar(max)` のままです。実際に SQL Server 2022（互換性レベル 160）に対して `ToJson()` を使った所有型を作成したところ、列は `nvarchar(max)` になり、`{"Author":"x","Tags":["t1","t2"]}` という JSON がそのまま格納されることを確認しています。
 
+一方、Azure SQL Database（Business Critical、互換性レベル 170）に対して `UseAzureSql` で同じモデルを作成すると、生成される DDL と `sys.columns` の両方で `json` 型になりました。JSON 内のプロパティを条件にした `Where(d => d.Meta.Author == "x")` もそのまま動作します。
+
+```sql
+-- Azure SQL に UseAzureSql で作成したときの実際の DDL
+CREATE TABLE [Docs] (
+    [Id] int NOT NULL IDENTITY,
+    [Title] nvarchar(max) NOT NULL,
+    [Meta] json NOT NULL,
+    CONSTRAINT [PK_Docs] PRIMARY KEY ([Id])
+);
+```
+
 ```sql
 -- EF Core 9 まで
 [Tags] nvarchar(max)
@@ -794,7 +828,7 @@ EF Core 10 では、`UseAzureSql` を使っているか、**互換性レベル 1
 >     .ToListAsync(cancellationToken);
 > ```
 >
-> `SqlVector<T>` は `Microsoft.Data.SqlTypes` 名前空間にあります。
+> `SqlVector<T>` は `Microsoft.Data.SqlTypes` 名前空間にあります。Azure SQL Database に対して実際に動かしたところ、`vector(3)` 型の列が作られ、`VectorDistance("cosine", ...)` が距離を返して並べ替えが機能することを確認しました。
 
 ### グローバルクエリフィルターと名前付きクエリフィルター
 
@@ -2201,6 +2235,14 @@ var updateability = await context.Database
 // 読み取り専用レプリカに接続していれば "READ_ONLY" が返る
 ```
 
+Azure SQL Database の Business Critical（2 vCore）に対して実際に接続し、`ApplicationIntent` の値だけを変えて比較した結果は次のとおりです。
+
+| `ApplicationIntent` | `Updateability` |
+| --- | --- |
+| 指定なし | `READ_WRITE` |
+| `ReadWrite` | `READ_WRITE` |
+| `ReadOnly` | `READ_ONLY` |
+
 > [!NOTE]
 > オンプレミスの SQL Server では Always On 可用性グループの読み取り可能セカンダリと読み取り専用ルーティング、PostgreSQL ではストリーミングレプリケーションのホットスタンバイ、MySQL ではリードレプリカが同様の役割を果たします。いずれの場合も、アプリケーション側から見れば「別の接続文字列で読み取り専用のエンドポイントに接続する」という点は共通です。
 
@@ -2218,7 +2260,12 @@ var updateability = await context.Database
 | 一覧・検索・ダッシュボード・レポート | レプリカ |
 | 分析・集計バッチ | レプリカ |
 
-また、読み取り専用レプリカ上のトランザクションは常にスナップショット分離レベルで実行され、書き込みはできません。レプリカに接続した `DbContext` で `SaveChangesAsync` を呼ぶとエラーになります。
+また、読み取り専用レプリカ上のトランザクションは常にスナップショット分離レベルで実行され、書き込みはできません。レプリカに接続した `DbContext` で `SaveChangesAsync` を呼ぶとエラーになります。実際に Business Critical のレプリカへ `ApplicationIntent=ReadOnly` で接続して書き込みを試みたところ、次の例外が発生しました。
+
+```text
+Microsoft.Data.SqlClient.SqlException: Failed to update database "BloggingBC"
+because the database is read-only.
+```
 
 > [!WARNING]
 > ただし、**`ApplicationIntent=ReadOnly` そのものに書き込みを禁止する働きはありません。** これは「読み取り専用のエンドポイントにルーティングしてほしい」という接続時のヒントにすぎず、書き込みを拒否しているのはルーティング先のレプリカ側です。ローカル開発環境の SQL Server のように可用性グループも読み取りスケールアウトも構成されていないサーバーに対しては、この指定は単に無視されます。実際に SQL Server 2022 の単体インスタンスへ `ApplicationIntent=ReadOnly` を付けて接続し、`SaveChangesAsync` で行を追加したところ、例外は発生せず **書き込みが成功しました**。
