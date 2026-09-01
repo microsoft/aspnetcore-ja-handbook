@@ -134,13 +134,39 @@ EF Core でも後述する `FromSql` によって生の SQL を書けるため�
 
 EF Core 自体はデータベースに依存せず、**プロバイダー** と呼ばれる NuGet パッケージを追加することで各データベースに対応します。
 
-| データベース | パッケージ | 提供元 |
-| --- | --- | --- |
-| SQL Server / Azure SQL | `Microsoft.EntityFrameworkCore.SqlServer` | Microsoft |
-| SQLite | `Microsoft.EntityFrameworkCore.Sqlite` | Microsoft |
-| Azure Cosmos DB for NoSQL | `Microsoft.EntityFrameworkCore.Cosmos` | Microsoft |
-| PostgreSQL | `Npgsql.EntityFrameworkCore.PostgreSQL` | Npgsql 開発チーム |
-| MySQL | `Pomelo.EntityFrameworkCore.MySql` | Pomelo プロジェクト |
+| データベース | パッケージ | 提供元 | 公式一覧の記載 |
+| --- | --- | --- | --- |
+| SQL Server / Azure SQL / Azure Synapse Analytics | `Microsoft.EntityFrameworkCore.SqlServer` | EF Core プロジェクト (Microsoft) | 8, 9, 10 |
+| SQLite | `Microsoft.EntityFrameworkCore.Sqlite` | EF Core プロジェクト (Microsoft) | 8, 9, 10 |
+| Azure Cosmos DB for NoSQL | `Microsoft.EntityFrameworkCore.Cosmos` | EF Core プロジェクト (Microsoft) | 8, 9, 10 |
+| PostgreSQL | `Npgsql.EntityFrameworkCore.PostgreSQL` | Npgsql Development Team | 8, 9 |
+| MySQL / MariaDB | `Pomelo.EntityFrameworkCore.MySql` | Pomelo Foundation Project | 8, 9 |
+
+> [!WARNING]
+> **プロバイダーは EF Core のメジャーバージョンをまたいで動作しません。** 公式ドキュメントは「EF Core 8 向けにリリースされたプロバイダーは EF Core 9 では動作しない」と明記しています。EF Core のバージョンを上げるときは、使っているプロバイダーが対応済みかを必ず先に確認してください。
+>
+> 上の表の最終列は **公式のプロバイダー一覧に記載されている値** です。ただし、この一覧は Microsoft 以外が提供するプロバイダーの最新状況に追いついていないことがあります。実際に NuGet の安定版を復元して確かめると、執筆時点では次のようになりました。
+>
+> | パッケージ | 復元された安定版 | EF Core 10 のプロジェクトに追加した結果 |
+> | --- | --- | --- |
+> | `Npgsql.EntityFrameworkCore.PostgreSQL` | 10.0.3 | 警告なし。実際に PostgreSQL 16 へ接続してクエリと保存が動作 |
+> | `Pomelo.EntityFrameworkCore.MySql` | 9.0.0 | **`NU1608` 警告**（下記）。ビルドは通るが、実行すると例外で落ちる |
+>
+> ```text
+> warning NU1608: 依存関係の制約外で検出されたパッケージのバージョン:
+> Pomelo.EntityFrameworkCore.MySql 9.0.0 では
+> Microsoft.EntityFrameworkCore.Relational (>= 9.0.0 && <= 9.0.999) が必要ですが、
+> バージョン Microsoft.EntityFrameworkCore.Relational 10.0.11 は解決されました。
+> ```
+>
+> この警告を無視してそのまま MySQL 8 に接続すると、実行時に次の例外になります。**ビルドが通ることは動作の保証になりません。**
+>
+> ```text
+> System.MissingMethodException: Method not found:
+> 'System.String Microsoft.EntityFrameworkCore.Diagnostics.AbstractionsStrings.ArgumentIsEmpty(System.Object)'.
+> ```
+>
+> つまり **公式一覧だけでも NuGet だけでも判断せず、両方を確認してください。** サードパーティー製プロバイダーを使うプロジェクトでは、EF Core のバージョンをプロバイダーの対応状況に合わせて決めるのが安全です。
 
 > [!IMPORTANT]
 > 1 つの `DbContext` インスタンスに設定できるプロバイダーは 1 つだけです。同じ `DbContext` の型を別々のインスタンスで異なるプロバイダーに接続することは可能ですが、単一のインスタンスが複数のプロバイダーを使うことはできません。
@@ -1080,6 +1106,7 @@ dotnet ef migrations bundle --self-contained --runtime linux-x64 --output efbund
 >
 > ```text
 > Acquiring an exclusive lock for migration application.
+> See https://aka.ms/efcore-docs-migrations-lock for more information if this takes too long.
 > ```
 
 ### 起動時マイグレーションの是非
@@ -1474,19 +1501,31 @@ var page = await context.Posts
 > ページングでは、並び順が一意になるようにしてください。並び順が同値の行があると、ページ間で行の順序が不定になります。上の例のように、末尾に主キーを加えるのが確実です。
 
 > [!WARNING]
-> `pageNumber` と `pageSize` をクエリ文字列などの外部入力から受け取る場合は、**必ず範囲を検証してください**。EF Core は不正な値でも例外を投げず、黙って想定外の結果を返します。SQLite で実測したところ、20 件のデータに対して次の結果になりました。
+> `pageNumber` と `pageSize` をクエリ文字列などの外部入力から受け取る場合は、**必ず範囲を検証してください**。EF Core は値の妥当性を検査せず、そのまま SQL のページング句に渡します。そして **不正な値を渡したときの結果はデータベースによって異なります。**
 >
-> | 入力 | 生成される値 | 結果 |
-> | --- | --- | --- |
-> | `pageNumber=0`, `pageSize=10` | `Skip(-10).Take(10)` | 1 ページ目と同じ 10 件（負の `Skip` は無視される） |
-> | `pageNumber=1`, `pageSize=-5` | `Skip(-10).Take(-5)` | **全 20 件が返る** |
+> SQL Server の `OFFSET` は「0 以上」、`FETCH NEXT` は「1 以上」であることが T-SQL の仕様で定められています。したがって範囲外の値はエラーになります。一方 SQLite の `LIMIT` / `OFFSET` はエラーにならず、負の `LIMIT` は「上限なし」として扱われます。20 件のデータに対して実測した結果は次のとおりです。
 >
-> 特に危険なのは `pageSize` に負の値を渡された場合です。`Take` による件数制限が実質的に効かなくなり、テーブル全体が返るため、**一覧 API がそのままサービス拒否の窓口になります**。次のように上限つきで丸めてください。
+> | 入力 | 生成される句 | SQL Server 2022 | SQLite |
+> | --- | --- | --- | --- |
+> | `pageNumber=0`, `pageSize=10` | `Skip(-10).Take(10)` | `SqlException`（下記） | 10 件（負の `OFFSET` が無視される） |
+> | `pageNumber=1`, `pageSize=-5` | `Skip(-10).Take(-5)` | `SqlException`（下記） | **全 20 件が返る** |
+> | `pageNumber=1`, `pageSize=0` | `Skip(0).Take(0)` | 0 件 | 0 件 |
+>
+> SQL Server 側の例外メッセージはそれぞれ次のとおりです。
+>
+> ```text
+> The offset specified in a OFFSET clause may not be negative.
+> The number of rows provided for a FETCH clause must be greater then zero.
+> ```
+>
+> つまり **SQL Server では 500 エラーになり、SQLite では件数制限が外れてテーブル全体が返ります。** 後者は一覧 API がそのままサービス拒否や情報漏洩の窓口になるため、より危険です。いずれにせよ入力を信用せず、次のように上限つきで丸めてください。
 >
 > ```csharp
 > pageNumber = Math.Max(pageNumber, 1);
 > pageSize = Math.Clamp(pageSize, 1, 100);
 > ```
+>
+> なお `Take(0)` はどちらのデータベースでも 0 件です。SQL Server では EF Core がページング句を生成せず `WHERE 0 = 1` に置き換えるため、データベースへの問い合わせ自体が最適化されます。
 >
 > ASP.NET Core のモデルバインディングを使う場合は、[第 3 章](../03-mvc-web-and-api/index.md)で扱った検証属性（`[Range(1, 100)]` など）を DTO に付けて、コントローラーに入る前に弾くのが確実です。
 
@@ -2086,6 +2125,19 @@ await strategy.ExecuteAsync(async () =>
 
 ## 6. パフォーマンス最適化
 
+> [!NOTE]
+> **この章に載せた実測値の測定条件について。** 以下に出てくる数値は、次の環境で測定したものです。数値そのものはハードウェア・データ量・ネットワークによって大きく変わるため、**傾向（どちらが速いか、桁がいくつ違うか）を読み取る材料**として扱い、自分のアプリケーションでは必ず自分で計測してください。
+>
+> | 項目 | 値 |
+> | --- | --- |
+> | マシン | Apple M1 Max（10 コア）、macOS 26.6 |
+> | .NET SDK | 10.0.400 |
+> | EF Core | 10.0.11 |
+> | SQLite | ローカルファイル（同一マシン） |
+> | SQL Server | SQL Server 2022（Linux）、2 vCPU / 4 GB、Azure 上のリモート接続 |
+>
+> 特に SQL Server 側の数値は**ネットワーク往復を含む**ため、同一ネットワーク内やローカル接続では大きく変わります。
+
 ### まず計測する
 
 最適化の前に、どのクエリが遅いのかを特定します。EF Core は実行した SQL をログに出力できます。
@@ -2141,6 +2193,19 @@ Console.WriteLine(query.ToQueryString());
 > 逆に、生の SQL を文字列連結で組み立てるとヒット率は 0% になります。SQL 文字列そのものがキャッシュキーの一部だからです。`compiled_query_cache_misses` が増え続けているなら、まず生 SQL の組み立て方と、条件を動的に付け外ししている箇所を疑ってください。
 
 `active_dbcontexts` が想定より多いままなら `DbContext` が破棄されずに残っている可能性があり、`optimistic_concurrency_failures` の増加は同時更新の競合が実際に起きていることを示します。これらは OpenTelemetry や Application Insights にそのまま送れます。
+
+> [!TIP]
+> **`active_dbcontexts` は「正常な状態」を先に知っておくと役に立ちます。** `AddDbContextPool` を使い、スコープごとに `DbContext` を取得してクエリを 1 回発行する処理を 10 分間で 2,800 回繰り返しながら、30 秒おきに値を記録したところ、次のようになりました。
+>
+> | 経過 | 反復回数 | マネージドヒープ | ワーキングセット | `active_dbcontexts` |
+> | --- | --- | --- | --- | --- |
+> | 42 秒 | 200 | 8.6 MB | 139.4 MB | 1 |
+> | 292 秒 | 1,400 | 9.6 MB | 141.1 MB | 1 |
+> | 600 秒 | 2,800 | 8.9 MB | 141.2 MB | 1 |
+>
+> マネージドヒープは GC のたびに 4 MB 台まで戻り、ワーキングセットの増加は 10 分間で約 1.8 MB にとどまりました。そして `active_dbcontexts` は**最初から最後まで 1 のまま**です。スコープの終了時に確実にプールへ返却されているためです。
+>
+> この値が反復回数に比例して増えていく場合は、`DbContext` を `using` や DI スコープの外で作って破棄し忘れている箇所があります。負荷をかけた状態でこのメトリクスが横ばいになるかどうかを、リリース前に一度確認しておくとよいでしょう。
 
 ### インデックスを正しく張る
 
@@ -2754,7 +2819,9 @@ public sealed class SqliteContextFactory : IDisposable
 >
 > また、SQLite には SQL Server と異なる制約があります。特に次の点は実際に踏みやすいため注意してください。
 >
-> - **`DateTimeOffset` を比較や `ORDER BY` に使えません。** SQLite プロバイダーは `DateTimeOffset` の値を格納できますが、クエリでの比較や並べ替えは翻訳できず、実行時に次の例外になります（実測で確認）。エンティティで `DateTimeOffset` を使っている場合、その列に対する絞り込みや並べ替えは SQLite ではテストできません。
+> - **`DateTimeOffset` を大小比較や `ORDER BY` に使えません。** SQLite プロバイダーは `DateTimeOffset` の値を格納でき、**等価比較（`==`）は翻訳されます**が、大小比較と並べ替えは翻訳できず実行時に例外になります（実測で確認）。しかも例外の型とメッセージが操作によって異なります。
+>
+>   `Where(e => e.At > pivot)` のような大小比較では、翻訳に失敗した旨の `InvalidOperationException` になります。
 >
 >   ```text
 >   System.InvalidOperationException: The LINQ expression 'DbSet<Ev>()
@@ -2762,6 +2829,16 @@ public sealed class SqliteContextFactory : IDisposable
 >   that can be translated, or switch to client evaluation explicitly by inserting a call to
 >   'AsEnumerable', 'AsAsyncEnumerable', 'ToList', or 'ToListAsync'.
 >   ```
+>
+>   `OrderBy(e => e.At)` では、SQLite プロバイダー固有の `NotSupportedException` になります。
+>
+>   ```text
+>   System.NotSupportedException: SQLite does not support expressions of type 'DateTimeOffset'
+>   in ORDER BY clauses. Convert the values to a supported type, or use LINQ to Objects to order
+>   the results on the client side.
+>   ```
+>
+>   メッセージは「クライアント側で評価せよ」と促しますが、`Where` や `OrderBy` の中身をクライアント評価に切り替えることは EF Core では既定で禁止されており、上のように例外になります。**エンティティで `DateTimeOffset` を使っている場合、その列に対する絞り込みや並べ替えは SQLite ではテストできません。**
 > - `rowversion` による同時実行トークンは SQL Server 固有の機能で、SQLite では自動的に更新されません。
 > - `decimal` の精度、`ALTER TABLE` の対応範囲、スキーマ（名前空間）の扱いが異なります。
 > - `dotnet ef migrations script --idempotent` は SQLite ではサポートされません。実行すると `Generating idempotent scripts for migrations is not currently supported for SQLite.` というエラーで失敗します（実測で確認）。
