@@ -529,6 +529,18 @@ sequenceDiagram
 >
 > つまり **SQLite を使った単体テストでは問題が表面化せず、本番の SQL Server で初めて落ちる**、ということが起こり得ます。「テストが通ったから安全」と考えず、1 つの `DbContext` インスタンスを複数の処理で共有しない設計を徹底してください。
 
+> [!WARNING]
+> 上の例外を出しているのは EF Core の **同時実行検出 (concurrency detection)** という仕組みで、`DbContextOptionsBuilder.EnableThreadSafetyChecks(false)` で無効にできます。公式ドキュメントは「わずかな性能向上が得られるが、`DbContext` インスタンスが同時に使われた場合の **動作は未定義になり、プログラムは予測できない形で失敗する可能性がある**」と説明し、「性能向上が相当なものであることを確認し、アプリケーションを同時実行のバグについて十分にテストしたうえでのみ無効化すること」と釘を刺しています。
+>
+> 実際に SQL Server 2022 に対して、同じ `DbContext` インスタンスから 2 本のクエリを `Task.Run` で並行実行する処理を、検出の有無を変えて 3 回ずつ試したところ、次の結果になりました（実測で確認）。
+>
+> | 同時実行検出 | 発生した例外 |
+> | --- | --- |
+> | 有効（既定） | 3 回とも `InvalidOperationException: A second operation was started on this context instance before a previous operation completed.`（原因と対処ページへのリンク付き） |
+> | 無効 | 1 回目: `InvalidOperationException`（接続が閉じられていない旨）<br>2 回目: `InvalidOperationException`（同上、接続状態の表示だけが異なる）<br>3 回目: `InvalidCastException: Unable to cast object of type 'Microsoft.Data.ProviderBase.DbConnectionClosedConnecting' to type 'Microsoft.Data.SqlClient.SqlInternalConnectionTds'.` |
+>
+> 検出を無効にすると、**実行のたびに違う低レベルの例外が出て、原因にたどり着けなくなります。** 公式が言う「予測できない形で失敗する」とはこのことです。この設定は原則として既定のままにしてください。
+
 Singleton サービスやバックグラウンドサービスから `DbContext` を使う場合は、`IServiceScopeFactory` でスコープを作るか、`IDbContextFactory<T>` を使います。
 
 ```csharp
@@ -800,6 +812,38 @@ modelBuilder.Entity<Author>()
 
 > [!NOTE]
 > EF Core 10 では複合型のサポートが大きく拡張され、`struct` や `record struct` を複合型として使えるようになったほか、JSON 列へのマッピングやテーブル分割にも対応しました。所有型と複合型はどちらも「エンティティの一部を別の型に切り出す」ものですが、所有型は内部的に独立したエンティティ型として扱われる（隠しキーを持つ）のに対し、複合型は識別子を持たない純粋な値です。**公式ドキュメントは、値としてのセマンティクスが欲しい用途ではすでに所有型を使っている場合も複合型への移行を推奨しています。**
+
+> [!WARNING]
+> EF Core 9 以前から複合型を使っている場合、**EF Core 10 へのアップグレードで列名が変わることがあります。** 公式の破壊的変更として次の 2 点が挙げられています。
+>
+> **1. ネストした複合型の列名がフルパスになる**
+>
+> `Entity.Complex.NestedComplex.Property` は、EF Core 9 までは直近の型名だけを使って `NestedComplex_Property` にマッピングされていましたが、EF Core 10 では途中の複合型もすべて含めた `Complex_NestedComplex_Property` になります。実際に SQL Server 2022 に対して生成された DDL は次のとおりでした（実測で確認）。
+>
+> ```sql
+> CREATE TABLE [Holders] (
+>     [Id] int NOT NULL IDENTITY,
+>     [Complex_Own] nvarchar(max) NOT NULL,
+>     [Complex_NestedComplex_Value] nvarchar(max) NOT NULL,
+>     CONSTRAINT [PK_Holders] PRIMARY KEY ([Id])
+> );
+> ```
+>
+> **2. 複合型の列名が一意化される**
+>
+> 別々の複合型のプロパティが同じ列名になる場合、EF Core 9 までは何も言わずに同じ列を共有していました。EF Core 10 では末尾に数字を付けて一意化します。**意図せず同じ列にマッピングされてデータが壊れるのを防ぐため**の変更です。
+>
+> どちらも、旧来の列名を維持したい場合は `Property(...).HasColumnName(...)` で明示します。逆に「複数のプロパティで意図的に同じ列を共有したい」場合も同じ方法で指定でき、実測では両方の複合型に `HasColumnName("Street")` を指定すると `Street` 列 1 本だけが生成されました。
+>
+> ```csharp
+> modelBuilder.Entity<Customer>(b =>
+> {
+>     b.ComplexProperty(c => c.ShippingAddress, p => p.Property(a => a.Street).HasColumnName("Street"));
+>     b.ComplexProperty(c => c.BillingAddress, p => p.Property(a => a.Street).HasColumnName("Street"));
+> });
+> ```
+>
+> アップグレード時は `dotnet ef migrations add` で生成されるマイグレーションに `RenameColumn` が含まれていないかを必ず確認してください。
 
 #### EF Core 10 の JSON 列は `json` 型になる（Azure SQL の破壊的変更）
 
@@ -2337,6 +2381,52 @@ after update: CreatedAt=2026-09-01T08:23:51.0828970 UpdatedAt=2026-09-01T08:23:5
 >
 > 公式ドキュメントも「シングルトンインターセプターは常に同じインスタンスを再利用し、コンテキストを構成するたびに新しいインスタンスを作ってはならない」と明記しています。`static readonly` なフィールドか、DI コンテナーに Singleton として登録したインスタンスを渡してください。
 
+#### 読み込み時に処理を挟む（`IMaterializationInterceptor`）
+
+`ISaveChangesInterceptor` が「書き込み」に割り込むのに対し、`IMaterializationInterceptor` は **クエリ結果からエンティティが組み立てられる過程** に割り込みます。データベースの列にマッピングしていないプロパティを、読み込み時に初期化するといった用途に使えます。
+
+```csharp
+public sealed class LoadStampInterceptor : IMaterializationInterceptor
+{
+    public object InitializedInstance(MaterializationInterceptionData data, object instance)
+    {
+        if (instance is Blog blog)
+        {
+            blog.LoadedAt = DateTime.UtcNow;
+        }
+
+        return instance;
+    }
+}
+```
+
+このインターフェイスには次の 4 つのメソッドがあり、公式ドキュメントはそれぞれの呼び出しタイミングを次のように定義しています。
+
+| メソッド | 呼び出しタイミング |
+| --- | --- |
+| `CreatingInstance` | エンティティのインスタンスを生成する直前（コンストラクターの呼び出し前） |
+| `CreatedInstance` | インスタンスの生成直後（コンストラクターで設定されなかったプロパティ値が設定される前） |
+| `InitializingInstance` | プロパティ値を設定する直前（コンストラクターが設定した値はすでに入っている） |
+| `InitializedInstance` | プロパティ値の設定が完了した直後 |
+
+SQL Server 2022 から 2 件を読み込んで実際に呼び出し順序を出力したところ、エンティティ 1 件ごとにこの順で呼ばれ、`Ignore` でマッピングから外した `LoadedAt` に値が入ることを確認しました（実測で確認）。
+
+```text
+CreatingInstance
+CreatedInstance
+InitializingInstance
+InitializedInstance: Blog
+CreatingInstance
+CreatedInstance
+InitializingInstance
+InitializedInstance: Blog
+  b1 LoadedAt=2026-09-01T08:42:58.3176110Z
+  b2 LoadedAt=2026-09-01T08:42:58.3226340Z
+```
+
+> [!WARNING]
+> `IMaterializationInterceptor` は **読み込んだエンティティ 1 件ごとに 4 回呼ばれます。** 数万件を読み込むクエリでは呼び出し回数がそのまま増えるため、ここに重い処理を書かないでください。
+
 > [!NOTE]
 > **Hibernate** には同様の目的で `org.hibernate.Interceptor` があり、`onSave` などで永続化操作に割り込めます。また **Jakarta Persistence** の仕様には `@PrePersist` / `@PreUpdate` などの **ライフサイクルコールバック** が定義されており、エンティティ自身またはリスナークラスのメソッドとして作成日時・更新日時の設定を行えます。EF Core のインターセプターは、これらと違って `SaveChanges` だけでなく **コマンド・接続・トランザクション・マテリアライゼーション・LINQ 式ツリー** といった層ごとに用意されている点が特徴です。
 
@@ -2648,11 +2738,21 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 
 ### ログとセキュリティ
 
-EF Core は、既定ではパラメーター値をログに出力しません。ログには `@p0` のようなプレースホルダーだけが残ります。
+EF Core は、既定ではパラメーター値をログに出力しません。ログに残るのはパラメーター名だけで、値は `?` に置き換えられます。実際に SQL Server 2022 に対して `city` というローカル変数で絞り込んだところ、次のように出力されました（実測で確認）。
 
 ```text
-SELECT [b].[Id], [b].[Name] FROM [Blogs] AS [b] WHERE [b].[Name] = @p0
+[Parameters=[@city='?' (Size = 4000)], CommandType='Text', CommandTimeout='30']
+SELECT [b].[Id], [b].[City], [b].[Name]
+FROM [Blogs] AS [b]
+WHERE [b].[City] = @city
 ```
+
+> [!NOTE]
+> **EF Core 10 でパラメーター名の付け方が変わりました。** EF Core 9 までは `__` プレフィックスと連番を付けた `@__city_0` のような名前でしたが、EF Core 10 では **元になった変数やメンバーの名前がそのまま使われ**、重複するときだけ末尾に数字が付きます。生成される SQL が読みやすくなり、ログやクエリプランをコードと対応付けやすくなったという理由です。
+>
+> ほとんどのアプリケーションではこの変更を意識する必要はありませんが、**生成された SQL の文字列を比較するスナップショットテストや、`DbCommand.CommandText` を解析するインターセプター・ロガーは修正が必要**です。
+>
+> なお、この簡素化が適用されるのは LINQ クエリのパラメーターです。`SaveChanges` が発行する `INSERT` / `UPDATE` は実測でも従来どおり `@p0`、`@p1` という名前でした。
 
 ただし EF Core は、状況によってはパラメーターを送らずに値を SQL に **インライン化** することがあります。`EF.Constant()` を明示的に使った場合が代表例です。EF Core 9 まではインライン化された値がログにそのまま出力されていましたが、EF Core 10 以降は既定で `?` に置き換えられるようになりました。
 
@@ -3088,8 +3188,39 @@ public sealed class SqliteContextFactory : IDisposable
 > - `rowversion` による同時実行トークンは SQL Server 固有の機能で、SQLite では自動的に更新されません。
 > - `decimal` の精度、`ALTER TABLE` の対応範囲、スキーマ（名前空間）の扱いが異なります。
 > - `dotnet ef migrations script --idempotent` は SQLite ではサポートされません。実行すると `Generating idempotent scripts for migrations is not currently supported for SQLite.` というエラーで失敗します（実測で確認）。
+> - 主キーの値の生成方法が異なります。SQL Server では `IDENTITY` 列になりますが、SQLite では規約により `AUTOINCREMENT` が付きます。
 >
 > SQL Server 固有の機能を使っている箇所は、実データベースに対する統合テストで確認してください。
+
+> [!TIP]
+> **SQLite の `AUTOINCREMENT` は EF Core 10 から設定で切り替えられるようになりました。** SQLite プロバイダーは規約により、複合キーの一部でもなく外部キーも持たない整数の主キーに `AUTOINCREMENT` を付けます。公式ドキュメントは、`AUTOINCREMENT` が SQLite の既定のキー生成方式である [ROWID](https://sqlite.org/lang_createtable.html#rowid) に比べて **CPU・メモリ・ディスク容量・ディスク I/O のオーバーヘッドを追加する** と説明しています。その代わり `ROWID` は削除された行の値を再利用するため、値の再利用が問題にならない場合にだけ無効化を検討してください。
+>
+> 実際に生成される DDL は次のとおりです（実測で確認）。
+>
+> ```sql
+> -- 既定（規約）
+> CREATE TABLE "Blogs" (
+>     "Id" INTEGER NOT NULL CONSTRAINT "PK_Blogs" PRIMARY KEY AUTOINCREMENT,
+>     "Name" TEXT NOT NULL
+> );
+>
+> -- SetValueGenerationStrategy(SqliteValueGenerationStrategy.None) または ValueGeneratedNever()
+> CREATE TABLE "Blogs" (
+>     "Id" INTEGER NOT NULL CONSTRAINT "PK_Blogs" PRIMARY KEY,
+>     "Name" TEXT NOT NULL
+> );
+> ```
+>
+> ```csharp
+> protected override void OnModelCreating(ModelBuilder modelBuilder)
+> {
+>     modelBuilder.Entity<Blog>()
+>         .Property(b => b.Id)
+>         .Metadata.SetValueGenerationStrategy(SqliteValueGenerationStrategy.None);
+> }
+> ```
+>
+> 逆に、値変換を挟んでいるなどの理由で規約が働かない場合は、`UseAutoincrement()` で明示的に有効化できます。なお `ValueGeneratedNever()` を使う場合は、保存前にアプリケーション側が値を用意する必要があります。この指定はデータベース側の値生成までは止めないため、EF Core を経由しない書き込みでは依然として値が生成される点にも注意してください。
 
 > [!WARNING]
 > **EF Core 10（Microsoft.Data.Sqlite 10.0）では、SQLite のタイムゾーンの扱いに重大度「高」の破壊的変更が入りました。** オフセットを持たないテキストのタイムスタンプ（例: `2026-08-31 12:00:00`）を `DateTimeOffset` として読み出したとき、以前は **ローカルタイムゾーン** の値とみなしていましたが、EF Core 10 からは **UTC** とみなすようになりました。
