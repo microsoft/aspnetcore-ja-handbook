@@ -1161,7 +1161,7 @@ builder.Services.AddDbContext<BloggingContext>(options =>
            }));
 ```
 
-> [!WARNING]
+> [!IMPORTANT]
 > `UseSeeding` と `UseAsyncSeeding` は **両方を登録してください**。実際に SQLite で試したところ、`EnsureCreated()`（同期）では `UseSeeding` だけが呼ばれ、`EnsureCreatedAsync()`（非同期）では `UseAsyncSeeding` だけが呼ばれました。片方しか登録していないと、呼び出し側の API によってシードが実行されません。
 >
 > また、これらのデリゲートは毎回の実行で呼ばれる可能性があるため、上記のように **既に存在するかを確認してから追加** してください。この点は `HasData` と異なり、EF Core が重複を防いでくれません。
@@ -1262,7 +1262,7 @@ if (onlyRecent)
 var result = await query.ToListAsync(cancellationToken);
 ```
 
-> [!WARNING]
+> [!IMPORTANT]
 > `ToListAsync()` を呼んだ後に `Where` を書くと、それは LINQ to Objects となり、**データベースからすべての行を取得してからメモリ上で絞り込む** ことになります。絞り込みは必ず実体化の前に行ってください。
 
 ### 変更追跡と AsNoTracking
@@ -1365,7 +1365,7 @@ foreach (var blog in blogs)
 
 ブログが 100 件あれば 101 回のデータベースアクセスが発生します。ネットワーク遅延が 1 ミリ秒でも、これだけで 100 ミリ秒が失われます。
 
-> [!WARNING]
+> [!TIP]
 > EF Core の公式パフォーマンスガイダンスは、遅延読み込みが N+1 問題を非常に起こしやすいことを指摘し、Web アプリケーションでは遅延読み込みを避けることを推奨しています。必要な関連データは `Include` で明示的に読み込むか、後述する投影で必要な列だけを取得してください。
 
 ```csharp
@@ -1434,7 +1434,7 @@ var summaries = await context.Blogs
 
 生成される SQL は必要な列だけを SELECT し、`Posts` はサブクエリでカウントされます。エンティティ型ではないため変更追跡も行われません。
 
-> [!TIP]
+> [!WARNING]
 > API のレスポンスは、エンティティをそのまま返すのではなく DTO (Data Transfer Object) に投影するのが安全です。エンティティを直接返すと、内部の列や循環参照するナビゲーションプロパティが意図せず公開されてしまいます。
 
 ### ページング
@@ -1951,6 +1951,11 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 ```
 
 > [!WARNING]
+> 再試行はあらゆる接続エラーで働くわけではありません。EF Core の SQL Server プロバイダーは、SQL Server が返す**特定のエラー番号**（一時的エラーとして既知のもの）だけを再試行の対象にします。実際にコンテナーを再起動して接続を切断したところ、`EnableRetryOnFailure` を有効にしていても「ログイン前のハンドシェイク中にエラーが発生しました」という `SqlException` が再試行されずに即座に投げられました。このときメトリクス `microsoft.entityframeworkcore.execution_strategy_operation_failures` も 0 のままで、再試行戦略がそもそも起動していないことが確認できます。
+>
+> 自社環境で固有のエラー番号を再試行対象に加えたい場合は、`errorNumbersToAdd` にエラー番号を渡してください。「再試行を有効にしたから接続断はすべて吸収される」と考えるのは危険で、アプリケーション側での例外処理は依然として必要です。
+
+> [!WARNING]
 > 再試行を有効にした状態で `BeginTransactionAsync` による明示的トランザクションを使うと、`InvalidOperationException` が発生します。再試行戦略は個々の操作を再実行するため、トランザクション全体をやり直す必要があることを EF Core が判断できないためです。
 >
 > 注意したいのは **例外が出るタイミング** です。`BeginTransactionAsync` の時点では何も起きず、その後の `SaveChangesAsync` で初めて次の例外になります（実測で確認）。
@@ -1982,7 +1987,7 @@ await strategy.ExecuteAsync(async () =>
 });
 ```
 
-> [!IMPORTANT]
+> [!WARNING]
 > 再試行によってブロック全体が再実行されるため、その中の処理は **冪等 (idempotent)** である必要があります。ブロック内で外部 API の呼び出しやメール送信などの副作用を伴う処理を行わないでください。
 
 ---
@@ -2074,7 +2079,7 @@ builder.Services.AddDbContextPool<BloggingContext>(
     poolSize: 1024);
 ```
 
-`poolSize` は保持するインスタンスの最大数で、既定は 1024 です。プールが空の場合は新しいインスタンスが生成されるため、上限を超えても動作は継続します。
+`poolSize` は保持するインスタンスの最大数で、既定は 1024 です。プールが空の場合は新しいインスタンスが生成されるため、上限を超えても動作は継続します。実際に `poolSize: 2` を指定して 5 つのスコープを同時に保持したところ、3 つ目以降も例外にならず、待機によるブロックも発生しませんでした。プールの上限は「同時実行数の上限」ではなく「使い回すために保持しておく数の上限」だと理解してください。
 
 > [!WARNING]
 > プールされた `DbContext` インスタンスは再利用されるため、実質的に Singleton のように扱われます。`OnConfiguring` は最初の 1 回しか呼ばれず、リクエストごとに変化する状態（テナント ID や現在のユーザーなど）をコンストラクターやフィールドに保持する設計とは相性が悪くなります。そのような場合は、`AddDbContext` を使うか、状態をリセットするフックを実装してください。
@@ -2146,7 +2151,7 @@ await context.Blogs
 | `Parameter` | JSON 配列パラメーター 1 つ。EF Core 8・9 の既定 |
 | `Constant` | 値を SQL に直接埋め込む。EF Core 7 までの既定 |
 
-> [!WARNING]
+> [!TIP]
 > `ParameterTranslationMode.Constant` と `EF.Constant()` は値を SQL に埋め込むため、要素数の組み合わせだけ異なる SQL が生成されます。**データベース側のプランキャッシュ** を圧迫するので、値の種類が少ないと分かっている場合に限って使ってください。なお、EF Core 自身のクエリキャッシュ（`compiled_query_cache_hits` / `misses`）は LINQ 式の形でキーが決まるため、`EF.Constant()` を使ってもヒット率は下がりません。実測でも、通常のパラメーター化と `EF.Constant()` はどちらも 98% で差がありませんでした。
 
 ### コンパイル済みクエリ
@@ -2192,7 +2197,7 @@ builder.Services.AddDbContext<BloggingContext>(options =>
            .UseModel(BloggingContextModel.Instance));
 ```
 
-> [!WARNING]
+> [!IMPORTANT]
 > コンパイル済みモデルにはいくつかの制限があります。グローバルクエリフィルター、遅延読み込みプロキシ、変更追跡プロキシ、カスタムの `IModelCacheKeyFactory` はサポートされません。また、モデルを変更するたびに再生成が必要で、再生成を忘れると実行時に古いモデルが使われます。エンティティが数十個程度のアプリケーションでは効果が小さいため、起動時間が実測で問題になっている場合にのみ検討してください。
 >
 > グローバルクエリフィルターを設定したモデルに対して `dotnet ef dbcontext optimize` を実行すると、実際に次のエラーで失敗することを確認しています。
@@ -2221,7 +2226,16 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 > [!IMPORTANT]
 > ストリーミング中は接続とデータリーダーが開いたままになります。ループの中で同じ `DbContext` に対して別のクエリを実行しないでください。
 >
-> また、`EnableRetryOnFailure` を有効にしている場合、公式ドキュメントは「再試行を有効にすると EF が結果セットを内部でバッファリングするため、大量の行を返すクエリではメモリ使用量が大きく増える可能性がある」と明記しています（[接続の回復性](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-resiliency)）。つまり、再試行と併用するとストリーミングによるメモリ削減効果は得られません。この挙動は内部実装によるものでアプリケーション側から直接観測することが難しいため、本書では実測ではなく公式ドキュメントの記述として紹介しています。
+> また、`EnableRetryOnFailure` を有効にしている場合、公式ドキュメントは「再試行を有効にすると EF が結果セットを内部でバッファリングするため、大量の行を返すクエリではメモリ使用量が大きく増える可能性がある」と明記しています（[接続の回復性](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-resiliency)）。つまり、再試行と併用するとストリーミングによるメモリ削減効果は得られません。
+>
+> これは実測でも明確に確認できます。SQL Server 上の 100,000 行（1 行あたり約 250 バイト）を `AsAsyncEnumerable` で列挙したときのピークメモリ増加量は次のとおりでした。
+>
+> | `EnableRetryOnFailure` | ピークメモリ増加量 |
+> | --- | --- |
+> | 無効 | +7 MB |
+> | 有効 | +97 MB |
+>
+> 再試行を有効にしただけで約 14 倍に膨れ上がっています。大量の行を扱うクエリでは、そのクエリだけ再試行を無効にした `DbContext` を用意するか、`Skip`／`Take` によるページングで 1 回あたりの取得件数を抑えてください。
 
 ### 非同期 API を使う
 
@@ -2246,7 +2260,7 @@ SELECT [b].[Id], [b].[Name] FROM [Blogs] AS [b] WHERE [b].[Name] = @p0
 ... WHERE [b].[Name] = ?
 ```
 
-> [!IMPORTANT]
+> [!WARNING]
 > このリダクションの対象は **本来パラメーターになるはずの値がインライン化されたもの** に限られます。`Where(b => b.Name == "Contoso")` のように LINQ 式へ直接書いたリテラルは、クエリごとに変化しない真の定数として扱われるため **リダクションされず、ログにそのまま出力されます**（EF Core 10.0.11 で実測）。ログに出したくない値をクエリへ直接埋め込まないでください。
 
 デバッグのために実際のパラメーター値を見たい場合は `EnableSensitiveDataLogging()` を有効にします。
@@ -2734,13 +2748,13 @@ public class FakeBlogRepository : IBlogRepository
 }
 ```
 
-> [!WARNING]
+> [!IMPORTANT]
 > `DbSet<T>` や `IQueryable<T>` を直接モックすることは避けてください。LINQ to Objects と LINQ to Entities では、`string.Compare` の挙動、`GroupBy` の変換可否、NULL の比較などの挙動が異なり、モックでは成功したクエリが実データベースで失敗することがあります。リポジトリのメソッドは `IQueryable` ではなく `IEnumerable` や `IAsyncEnumerable`、あるいは具体的なコレクションを返すようにします。
 
 > [!NOTE]
 > リポジトリを挟むと単体テストは容易になりますが、EF Core の `DbSet` はすでにリポジトリパターンの実装であり、層をもう 1 つ追加することになります。プロジェクトの規模とテスト方針を踏まえ、「データベースに対する統合テストで十分か」「ロジックの単体テストを高速に回したいか」を判断してください。
 
-> [!TIP]
+> [!WARNING]
 > [第6章](../06-dependency-injection/index.md) では DI の説明としてリポジトリを取り上げ、各メソッドの中で `SaveChangesAsync` を呼ぶ形を示しました。実際のデータアクセス層では、上の例のように **`SaveChangesAsync` をリポジトリの外（あるいは専用のメソッド）に切り出すことを推奨します。** 1 回の処理で複数のリポジトリを更新したいとき、メソッドごとに保存してしまうと、それぞれが別のトランザクションになり、途中で失敗したときに一部だけ反映された状態が残るからです。トランザクションの境界は、リポジトリではなく呼び出し側（アプリケーション層）が決めるべきものです。
 
 ### WebApplicationFactory を使った統合テスト
