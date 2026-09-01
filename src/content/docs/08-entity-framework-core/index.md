@@ -433,9 +433,12 @@ public class BlogsController(BloggingContext context) : ControllerBase
 EF Core 10 からは、接続文字列に `Application Name` が指定されていない場合、EF Core が自身と SqlClient のバージョン情報を含む値を **自動的に追加** します。実際に SQL Server プロバイダーで確認すると、次のように書き換えられます。
 
 ```text
-渡した接続文字列   : Server=localhost;Database=Test;Trusted_Connection=True;TrustServerCertificate=True
-EF Core が使う文字列: Data Source=localhost;Initial Catalog=Test;Integrated Security=True;
-                     Trust Server Certificate=True;Application Name="EFCore/10.0.11 (macOS 26.6.2 Arm64)"
+[渡した接続文字列]
+Server=localhost;Database=Test;Trusted_Connection=True;TrustServerCertificate=True
+
+[EF Core が使う文字列]
+Data Source=localhost;Initial Catalog=Test;Integrated Security=True;
+Trust Server Certificate=True;Application Name="EFCore/10.0.11 (macOS 26.6.2 Arm64)"
 ```
 
 ほとんどの場合は影響しませんが、**同じデータベースに EF Core と Dapper や ADO.NET などを併用している場合は注意が必要です。** SqlClient は接続文字列が異なると別の接続プールを使うため、両者が別々のプールに分かれます。この状態で `TransactionScope` を使うと、SqlClient が 2 つの異なるリソースとみなして、これまで不要だった **分散トランザクションへの昇格** を試みます。
@@ -449,7 +452,7 @@ EF Core が使う文字列: Data Source=localhost;Initial Catalog=Test;Integrate
 > TransactionManager.ImplicitDistributedTransactions to true.
 > ```
 >
-> `TransactionManager.ImplicitDistributedTransactions = true`（Windows 専用の API です）を設定したうえで同じコードを実行すると、2 本目の `Open()` の直後に `Transaction.Current.TransactionInformation.DistributedIdentifier` が `Guid.Empty` から実際の GUID に変わり、MSDTC への昇格が起きたことを確認できました。Linux や macOS では MSDTC 自体が存在しないため、この設定を有効にしても昇格はできません。
+> `TransactionManager.ImplicitDistributedTransactions = true`（Windows 専用の API です）を設定したうえで同じコードを実行すると、2 本目の `Open()` の直後に `Transaction.Current.TransactionInformation.DistributedIdentifier` が `Guid.Empty` から実際の GUID に変わり、MSDTC (Microsoft Distributed Transaction Coordinator) への昇格が起きたことを確認できました。Linux や macOS では MSDTC 自体が存在しないため、この設定を有効にしても昇格はできません。
 
 同じ環境で条件を変えて測ったところ、昇格するかどうかは次のように分かれました。
 
@@ -971,7 +974,7 @@ public override async Task<int> SaveChangesAsync(CancellationToken cancellationT
 > 親 (`Blog`) がフィルターで除外されているのに子 (`Post`) が除外されないと、`Post` を起点にしたクエリで親が読み込めず、予期しない結果になります。ナビゲーションを省略可能にするか、関係する両方のエンティティに対応するフィルターを定義してください。
 
 > [!NOTE]
-> **Django** の `Manager` によるデフォルトクエリセットの絞り込みや、**Laravel** の Eloquent におけるグローバルスコープが同種の機能に相当します。**Hibernate** では、常に適用される静的な制約が `@SQLRestriction`（`@Where` は Hibernate 6.3 で非推奨になりました）、セッション単位で有効・無効を切り替えられる動的なフィルターが `@FilterDef` / `@Filter` と、2 つの仕組みに分かれています。EF Core 10 の名前付きフィルターは、後者の `@FilterDef` / `@Filter` に近い粒度の制御を提供します。
+> **Django** の `Manager` によるデフォルトクエリセットの絞り込みや、**Laravel** の Eloquent におけるグローバルスコープが同種の機能に相当します。**Hibernate** では、常に適用される静的な制約が `@SQLRestriction`（`@Where` は Hibernate 6.3 で非推奨になり、Hibernate 7 で削除されました）、セッション単位で有効・無効を切り替えられる動的なフィルターが `@FilterDef` / `@Filter` と、2 つの仕組みに分かれています。EF Core 10 の名前付きフィルターは、後者の `@FilterDef` / `@Filter` に近い粒度の制御を提供します。
 
 ---
 
@@ -2352,7 +2355,7 @@ public class AuditInterceptor : SaveChangesInterceptor
     }
 }
 
-public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
+public class BloggingContext(DbContextOptions<BloggingContext> options) : DbContext(options)
 {
     // インターセプターは多くの場合ステートレスなので、
     // 1 つのインスタンスをすべての DbContext で共有できます
@@ -2428,7 +2431,7 @@ InitializedInstance: Blog
 > `IMaterializationInterceptor` は **読み込んだエンティティ 1 件ごとに 4 回呼ばれます。** 数万件を読み込むクエリでは呼び出し回数がそのまま増えるため、ここに重い処理を書かないでください。
 
 > [!NOTE]
-> **Hibernate** には同様の目的で `org.hibernate.Interceptor` があり、`onSave` などで永続化操作に割り込めます。また **Jakarta Persistence** の仕様には `@PrePersist` / `@PreUpdate` などの **ライフサイクルコールバック** が定義されており、エンティティ自身またはリスナークラスのメソッドとして作成日時・更新日時の設定を行えます。EF Core のインターセプターは、これらと違って `SaveChanges` だけでなく **コマンド・接続・トランザクション・マテリアライゼーション・LINQ 式ツリー** といった層ごとに用意されている点が特徴です。
+> **Hibernate** には同様の目的で `org.hibernate.Interceptor` があり、`onPersist` などで永続化操作に割り込めます（Hibernate 6 で `onSave` は非推奨になり、`onPersist` に置き換えられました）。また **Jakarta Persistence** の仕様には `@PrePersist` / `@PreUpdate` などの **ライフサイクルコールバック** が定義されており、エンティティ自身またはリスナークラスのメソッドとして作成日時・更新日時の設定を行えます。EF Core のインターセプターは、これらと違って `SaveChanges` だけでなく **コマンド・接続・トランザクション・マテリアライゼーション・LINQ 式ツリー** といった層ごとに用意されている点が特徴です。
 
 ---
 
@@ -2566,10 +2569,10 @@ builder.Services.AddDbContextPool<BloggingContext>(
 
 EF Core は接続プーリングを自前では実装せず、下位のドライバーに任せます。そして **EF Core は操作の直前に接続を開き、直後に閉じてプールへ返します。** 必要以上に接続をプールの外に出しておかないためです。`IDbConnectionInterceptor` で開閉の回数を数えたところ、同じ `DbContext` インスタンスでクエリを 3 回実行すると 3 回開閉していました。
 
-```text
-同一 DbContext で 3 回クエリ                : opened=3 closed=3
-明示的に OpenConnectionAsync してから 3 回  : opened=1 closed=1
-```
+| 操作 | 接続の開閉回数 |
+| --- | --- |
+| 同一 `DbContext` インスタンスでクエリを 3 回実行 | opened=3 closed=3 |
+| `OpenConnectionAsync` で明示的に開いてからクエリを 3 回実行 | opened=1 closed=1 |
 
 `Database.OpenConnectionAsync()` で明示的に開いた場合は、`CloseConnectionAsync()` を呼ぶまで接続が保持されます。ここで注意が必要なのは、**EF Core がリセットするのは `DbContext` とその関連サービスの内部状態だけで、下位のドライバーの状態は元に戻さない** 点です。手動で `DbConnection` を開いたり ADO.NET の状態を操作したりした場合、インスタンスをプールに返す前に元へ戻す責任は利用者側にあります。閉じ忘れると、無関係なリクエストへ状態が漏れる可能性があると公式ドキュメントは警告しています。
 
