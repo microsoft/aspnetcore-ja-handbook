@@ -55,6 +55,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [一括更新・一括削除](#一括更新一括削除)
    - [楽観的同時実行制御](#楽観的同時実行制御)
    - [接続の回復性とトランザクションの併用](#接続の回復性とトランザクションの併用)
+   - [デッドロックへの対処](#デッドロックへの対処)
 6. [パフォーマンス最適化](#6-パフォーマンス最適化)
    - [まず計測する](#まず計測する)
    - [インデックスを正しく張る](#インデックスを正しく張る)
@@ -1989,6 +1990,71 @@ await strategy.ExecuteAsync(async () =>
 
 > [!WARNING]
 > 再試行によってブロック全体が再実行されるため、その中の処理は **冪等 (idempotent)** である必要があります。ブロック内で外部 API の呼び出しやメール送信などの副作用を伴う処理を行わないでください。
+
+### デッドロックへの対処
+
+複数のトランザクションが互いの保持するロックを待ち合う状態を **デッドロック (deadlock)** と呼びます。SQL Server はデッドロックを検出すると、片方を強制的に中止して **デッドロックの犠牲者 (deadlock victim)** に選び、もう片方を進めます。
+
+```mermaid
+sequenceDiagram
+    participant T1 as トランザクション 1
+    participant R1 as 行 A
+    participant R2 as 行 B
+    participant T2 as トランザクション 2
+    T1->>R1: UPDATE 行 A（ロック取得）
+    T2->>R2: UPDATE 行 B（ロック取得）
+    T1->>R2: UPDATE 行 B（T2 のロック待ち）
+    T2->>R1: UPDATE 行 A（T1 のロック待ち）
+    Note over T1,T2: 相互に待ち合い → デッドロック
+    Note over T2: SQL Server が犠牲者に選び中止（エラー 1205）
+```
+
+犠牲者になった側では `SqlException` が発生します。SQL Server 2022 上で、行 A → 行 B の順に更新するトランザクションと、行 B → 行 A の順に更新するトランザクションを同時に実行したところ、次の例外が発生しました。
+
+```text
+SqlException Number=1205
+Transaction (Process ID 65) was deadlocked on lock resources with another process
+and has been chosen as the deadlock victim. Rerun the transaction.
+```
+
+メッセージの末尾が示すとおり、デッドロックは **再実行すれば成功する** 種類のエラーです。そして SQL Server プロバイダーはエラー番号 1205 を一時的エラーとして扱うため、`EnableRetryOnFailure` と `CreateExecutionStrategy()` を組み合わせれば自動的に再試行されます。同じ 2 つのトランザクションを実行戦略で包んで実行したところ、犠牲者になった側も再試行されて **両方ともコミットに成功しました**。
+
+```csharp
+var strategy = context.Database.CreateExecutionStrategy();
+
+await strategy.ExecuteAsync(async () =>
+{
+    await using var transaction = await context.Database.BeginTransactionAsync();
+
+    // デッドロックの犠牲者になっても、このブロック全体が再実行される
+    await context.Database.ExecuteSqlAsync($"UPDATE Blogs SET Rating = Rating + 1 WHERE Id = {firstId}");
+    await context.Database.ExecuteSqlAsync($"UPDATE Blogs SET Rating = Rating + 1 WHERE Id = {secondId}");
+
+    await transaction.CommitAsync();
+});
+```
+
+ただし再試行は最後の手段です。設計でデッドロックそのものを減らすほうが確実です。
+
+| 対策 | 内容 |
+| --- | --- |
+| 更新順序を揃える | すべてのトランザクションで、同じ種類のリソースを同じ順序（例: 常に主キーの昇順）で更新する |
+| トランザクションを短くする | ロックを保持する時間を最小化する。トランザクション内で外部 API 呼び出しやユーザー入力待ちをしない |
+| 読み取りのロックを避ける | 参照だけの処理は `AsNoTracking` を使い、必要なら Read Committed Snapshot 分離を有効にする |
+| 必要な行だけロックする | 広い範囲を `UPDATE` せず、主キーで対象を絞る |
+
+> [!WARNING]
+> デッドロックの例外は、`SaveChangesAsync` の内側で起きても `DbUpdateException` に包まれるとは限りません。実測では `SaveChangesAsync` から **`SqlException` がそのまま投げられ**、`InnerException` は `null` でした。一方、`ExecuteSqlAsync` など生の SQL 実行でも同じく `SqlException` です。
+>
+> つまりデッドロックを確実に捕捉するには、`DbUpdateException` だけを `catch` するのでは不十分です。次のように、直接の `SqlException` と内側に包まれた `SqlException` の両方を見てください。
+>
+> ```csharp
+> static bool IsDeadlock(Exception ex) =>
+>     ex is SqlException { Number: 1205 }
+>     || ex.InnerException is SqlException { Number: 1205 };
+> ```
+>
+> なお `Microsoft.Data.SqlClient` の `SqlException` を使うには `using Microsoft.Data.SqlClient;` が必要です。
 
 ---
 
