@@ -1529,7 +1529,7 @@ SELECT * FROM Blogs WHERE Url = @p0
 ```
 
 > [!WARNING]
-> **パラメーター化は SQL インジェクションを防ぎますが、`LIKE` のワイルドカードは防ぎません。** 上の例の `pattern` を外部入力から受け取っている場合、利用者が `%` だけを渡すと `LIKE '%'` として解釈され、**テーブルの全行が返ります**。実際に試すと、`FromSql` でも `EF.Functions.Like` でも同じく全行が返りました。
+> **パラメーター化は SQL インジェクションを防ぎますが、`LIKE` のワイルドカードは防ぎません。** T-SQL の仕様では `%` は「0 文字以上の任意の文字列」に一致します。上の例の `pattern` を外部入力から受け取っている場合、利用者が `%` だけを渡すと `LIKE '%'` として解釈され、**テーブルの全行が返ります**。実際に試すと、`FromSql` でも `EF.Functions.Like` でも同じく全行が返りました。
 >
 > ```csharp
 > // pattern = "%" のとき、どちらも全行が返る
@@ -2009,7 +2009,7 @@ sequenceDiagram
     Note over T2: SQL Server が犠牲者に選び中止（エラー 1205）
 ```
 
-犠牲者になった側では `SqlException` が発生します。SQL Server 2022 上で、行 A → 行 B の順に更新するトランザクションと、行 B → 行 A の順に更新するトランザクションを同時に実行したところ、次の例外が発生しました。
+犠牲者になった側では、エラー番号 **1205** が返ります。SQL Server 2022 上で、行 A → 行 B の順に更新するトランザクションと、行 B → 行 A の順に更新するトランザクションを同時に実行したところ、次のメッセージが得られました。
 
 ```text
 SqlException Number=1205
@@ -2017,7 +2017,7 @@ Transaction (Process ID 65) was deadlocked on lock resources with another proces
 and has been chosen as the deadlock victim. Rerun the transaction.
 ```
 
-メッセージの末尾が示すとおり、デッドロックは **再実行すれば成功する** 種類のエラーです。そして SQL Server プロバイダーはエラー番号 1205 を一時的エラーとして扱うため、`EnableRetryOnFailure` と `CreateExecutionStrategy()` を組み合わせれば自動的に再試行されます。同じ 2 つのトランザクションを実行戦略で包んで実行したところ、犠牲者になった側も再試行されて **両方ともコミットに成功しました**。
+メッセージの末尾が示すとおり、デッドロックは **再実行すれば成功する** 種類のエラーです。そして SQL Server プロバイダーはエラー番号 1205 を一時的エラーとして扱うため（EF Core の `SqlServerTransientExceptionDetector` に `case 1205` が含まれています）、`EnableRetryOnFailure` と `CreateExecutionStrategy()` を組み合わせれば自動的に再試行されます。同じ 2 つのトランザクションを実行戦略で包んで実行したところ、犠牲者になった側も再試行されて **両方ともコミットに成功しました**。
 
 ```csharp
 var strategy = context.Database.CreateExecutionStrategy();
@@ -2044,17 +2044,43 @@ await strategy.ExecuteAsync(async () =>
 | 必要な行だけロックする | 広い範囲を `UPDATE` せず、主キーで対象を絞る |
 
 > [!WARNING]
-> デッドロックの例外は、`SaveChangesAsync` の内側で起きても `DbUpdateException` に包まれるとは限りません。実測では `SaveChangesAsync` から **`SqlException` がそのまま投げられ**、`InnerException` は `null` でした。一方、`ExecuteSqlAsync` など生の SQL 実行でも同じく `SqlException` です。
+> デッドロックの例外は、**どこで起きたかによって型が変わります。** 実測では次のように分かれました。
 >
-> つまりデッドロックを確実に捕捉するには、`DbUpdateException` だけを `catch` するのでは不十分です。次のように、直接の `SqlException` と内側に包まれた `SqlException` の両方を見てください。
+> | 発生箇所 | 投げられる例外 |
+> | --- | --- |
+> | クエリ（`ToListAsync` など）の実行中 | `SqlException`（`Number = 1205`）が直接 |
+> | `SaveChangesAsync` の実行中 | `InvalidOperationException` → `DbUpdateException` → `SqlException` の 3 層 |
 >
-> ```csharp
-> static bool IsDeadlock(Exception ex) =>
->     ex is SqlException { Number: 1205 }
->     || ex.InnerException is SqlException { Number: 1205 };
+> `SaveChangesAsync` 側で 3 層になるのは、EF Core が保存時のエラーを `DbUpdateException` で包み（`RelationalStrings.UpdateStoreException`）、さらに SQL Server プロバイダーが一時的エラーを検出して次のメッセージを付け加えるためです（`SqlServerStrings.TransientExceptionDetected`）。
+>
+> ```text
+> System.InvalidOperationException: An exception has been raised that is likely due to a
+> transient failure. Consider enabling transient error resiliency by adding
+> 'EnableRetryOnFailure' to the 'UseSqlServer' call.
+>  ---> Microsoft.EntityFrameworkCore.DbUpdateException: An error occurred while saving
+>       the entity changes. See the inner exception for details.
+>  ---> Microsoft.Data.SqlClient.SqlException: Transaction (Process ID 58) was deadlocked
+>       on lock resources with another process and has been chosen as the deadlock victim.
 > ```
 >
-> なお `Microsoft.Data.SqlClient` の `SqlException` を使うには `using Microsoft.Data.SqlClient;` が必要です。
+> したがって `catch (SqlException)` だけでも `catch (DbUpdateException)` だけでも取りこぼします。確実に判定するには、内側をたどって `Number` を調べてください。
+>
+> ```csharp
+> static bool IsDeadlock(Exception? ex)
+> {
+>     for (; ex is not null; ex = ex.InnerException)
+>     {
+>         if (ex is SqlException { Number: 1205 })
+>         {
+>             return true;
+>         }
+>     }
+>
+>     return false;
+> }
+> ```
+>
+> `SqlException` は `Microsoft.Data.SqlClient` 名前空間にあります。
 
 ---
 
@@ -2109,6 +2135,8 @@ Console.WriteLine(query.ToQueryString());
 
 > [!NOTE]
 > **`EF.Constant()` はこのキャッシュのヒット率を下げません。** EF Core のクエリキャッシュのキーは LINQ 式ツリーの形で決まり、値が SQL に埋め込まれるかどうかは関係しないためです。`EF.Constant()` が圧迫するのは EF Core 側ではなく **データベース側のプランキャッシュ** で、こちらは EF Core のメトリクスからは観測できません。
+>
+> ただしこれは EF Core 9 以降の挙動です。EF Core 8 の実装では `EF.Constant()` がクエリキャッシュより前の段階で定数ノードを埋め込んでいたため、値が変わるたびに EF Core 側でもキャッシュミスが発生していました。EF Core 9 でこの処理はパイプラインの後段へ移されています。
 >
 > 逆に、生の SQL を文字列連結で組み立てるとヒット率は 0% になります。SQL 文字列そのものがキャッシュキーの一部だからです。`compiled_query_cache_misses` が増え続けているなら、まず生 SQL の組み立て方と、条件を動的に付け外ししている箇所を疑ってください。
 
