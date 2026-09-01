@@ -60,6 +60,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [インターセプターによる横断的な処理](#インターセプターによる横断的な処理)
 6. [パフォーマンス最適化](#6-パフォーマンス最適化)
    - [まず計測する](#まず計測する)
+   - [クエリタグでログと LINQ を結びつける](#クエリタグでログと-linq-を結びつける)
    - [インデックスを正しく張る](#インデックスを正しく張る)
    - [DbContext プーリング](#dbcontext-プーリング)
    - [コレクションのパラメーター化と IN 句の翻訳](#コレクションのパラメーター化と-in-句の翻訳)
@@ -778,6 +779,49 @@ builder.Property(p => p.Status)
 ```
 
 これにより `Status` 列は `int` ではなく `"Draft"` のような文字列として保存され、SQL を直接見たときにも意味が分かるようになります。
+
+> [!WARNING]
+> **ミュータブルな型を値変換すると、変更が検知されずに失われます。** `List<string>` のようなコレクションを JSON に変換するケースがこれに当たります。EF Core は変更追跡のためにスナップショットを取りますが、`List<T>` は参照等価性を持ち、かつ内容を書き換えられるため、既定では「変更されていない」と判定されてしまいます。
+>
+> ここでは `Post` に、別テーブルにするほどではない検索キーワードの一覧を持たせる例で説明します。
+>
+> ```csharp
+> public class Post
+> {
+>     // ...既存のプロパティ...
+>     public List<string> Keywords { get; set; } = [];
+> }
+> ```
+>
+> ```csharp
+> // 危険: 比較子を指定していない
+> builder.Property(p => p.Keywords)
+>     .HasConversion(
+>         v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+>         v => JsonSerializer.Deserialize<List<string>>(v, (JsonSerializerOptions?)null)!);
+> ```
+>
+> この状態で `post.Keywords.Add("csharp")` を実行し `SaveChanges` を呼んでも、実測では次のようになりました。
+>
+> | 構成 | `Entry(post).State` | `SaveChanges` の戻り値 | 再読み込みした結果 |
+> | --- | --- | --- | --- |
+> | 比較子なし | `Unchanged` | `0` | 追加した要素が**消える** |
+> | 比較子あり | `Modified` | `1` | 追加した要素が保存される |
+>
+> 解決するには `HasConversion` の第 3 引数に `ValueComparer<T>`（`Microsoft.EntityFrameworkCore.ChangeTracking` 名前空間）を渡し、「等価判定」「ハッシュ計算」「スナップショット（複製）」の 3 つを指定します。
+>
+> ```csharp
+> builder.Property(p => p.Keywords)
+>     .HasConversion(
+>         v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+>         v => JsonSerializer.Deserialize<List<string>>(v, (JsonSerializerOptions?)null)!,
+>         new ValueComparer<List<string>>(
+>             (a, b) => a!.SequenceEqual(b!),                                    // 中身で比較する
+>             v => v.Aggregate(0, (acc, s) => HashCode.Combine(acc, s.GetHashCode())),
+>             v => v.ToList()));                                                 // 複製してスナップショットを取る
+> ```
+>
+> 公式ドキュメントは、そもそも**値変換には不変 (immutable) な型を使うことを推奨**しています。なお `HasConversion<string>()` のような列挙型から文字列への変換は、`string` も列挙型も不変なので比較子は不要です。
 
 エンティティの一部を別のテーブルや別の型として切り出したい場合は **所有型 (Owned Entity Type)** を使います。所有型は独自の主キーを持たず、常に所有側のエンティティを通じてのみアクセスされます。
 
@@ -2460,6 +2504,21 @@ builder.Services.AddDbContext<BloggingContext>(options =>
            .LogTo(Console.WriteLine, LogLevel.Information));
 ```
 
+> [!TIP]
+> ASP.NET Core では、この `LogTo` を書かなくてもログは出力されます。公式ドキュメントは「`AddDbContext` または `AddDbContextPool` を呼び出すと、EF Core は通常の ASP.NET のしくみで構成されたログ設定を自動的に使う」と説明しています。つまり `appsettings.json` の `Logging` セクションで `Microsoft.EntityFrameworkCore.Database.Command` のレベルを `Information` にすれば、実行された SQL が既定のロガーに流れます。
+>
+> ```json
+> {
+>   "Logging": {
+>     "LogLevel": {
+>       "Microsoft.EntityFrameworkCore.Database.Command": "Information"
+>     }
+>   }
+> }
+> ```
+>
+> `LogTo` は、コンソールアプリケーションのように DI を使わない場合や、一時的に手元で SQL を眺めたい場合に便利な**簡易ログ**の手段です。
+
 開発環境では、しきい値を超えたコマンドだけを警告として記録すると、遅いクエリを見つけやすくなります。実運用では Application Insights などの APM (Application Performance Monitoring) ツールでデータベース依存関係を追跡します。
 
 `ToQueryString()` を使うと、実行せずに生成される SQL を確認できます。
@@ -2468,6 +2527,51 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 var query = context.Blogs.Where(b => b.Url.Contains("dotnet"));
 Console.WriteLine(query.ToQueryString());
 ```
+
+### クエリタグでログと LINQ を結びつける
+
+ログに大量の SQL が流れると、「この重いクエリはソースコードのどこが出しているのか」が分からなくなります。**クエリタグ (Query Tag)** を使うと、LINQ クエリに付けた注釈が SQL のコメントとしてそのまま出力されます。
+
+```csharp
+var blogs = await context.Blogs
+    .TagWith("月次レポート用の集計")
+    .ToListAsync();
+```
+
+生成される SQL は次のようになります（実測）。
+
+```sql
+-- 月次レポート用の集計
+
+SELECT "b"."Id", "b"."Name"
+FROM "Blogs" AS "b"
+```
+
+タグは**累積します**。共通のクエリを組み立てるヘルパーメソッドの中で `TagWith` を呼び、呼び出し側でさらに `TagWith` を呼べば、両方がコメントとして残ります。加えて `TagWithCallSite()` を使うと、**そのクエリを書いたファイル名と行番号**が自動で埋め込まれます。
+
+```csharp
+var blogs = await context.Blogs
+    .TagWith("1つ目")
+    .TagWith("2つ目")
+    .TagWithCallSite()
+    .ToListAsync();
+```
+
+```sql
+-- 1つ目
+
+-- 2つ目
+
+-- File: /path/to/Program.cs:6
+
+SELECT "b"."Id", "b"."Name"
+FROM "Blogs" AS "b"
+```
+
+SQL Server のクエリストアや実行計画の分析ツールでは、このコメントごとキャプチャされるため、データベース側で見つけた重いクエリからアプリケーションのコードへ一発でたどり着けます。
+
+> [!NOTE]
+> **Hibernate** にも、クエリに注釈を付ける `setComment()` があり、`hibernate.use_sql_comments` を有効にすると SQL のコメントとして出力されます。EF Core のクエリタグは、追加の設定なしに `TagWith` を呼ぶだけで有効になる点と、`TagWithCallSite()` で呼び出し位置を自動的に埋め込める点が異なります。
 
 > [!TIP]
 > パフォーマンス問題の多くは、EF Core 自体ではなく「不要な列を取りすぎている」「N+1 が起きている」「インデックスがない」という設計上の問題に起因します。ここまでで説明した `AsNoTracking`、投影、`Include`、`AsSplitQuery`、ページングを先に見直してください。
@@ -2677,7 +2781,7 @@ public class BlogQueries
 - パラメーターには単純なスカラー値を使います。インスタンスのメンバーアクセスやメソッド呼び出しのような、より複雑なパラメーター式はサポートされません
 
 > [!NOTE]
-> 2 つ目の制限は **ラムダの中に書くパラメーター式の形** に対するものであり、「パラメーターの型がコレクションであってはいけない」という意味ではありません。実際に `EF.CompileAsyncQuery((AppDb db, int[] ids) => db.Blogs.Where(b => ids.Contains(b.Id)))` を定義して `new[] { 1, 3 }` を渡したところ、SQL Server 2022・SQLite のどちらでも該当する 2 件が正しく返りました（EF Core 10.0.11、実測で確認）。一方、`(AppDb db, Filter f) => db.Blogs.Where(b => b.Name == f.Name)` のようにパラメーターのメンバーへアクセスする式を書くと、実行時に `InvalidOperationException`（`The LINQ expression ... could not be translated.`）になります。値は変数としてそのまま渡し、ラムダの中に `obj.Property` や `obj.GetValue()` のような式を書かない、と理解してください。
+> 2 つ目の制限は **ラムダの中に書くパラメーター式の形** に対するものであり、「パラメーターの型がコレクションであってはいけない」という意味ではありません。実際に `EF.CompileAsyncQuery((BloggingContext context, int[] ids) => context.Blogs.Where(b => ids.Contains(b.Id)))` を定義して `new[] { 1, 3 }` を渡したところ、SQL Server 2022・SQLite のどちらでも該当する 2 件が正しく返りました（EF Core 10.0.11、実測で確認）。一方、`(BloggingContext context, Filter f) => context.Blogs.Where(b => b.Name == f.Name)` のようにパラメーターのメンバーへアクセスする式を書くと、実行時に `InvalidOperationException`（`The LINQ expression ... could not be translated.`）になります。値は変数としてそのまま渡し、ラムダの中に `obj.Property` や `obj.GetValue()` のような式を書かない、と理解してください。
 
 ### コンパイル済みモデル
 
@@ -3443,6 +3547,7 @@ flowchart TB
 - [エンティティのプロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/entity-properties)
 - [リレーションシップ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships)
 - [値の変換 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/value-conversions)
+- [値の比較子 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/value-comparers)
 - [グローバルクエリフィルター | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/filters)
 
 ### スキーマ管理
@@ -3471,6 +3576,8 @@ flowchart TB
 - [効率的なクエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/performance/efficient-querying)
 - [高度なパフォーマンストピック | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/performance/advanced-performance-topics)
 - [接続の回復性 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-resiliency)
+- [クエリタグ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/tags)
+- [Microsoft.Extensions.Logging による EF Core のログ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/extensions-logging)
 
 ### 読み取り専用レプリカ
 
