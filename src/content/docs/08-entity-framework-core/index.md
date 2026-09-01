@@ -31,6 +31,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [マイグレーションの仕組み](#マイグレーションの仕組み)
    - [マイグレーションの作成と適用](#マイグレーションの作成と適用)
    - [生成されたマイグレーションを読む](#生成されたマイグレーションを読む)
+   - [既定値の制約に名前を付ける](#既定値の制約に名前を付ける)
    - [本番環境への適用戦略](#本番環境への適用戦略)
    - [SQL スクリプトとマイグレーションバンドル](#sql-スクリプトとマイグレーションバンドル)
    - [起動時マイグレーションの是非](#起動時マイグレーションの是非)
@@ -56,6 +57,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [楽観的同時実行制御](#楽観的同時実行制御)
    - [接続の回復性とトランザクションの併用](#接続の回復性とトランザクションの併用)
    - [デッドロックへの対処](#デッドロックへの対処)
+   - [インターセプターによる横断的な処理](#インターセプターによる横断的な処理)
 6. [パフォーマンス最適化](#6-パフォーマンス最適化)
    - [まず計測する](#まず計測する)
    - [インデックスを正しく張る](#インデックスを正しく張る)
@@ -1057,6 +1059,58 @@ migrationBuilder.Sql("UPDATE [Posts] SET [PublishedAt] = [CreatedAt] WHERE [Publ
 > [!WARNING]
 > プロパティ名を変更した場合、EF Core は「列の削除」と「列の追加」として差分を検出することがあります。そのまま適用するとデータが失われるため、生成されたマイグレーションを確認し、必要に応じて `migrationBuilder.RenameColumn(...)` に書き換えてください。公式ドキュメントも「どの適用方法を選ぶ場合でも、必ず生成されたマイグレーションを検査し、本番データベースに適用する前にテストすること」と明記しています。
 
+### 既定値の制約に名前を付ける
+
+列に既定値を設定すると、SQL Server 側には **既定値制約 (default constraint)** が作られます。名前を指定しない場合、制約名はデータベースが自動生成します。実際に名前を指定せずテーブルを作り、`sys.default_constraints` を引いたところ、次の名前が付いていました。
+
+```text
+DF__Posts__CreatedDa__49C3F6B7
+DF__Posts__Views__4AB81AF0
+```
+
+末尾は毎回変わるため、名前が分からないと後から `ALTER TABLE ... DROP CONSTRAINT` で外すのが面倒になります。
+
+EF Core 10 では、`HasDefaultValueSql` / `HasDefaultValue` の第 2 引数で制約名を指定できるようになりました。
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Post>()
+        .Property(p => p.CreatedDate)
+        .HasDefaultValueSql("GETDATE()", "DF_Post_CreatedDate");
+}
+```
+
+生成されるマイグレーションには注釈として制約名が入り、SQL では `CONSTRAINT` 句として出力されます。
+
+```sql
+CREATE TABLE [Posts] (
+    [Id] int NOT NULL IDENTITY,
+    [CreatedDate] datetime2 NOT NULL CONSTRAINT [DF_Post_CreatedDate] DEFAULT (GETDATE()),
+    [Views] int NOT NULL DEFAULT 0,
+    CONSTRAINT [PK_Posts] PRIMARY KEY ([Id])
+);
+```
+
+名前を指定しなかった `Views` 列には `CONSTRAINT` 句が付いていない点に注目してください。列ごとに名前を付けて回るのが面倒な場合は、`UseNamedDefaultConstraints()` でモデル全体の既定値制約に EF Core が自動で名前を付けられます。
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.UseNamedDefaultConstraints();
+}
+```
+
+これを有効にして同じモデルからマイグレーションを生成し直すと、両方の列に名前が付きました。
+
+```sql
+[CreatedDate] datetime2 NOT NULL CONSTRAINT [DF_Posts_CreatedDate] DEFAULT (GETDATE()),
+[Views] int NOT NULL CONSTRAINT [DF_Posts_Views] DEFAULT 0,
+```
+
+> [!WARNING]
+> 公式ドキュメントは「**既存のマイグレーションがある状態で `UseNamedDefaultConstraints()` を有効にすると、次に追加するマイグレーションでモデル内のすべての既定値制約がリネームされる**」と注意しています。稼働中のデータベースに対して有効化する場合は、生成されたマイグレーションの差分を必ず確認してください。
+
 ### 本番環境への適用戦略
 
 公式ドキュメントは、用途に応じて次の 4 つの戦略を挙げています。
@@ -1070,6 +1124,23 @@ migrationBuilder.Sql("UPDATE [Posts] SET [PublishedAt] = [CreatedAt] WHERE [Publ
 
 > [!IMPORTANT]
 > スキーマを変更する権限は、デプロイ専用の ID に与えます。アプリケーションが実行時に使用する ID には、通常はデータの読み書きに必要な権限だけを与えるべきです。
+
+> [!WARNING]
+> **複数のマイグレーションをまとめて適用するとき、途中で失敗しても「そこまで成功した分」はロールバックされません。** EF Core 10 では、マイグレーション全体を 1 つのトランザクションで囲む挙動（EF Core 9 で導入され、さまざまな問題を起こしたため取り消された）がなくなり、**マイグレーションごとに個別のトランザクション** で実行されます。
+>
+> 実際に、正常な `M1` と、必ず失敗する SQL を含む `M2` を用意して `dotnet ef database update` を実行したところ、`M2` はエラーで停止しましたが、`M1` は適用済みのまま残りました。
+>
+> ```text
+> Error Number: 8134、State: 1、Class: 16
+> Divide by zero error encountered.
+> ```
+>
+> ```text
+> 20260901081302_M1
+> 20260901081308_M2 (Pending)
+> ```
+>
+> つまり、失敗後のデータベースは **一部のマイグレーションだけが適用された中途半端な状態** になります。復旧するには、失敗したマイグレーションを修正して再度適用するか、`dotnet ef database update M1` のように戻したい地点を指定してロールバックします。本番環境では、この状態から確実に復旧できるよう **適用前のバックアップ** を必ず取得してください。
 
 ### SQL スクリプトとマイグレーションバンドル
 
@@ -1447,6 +1518,37 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 
 > [!WARNING]
 > 分割クエリは既定では 1 つのトランザクションで実行されないため、クエリの合間に他のトランザクションがデータを変更すると、整合性のない結果になる可能性があります。整合性が重要な場合は明示的にトランザクションを開始するか、単一クエリを使ってください。なお 1 対 1 のナビゲーションは行が重複しないため、常に JOIN されます。
+
+> [!NOTE]
+> **EF Core 10 では、分割クエリの並べ替えの一貫性が修正されました。** EF Core 9 以前は、2 本目以降のクエリに埋め込まれるサブクエリの `ORDER BY` から主キー列が欠落することがあり、**検出しにくいデータ破損につながる可能性がありました**。
+>
+> 次のクエリを EF Core 10 で実行して、実際に発行された 2 本の SQL を確認しました。
+>
+> ```csharp
+> var blogs = await context.Blogs
+>     .AsSplitQuery()
+>     .Include(b => b.Posts)
+>     .OrderBy(b => b.Name)
+>     .Take(2)
+>     .ToListAsync();
+> ```
+>
+> ```sql
+> SELECT TOP(@p) [b].[Id], [b].[Name]
+> FROM [Blogs] AS [b]
+> ORDER BY [b].[Name], [b].[Id]
+>
+> SELECT [p].[Id], [p].[BlogId], [p].[Title], [b0].[Id]
+> FROM (
+>     SELECT TOP(@p) [b].[Id], [b].[Name]
+>     FROM [Blogs] AS [b]
+>     ORDER BY [b].[Name], [b].[Id]
+> ) AS [b0]
+> INNER JOIN [Post] AS [p] ON [b0].[Id] = [p].[BlogId]
+> ORDER BY [b0].[Name], [b0].[Id]
+> ```
+>
+> 2 本目のサブクエリでも `ORDER BY [b].[Name], [b].[Id]` と主キーまで含めて並べ替えられており、1 本目と同じ行が選ばれることが保証されています。EF Core 9 以前ではここが `ORDER BY [b].[Name]` だけだったため、`Name` が重複する行があると 1 本目と 2 本目で異なる行が選ばれ得ました。**分割クエリと `Take` / `Skip` を併用しているプロジェクトは、EF Core 10 へ上げる価値があります。**
 
 ### 投影 (Projection) による最適化
 
@@ -1846,6 +1948,31 @@ await context.Posts
     cancellationToken);
 ```
 
+EF Core 10 では、**JSON 列にマッピングされた複合型のプロパティも `ExecuteUpdateAsync` で更新できる** ようになりました。EF Core 9 以前は JSON 列を一括更新できず、エンティティを読み込んで `SaveChangesAsync` するしかありませんでした。
+
+```csharp
+modelBuilder.Entity<Blog>().ComplexProperty(b => b.Details, bd => bd.ToJson());
+```
+
+```csharp
+await context.Blogs.ExecuteUpdateAsync(s =>
+    s.SetProperty(b => b.Details.Views, b => b.Details.Views + 1));
+```
+
+SQL Server 2022（JSON が `nvarchar(max)` に格納される環境）で実行したところ、`JSON_MODIFY` を使う次の SQL が発行され、`{"Title":"T","Views":10}` が `{"Title":"T","Views":11}` に更新されました。
+
+```sql
+UPDATE [b]
+SET [b].[Details] = JSON_MODIFY([b].[Details], '$.Views',
+        CAST(JSON_VALUE([b].[Details], '$.Views') AS int) + 1)
+FROM [Blogs] AS [b]
+```
+
+> [!NOTE]
+> この機能は **複合型 (`ComplexProperty`) としてマッピングした場合にのみ動作します。** 公式ドキュメントは「所有型 (owned entity type) としてマッピングした場合は動作しない」と明記しています。既存のコードで `OwnsOne(...).ToJson()` を使っている場合は、複合型への移行が必要です。
+>
+> なお、生成される SQL はデータベースのバージョンによって変わります。ネイティブの `json` 型が使える SQL Server 2025 では、上の `JSON_MODIFY` ではなく、より効率的な `modify` 関数が使われます。
+
 > [!IMPORTANT]
 > `ExecuteUpdateAsync` / `ExecuteDeleteAsync` はチェンジトラッカーを経由しません。そのため、`DbContext` がすでに追跡しているエンティティの状態は更新されず、`SaveChangesAsync` によるカスケード削除や監査ログ（`SaveChangesAsync` のオーバーライド）も動作しません。実行後は `ChangeTracker.Clear()` を呼ぶか、新しい `DbContext` を使って読み直してください。
 >
@@ -1995,6 +2122,17 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 >
 > 自社環境で固有のエラー番号を再試行対象に加えたい場合は、`errorNumbersToAdd` にエラー番号を渡してください。「再試行を有効にしたから接続断はすべて吸収される」と考えるのは危険で、アプリケーション側での例外処理は依然として必要です。
 
+> [!TIP]
+> 接続先が **Azure SQL Database** の場合は、`UseSqlServer` ではなく **`UseAzureSql`** を使います（Azure Synapse には `UseAzureSynapse` があります）。EF Core はこれによって、対象データベース固有の機能を活かした SQL を生成できます。加えて `UseAzureSql` は **再試行を既定で有効にします**。実際に生成される実行戦略の型を確認したところ、次のようになりました（実測で確認）。
+>
+> | 構成 | `Database.CreateExecutionStrategy()` の型 |
+> | --- | --- |
+> | `UseSqlServer(...)` | `SqlServerExecutionStrategy`（再試行しない） |
+> | `UseSqlServer(..., s => s.EnableRetryOnFailure())` | `SqlServerRetryingExecutionStrategy` |
+> | `UseAzureSql(...)` | `SqlServerRetryingExecutionStrategy` |
+>
+> EF Core のソースでも、エンジンの種類が Azure SQL / Azure Synapse のときは実行戦略が指定されていなければ `SqlServerRetryingExecutionStrategy` を既定にする実装になっています。なお、EF Core 9 以前にあった `UseSqlServer(...).UseAzureSqlDefaults()` は EF Core 10 で `[Obsolete]` となり、「`UseSqlServer` と `UseAzureSqlDefaults` の組み合わせではなく `UseAzureSql` を使うこと」という警告が出ます。
+
 > [!WARNING]
 > 再試行を有効にした状態で `BeginTransactionAsync` による明示的トランザクションを使うと、`InvalidOperationException` が発生します。再試行戦略は個々の操作を再実行するため、トランザクション全体をやり直す必要があることを EF Core が判断できないためです。
 >
@@ -2121,6 +2259,87 @@ await strategy.ExecuteAsync(async () =>
 >
 > `SqlException` は `Microsoft.Data.SqlClient` 名前空間にあります。
 
+### インターセプターによる横断的な処理
+
+作成日時の自動設定、監査ログ、クエリへのヒント付与のような **すべての操作に共通する処理** は、個々のリポジトリーやサービスに書くと漏れが生じます。EF Core は **インターセプター (Interceptor)** を提供しており、低レベルの操作に割り込んで処理を追加したり、操作そのものを抑制・変更したりできます。
+
+公式ドキュメントが挙げるインターセプターは次のとおりです。
+
+| インターフェイス | 割り込める操作 | シングルトン |
+| --- | --- | --- |
+| `IDbCommandInterceptor` | コマンドの生成・実行・失敗、`DbDataReader` の破棄 | いいえ |
+| `IDbConnectionInterceptor` | 接続の生成・開閉、接続の失敗 | いいえ |
+| `IDbTransactionInterceptor` | トランザクションの生成・使用・コミット・ロールバック、セーブポイント、失敗 | いいえ |
+| `ISaveChangesInterceptor` | `SavingChanges` / `SavedChanges`、`SaveChangesFailed`、楽観的同時実行の処理 | いいえ |
+| `IMaterializationInterceptor` | クエリ結果からのエンティティの生成・初期化・確定 | はい |
+| `IQueryExpressionInterceptor` | クエリがコンパイルされる前の LINQ 式ツリーの変更 | はい |
+| `IIdentityResolutionInterceptor` | エンティティ追跡時の ID 競合の解決 | はい |
+
+登録は `DbContextOptionsBuilder.AddInterceptors` で行います。`OnConfiguring` は `AddDbContext` を使う場合でも呼ばれるため、`DbContext` の構築方法によらず設定を適用できる場所として公式が推奨しています。
+
+次は `ISaveChangesInterceptor` を使って、作成日時と更新日時を自動で設定する例です（`SaveChangesInterceptor` は空実装を持つ基底クラスで、必要なメソッドだけをオーバーライドできます）。
+
+```csharp
+public class AuditInterceptor : SaveChangesInterceptor
+{
+    public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+        DbContextEventData eventData,
+        InterceptionResult<int> result,
+        CancellationToken cancellationToken = default)
+    {
+        var context = eventData.Context;
+        if (context is not null)
+        {
+            var now = DateTime.UtcNow;
+            foreach (var entry in context.ChangeTracker.Entries<Blog>())
+            {
+                if (entry.State == EntityState.Added)
+                {
+                    entry.Entity.CreatedAt = now;
+                }
+                else if (entry.State == EntityState.Modified)
+                {
+                    entry.Entity.UpdatedAt = now;
+                }
+            }
+        }
+
+        return base.SavingChangesAsync(eventData, result, cancellationToken);
+    }
+}
+
+public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
+{
+    // インターセプターは多くの場合ステートレスなので、
+    // 1 つのインスタンスをすべての DbContext で共有できます
+    private static readonly AuditInterceptor Audit = new();
+
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+        => optionsBuilder.AddInterceptors(Audit);
+}
+```
+
+SQL Server 2022 に対して実際に動かしたところ、追加時は `CreatedAt` だけが設定され（`UpdatedAt` は `null`）、その後の更新で `UpdatedAt` だけが設定されて `CreatedAt` は変わらないことを確認しました。
+
+```text
+after insert: CreatedAt=2026-09-01T08:23:51.0828970 UpdatedAt=null
+after update: CreatedAt=2026-09-01T08:23:51.0828970 UpdatedAt=2026-09-01T08:23:51.7206710
+```
+
+> [!WARNING]
+> 上の表で「シングルトン」が **はい** になっているインターセプターは、EF Core の内部サービスプロバイダーに登録されます。そのため、`DbContext` を構成するたびに `new` したインスタンスを渡すと、**そのたびに新しい内部サービスプロバイダーが構築されます。** 実際に `AddDbContext` の中で `AddInterceptors(new MatInterceptor())` と毎回生成するコードを 30 回のスコープで実行したところ、次の警告が発生しました（`ConfigureWarnings` で例外化して観測）。
+>
+> ```text
+> An error was generated for warning 'Microsoft.EntityFrameworkCore.Infrastructure.ManyServiceProvidersCreatedWarning':
+> More than twenty 'IServiceProvider' instances have been created for internal use by Entity Framework.
+> This is commonly caused by injection of a new singleton service instance into every DbContext instance.
+> ```
+>
+> 公式ドキュメントも「シングルトンインターセプターは常に同じインスタンスを再利用し、コンテキストを構成するたびに新しいインスタンスを作ってはならない」と明記しています。`static readonly` なフィールドか、DI コンテナーに Singleton として登録したインスタンスを渡してください。
+
+> [!NOTE]
+> **Hibernate** には同様の目的で `org.hibernate.Interceptor` があり、`onSave` などで永続化操作に割り込めます。また **Jakarta Persistence** の仕様には `@PrePersist` / `@PreUpdate` などの **ライフサイクルコールバック** が定義されており、エンティティ自身またはリスナークラスのメソッドとして作成日時・更新日時の設定を行えます。EF Core のインターセプターは、これらと違って `SaveChanges` だけでなく **コマンド・接続・トランザクション・マテリアライゼーション・LINQ 式ツリー** といった層ごとに用意されている点が特徴です。
+
 ---
 
 ## 6. パフォーマンス最適化
@@ -2243,6 +2462,27 @@ builder.Services.AddDbContextPool<BloggingContext>(
 > [!WARNING]
 > プールされた `DbContext` インスタンスは再利用されるため、実質的に Singleton のように扱われます。`OnConfiguring` は最初の 1 回しか呼ばれず、リクエストごとに変化する状態（テナント ID や現在のユーザーなど）をコンストラクターやフィールドに保持する設計とは相性が悪くなります。そのような場合は、`AddDbContext` を使うか、状態をリセットするフックを実装してください。
 
+#### DbContext プーリングと接続プーリングは別物
+
+公式ドキュメントは「**コンテキストプーリングはデータベース接続プーリングとは直交する**」と明言しています。混同しやすいので整理します。
+
+| | DbContext プーリング | 接続プーリング |
+| --- | --- | --- |
+| 何をプールするか | `DbContext` インスタンス | データベース接続 |
+| 誰が管理するか | EF Core | データベースドライバー（`Microsoft.Data.SqlClient` などの ADO.NET プロバイダー） |
+| 目的 | インスタンスの割り当てと初期化コストの削減 | 接続の確立・切断コストの削減 |
+| 設定方法 | `AddDbContextPool` の `poolSize` | **接続文字列**（`Max Pool Size` など、ドライバーのドキュメントに従う） |
+| 既定 | 無効（`AddDbContext` を使うため） | 通常は有効 |
+
+EF Core は接続プーリングを自前では実装せず、下位のドライバーに任せます。そして **EF Core は操作の直前に接続を開き、直後に閉じてプールへ返します。** 必要以上に接続をプールの外に出しておかないためです。`IDbConnectionInterceptor` で開閉の回数を数えたところ、同じ `DbContext` インスタンスでクエリを 3 回実行すると 3 回開閉していました。
+
+```text
+同一 DbContext で 3 回クエリ                : opened=3 closed=3
+明示的に OpenConnectionAsync してから 3 回  : opened=1 closed=1
+```
+
+`Database.OpenConnectionAsync()` で明示的に開いた場合は、`CloseConnectionAsync()` を呼ぶまで接続が保持されます。ここで注意が必要なのは、**EF Core がリセットするのは `DbContext` とその関連サービスの内部状態だけで、下位のドライバーの状態は元に戻さない** 点です。手動で `DbConnection` を開いたり ADO.NET の状態を操作したりした場合、インスタンスをプールに返す前に元へ戻す責任は利用者側にあります。閉じ忘れると、無関係なリクエストへ状態が漏れる可能性があると公式ドキュメントは警告しています。
+
 ### コレクションのパラメーター化と IN 句の翻訳
 
 `Contains` でコレクションを絞り込み条件に使うと、EF Core はそれを `IN` 句へ変換します。**この変換方法は EF Core 10 で既定値が変わりました。**
@@ -2338,7 +2578,13 @@ public class BlogQueries
 }
 ```
 
-コンパイル済みクエリは `static` な読み取り専用フィールドとして保持し、アプリケーションの寿命を通じて再利用します。パラメーターとして渡せるのはスカラー型のみで、コレクションを `Contains` に渡すような可変のクエリには使えません。
+コンパイル済みクエリは `static` な読み取り専用フィールドとして保持し、アプリケーションの寿命を通じて再利用します。公式ドキュメントは制限として次の 2 点を挙げています。
+
+- 使用できるのは 1 つの EF Core モデルに対してのみです。同じ型の `DbContext` が異なるモデルを使うように構成されている場合、コンパイル済みクエリはサポートされません
+- パラメーターには単純なスカラー値を使います。インスタンスのメンバーアクセスやメソッド呼び出しのような、より複雑なパラメーター式はサポートされません
+
+> [!NOTE]
+> 2 つ目の制限は **ラムダの中に書くパラメーター式の形** に対するものであり、「パラメーターの型がコレクションであってはいけない」という意味ではありません。実際に `EF.CompileAsyncQuery((AppDb db, int[] ids) => db.Blogs.Where(b => ids.Contains(b.Id)))` を定義して `new[] { 1, 3 }` を渡したところ、SQL Server 2022・SQLite のどちらでも該当する 2 件が正しく返りました（EF Core 10.0.11、実測で確認）。一方、`(AppDb db, Filter f) => db.Blogs.Where(b => b.Name == f.Name)` のようにパラメーターのメンバーへアクセスする式を書くと、実行時に `InvalidOperationException`（`The LINQ expression ... could not be translated.`）になります。値は変数としてそのまま渡し、ラムダの中に `obj.Property` や `obj.GetValue()` のような式を書かない、と理解してください。
 
 ### コンパイル済みモデル
 
@@ -2860,6 +3106,15 @@ public sealed class SqliteContextFactory : IDisposable
 > ```csharp
 > AppContext.SetSwitch("Microsoft.Data.Sqlite.Pre10TimeZoneHandling", isEnabled: true);
 > ```
+>
+> **なお、重大度「高」の破壊的変更はこれを含めて 3 つあります。** 残る 2 つも日本時間（UTC+9）の環境で実測しました。
+>
+> | 変更点 | 実測した挙動 |
+> | --- | --- |
+> | `DateTimeOffset` を `REAL` 列へ書き込むと UTC で保存される | `2026-08-31 12:00+09:00` を書くとユリウス日 `2461283.625`（= UTC 03:00）が格納され、読み戻すと `2026-08-31T03:00:00+00:00` になる。**元のオフセット `+09:00` は失われる** |
+> | オフセット付きの値を `GetDateTime` で読むと UTC で返る | `2026-08-31 12:00:00+09:00` を `GetDateTime` で読むと `2026-08-31T03:00:00Z`（`Kind` は `Utc`）が返る |
+>
+> どちらも「オフセットを保持したい」用途では意図しない結果になります。SQLite に日時を保存するときは、`DateTimeOffset` をそのまま渡すのではなく **UTC の `DateTime` に統一して保存し、表示時にタイムゾーンを適用する** 設計にしておくと、これらの差異の影響を受けません。
 
 ### リポジトリパターンとモック
 
@@ -3074,6 +3329,7 @@ flowchart TB
 - [データの保存 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/)
 - [トランザクションの使用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/transactions)
 - [同時実行の競合の処理 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/concurrency)
+- [インターセプター | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/interceptors)
 
 ### パフォーマンス
 
