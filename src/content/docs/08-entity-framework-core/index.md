@@ -26,6 +26,8 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [IEntityTypeConfiguration による構成の分割](#ientitytypeconfiguration-による構成の分割)
    - [リレーションシップの定義](#リレーションシップの定義)
    - [値の変換・所有型・複合型](#値の変換所有型複合型)
+   - [シャドウプロパティとバッキングフィールド](#シャドウプロパティとバッキングフィールド)
+   - [シーケンスによる採番](#シーケンスによる採番)
    - [グローバルクエリフィルターと名前付きクエリフィルター](#グローバルクエリフィルターと名前付きクエリフィルター)
 3. [マイグレーションとスキーマ管理](#3-マイグレーションとスキーマ管理)
    - [マイグレーションの仕組み](#マイグレーションの仕組み)
@@ -949,6 +951,133 @@ CREATE TABLE [Docs] (
 > ```
 >
 > `SqlVector<T>` は `Microsoft.Data.SqlTypes` 名前空間にあります。Azure SQL Database に対して実際に動かしたところ、`vector(3)` 型の列が作られ、`VectorDistance("cosine", ...)` が距離を返して並べ替えが機能することを確認しました。
+
+### シャドウプロパティとバッキングフィールド
+
+エンティティクラスに書きたくない情報や、外部に公開したくない情報をデータベースに持たせたい場面があります。EF Core はそのための仕組みを 2 つ用意しています。
+
+#### シャドウプロパティ
+
+**シャドウプロパティ (Shadow Property)** は、C# のエンティティクラスには存在せず、EF Core のモデルにだけ存在するプロパティです。公式ドキュメントは「値と状態は変更追跡機能の中だけで保持される」と説明しています。監査用の更新日時のように、ドメインモデルには出したくないがテーブルには持たせたい列に向いています。
+
+```csharp
+modelBuilder.Entity<Blog>()
+    .Property<DateTime>("LastUpdated");
+```
+
+生成される DDL には、通常のプロパティと同じように列が現れます（実測）。
+
+```sql
+CREATE TABLE "Blogs" (
+    "Id" INTEGER NOT NULL CONSTRAINT "PK_Blogs" PRIMARY KEY AUTOINCREMENT,
+    "Name" TEXT NOT NULL,
+    "LastUpdated" TEXT NOT NULL
+);
+```
+
+C# のクラスにプロパティがないため、読み書きは `ChangeTracker` 経由で行います。クエリでは `EF.Property<T>` を使います。
+
+```csharp
+// 書き込み
+context.Entry(blog).Property("LastUpdated").CurrentValue = DateTime.UtcNow;
+
+// クエリ
+var recent = await context.Blogs
+    .Where(b => EF.Property<DateTime>(b, "LastUpdated") > threshold)
+    .ToListAsync(cancellationToken);
+```
+
+> [!TIP]
+> 実は、**外部キーを明示的に書かなかった場合の外部キーもシャドウプロパティ**です。公式ドキュメントは「シャドウプロパティは外部キーに最もよく使われる」と述べています。本章では `Post` に `BlogId` を明示していますが、あえてこれを省略して `Blog` 側の `List<Post> Posts` だけでモデルを作ったところ、実測では `Posts` テーブルに `BlogId` 列と外部キー制約、インデックスが生成され、そのプロパティは `IsShadowProperty() == true` でした。
+>
+> ```sql
+> CREATE TABLE "Posts" (
+>     "Id" INTEGER NOT NULL CONSTRAINT "PK_Posts" PRIMARY KEY AUTOINCREMENT,
+>     "Title" TEXT NOT NULL,
+>     "BlogId" INTEGER NULL,
+>     CONSTRAINT "FK_Posts_Blogs_BlogId" FOREIGN KEY ("BlogId") REFERENCES "Blogs" ("Id")
+> );
+> ```
+>
+> ここで注目したいのは `BlogId` が **NULL 許容**になっている点です。公式ドキュメントは「規約では、シャドウ外部キーは関連する主キーから型を受け継ぎ、**リレーションシップが必須と判定または構成されない限り NULL 許容になる**」と説明しています。投稿が必ずブログに属するのであれば、`BlogId` を明示的に定義するか、`IsRequired()` で必須に構成してください。
+>
+> なお公式ドキュメントは、シャドウ外部キーを使う動機を「外部キーというリレーショナルな概念を、業務ロジックが使うドメインモデルから隠したい場合」と位置づけています。一方で「エンティティをシリアル化して送信する場合は、外部キーの値がリレーションシップの情報を保つのに役立つ」ため、外部キープロパティを `private` にして型の中には残す、という折衷案も紹介されています。
+
+#### バッキングフィールド
+
+**バッキングフィールド (Backing Field)** は、プロパティではなくフィールドを直接読み書きするように EF Core を構成する機能です。公式ドキュメントは「クラス側のカプセル化でアクセスを制限・拡張している場合に、その制限を経由せずにデータベースと読み書きしたいときに有用」と説明しています。
+
+```csharp
+public class Product
+{
+    private decimal _price;
+
+    public int Id { get; set; }
+    public decimal Price => _price;          // 読み取り専用
+
+    public void SetPrice(decimal value)      // 変更は必ずこのメソッド経由
+    {
+        if (value < 0) throw new ArgumentOutOfRangeException(nameof(value));
+        _price = value;
+    }
+}
+```
+
+```csharp
+modelBuilder.Entity<Product>()
+    .Property(p => p.Price)
+    .HasField("_price");
+```
+
+これにより、データベースから読み込むときは `SetPrice` を経由せずに `_price` へ直接書き込まれます。実測でも、データベースから 1 件読み出したあとの `SetPrice` の呼び出し回数は、保存時の 1 回のままで増えませんでした。ドメインの不変条件を守るための検証は「アプリケーションからの変更」にだけ適用され、「データベースからの復元」では走らない、ということです。
+
+> [!WARNING]
+> **`HasField` を省略すると、この例では列そのものが作られません。** 公式ドキュメントは規約で `_price` のようなフィールドが発見されると説明していますが、その前提として「**getter と setter を持つ public プロパティ**が規約でモデルに含まれる」という規約があります。上の `Price` は getter しか持たないため、そもそもモデルに含まれず、実測でも `Products` テーブルには `Id` 列しか生成されませんでした。読み取り専用プロパティを永続化したい場合は、`HasField` で明示的に構成してください。
+
+### シーケンスによる採番
+
+`IDENTITY` はテーブルごとに独立した採番です。**複数のテーブルで連番を共有したい**場合は **シーケンス (Sequence)** を使います。公式ドキュメントは「シーケンスは特定のテーブルに結び付いておらず、複数のテーブルが同じシーケンスから値を引くように構成できる」と説明しています。
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.HasSequence<int>("DocumentNumbers")
+        .StartsAt(1000)
+        .IncrementsBy(5);
+
+    modelBuilder.Entity<Order>()
+        .Property(o => o.OrderNo)
+        .HasDefaultValueSql("NEXT VALUE FOR DocumentNumbers");
+
+    modelBuilder.Entity<Invoice>()
+        .Property(i => i.DocNo)
+        .HasDefaultValueSql("NEXT VALUE FOR DocumentNumbers");
+}
+```
+
+SQL Server 2022 に対して実行したところ、次の DDL が生成されました（実測）。
+
+```sql
+CREATE SEQUENCE [DocumentNumbers] AS int START WITH 1000 INCREMENT BY 5 NO CYCLE;
+
+CREATE TABLE [Orders] (
+    [Id] int NOT NULL IDENTITY,
+    [OrderNo] int NOT NULL DEFAULT (NEXT VALUE FOR DocumentNumbers),
+    CONSTRAINT [PK_Orders] PRIMARY KEY ([Id])
+);
+```
+
+主キーの `Id` は従来どおり `IDENTITY` で、`OrderNo` だけがシーケンスから採番されます。`Invoice` を 1 件、`Order` を 3 件保存した実測結果は次のとおりで、**2 つのテーブルにまたがって連番が振られている**ことが確認できます。
+
+| テーブル | Id | 採番された番号 |
+| --- | --- | --- |
+| Invoice | 1 | 1000 |
+| Order | 1 | 1005 |
+| Order | 2 | 1010 |
+| Order | 3 | 1015 |
+
+> [!WARNING]
+> `NEXT VALUE FOR` は SQL Server の構文です。公式ドキュメントも「シーケンスから値を生成する SQL はデータベース固有であり、上の例は SQL Server では動くが他のデータベースでは失敗する」と明記しています。PostgreSQL では `nextval('...')` のように書き換える必要があり、SQLite にはシーケンス自体がありません。
 
 ### グローバルクエリフィルターと名前付きクエリフィルター
 
@@ -3548,6 +3677,10 @@ flowchart TB
 - [リレーションシップ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships)
 - [値の変換 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/value-conversions)
 - [値の比較子 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/value-comparers)
+- [シャドウプロパティとインジケータープロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/shadow-properties)
+- [バッキングフィールド | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/backing-field)
+- [シーケンス | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/sequences)
+- [外部キーと主キー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/foreign-and-principal-keys)
 - [グローバルクエリフィルター | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/filters)
 
 ### スキーマ管理
