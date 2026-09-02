@@ -2976,14 +2976,9 @@ options.UseSqlServer(connectionString,
 
 ```csharp
 // クエリ単位で切り替える
-// JSON 配列パラメーター 1 つ
+// JSON 配列パラメーター 1 つ（EF Core 8・9 の既定と同じ形）
 await context.Blogs
     .Where(b => EF.Parameter(ids).Contains(b.Id))
-    .ToListAsync();
-
-// 個別パラメーター（EF Core 10 の既定）
-await context.Blogs
-    .Where(b => EF.MultipleParameters(ids).Contains(b.Id))
     .ToListAsync();
 
 // 定数としてインライン化
@@ -2991,6 +2986,24 @@ await context.Blogs
     .Where(b => EF.Constant(ids).Contains(b.Id))
     .ToListAsync();
 ```
+
+実際に生成される SQL は次のとおりです（SQL Server プロバイダーでの実測）。
+
+```sql
+-- 何も指定しない場合（EF Core 10 の既定 = MultipleParameters）
+DECLARE @ids1 int = 1; DECLARE @ids2 int = 2; DECLARE @ids3 int = 3;
+WHERE [b].[Id] IN (@ids1, @ids2, @ids3)
+
+-- EF.Parameter(ids)
+DECLARE @ids nvarchar(4000) = N'[1,2,3]';
+WHERE [b].[Id] IN (SELECT [i].[value] FROM OPENJSON(@ids) WITH ([value] int '$') AS [i])
+
+-- EF.Constant(ids)
+WHERE [b].[Id] IN (1, 2, 3)
+```
+
+> [!NOTE]
+> クエリ単位で指定できるのは `EF.Parameter` と `EF.Constant` の 2 つだけで、`MultipleParameters` に対応するクエリ単位のメソッドはありません。既定がすでに `MultipleParameters` であるため、この方式を使いたい場合は**何も書かない**のが答えです。`DbContext` 全体で `ParameterTranslationMode.Parameter` などに変更したうえで、特定のクエリだけ既定に戻したいという場合は、`UseParameterizedCollectionMode` の設定自体をクエリごとに分けた `DbContext` で管理する必要があります。
 
 | `ParameterTranslationMode` | 動作 |
 | --- | --- |
@@ -3344,6 +3357,8 @@ public class BlogsController(
         return CreatedAtAction(nameof(GetBlogs), new { id = blog.Id }, blog);
     }
 }
+
+public record CreateBlogRequest(string Name, string Url);
 ```
 
 > [!TIP]
