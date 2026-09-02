@@ -26,6 +26,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [IEntityTypeConfiguration による構成の分割](#ientitytypeconfiguration-による構成の分割)
    - [リレーションシップの定義](#リレーションシップの定義)
    - [値の変換・所有型・複合型](#値の変換所有型複合型)
+   - [継承のマッピング](#継承のマッピング)
    - [シャドウプロパティとバッキングフィールド](#シャドウプロパティとバッキングフィールド)
    - [シーケンスによる採番](#シーケンスによる採番)
    - [一括構成規約前の構成](#一括構成規約前の構成)
@@ -968,6 +969,109 @@ CREATE TABLE [Docs] (
 > ```
 >
 > `SqlVector<T>` は `Microsoft.Data.SqlTypes` 名前空間にあります。Azure SQL Database に対して実際に動かしたところ、`vector(3)` 型の列が作られ、`VectorDistance("cosine", ...)` が距離を返して並べ替えが機能することを確認しました。
+
+### 継承のマッピング
+
+エンティティに継承関係がある場合、EF Core は 3 つのマッピング方法を提供します。既定は **TPH (table-per-hierarchy)** で、階層全体を 1 つのテーブルに格納し、行がどの型かを示す **識別子列 (discriminator)** を暗黙的に追加します。
+
+```csharp
+public abstract class Payment
+{
+    public int Id { get; set; }
+    public decimal Amount { get; set; }
+}
+
+public class CreditCardPayment : Payment
+{
+    public string CardNumber { get; set; } = "";
+}
+
+public class BankTransferPayment : Payment
+{
+    public string BankName { get; set; } = "";
+}
+```
+
+TPH では次の DDL が生成されます（SQL Server プロバイダーでの実測）。
+
+```sql
+CREATE TABLE [Payments] (
+    [Id] int NOT NULL IDENTITY,
+    [Amount] decimal(18,2) NOT NULL,
+    [Discriminator] nvarchar(21) NOT NULL,
+    [BankName] nvarchar(max) NULL,
+    [CardNumber] nvarchar(max) NULL,
+    CONSTRAINT [PK_Payments] PRIMARY KEY ([Id])
+);
+```
+
+派生型だけが持つ列は自動的に NULL 許容になります。公式ドキュメントにも「TPH マッピングを使う場合、データベースの列は必要に応じて自動的に NULL 許容になる」と記載されています。
+
+`UseTptMappingStrategy()` を指定すると **TPT (table-per-type)** になり、基底型と派生型がそれぞれのテーブルに分かれます。派生テーブルの主キーは基底テーブルへの外部キーを兼ねます。
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+    => modelBuilder.Entity<Payment>().UseTptMappingStrategy();
+```
+
+```sql
+CREATE TABLE [Payments] (
+    [Id] int NOT NULL IDENTITY,
+    [Amount] decimal(18,2) NOT NULL,
+    CONSTRAINT [PK_Payments] PRIMARY KEY ([Id])
+);
+
+CREATE TABLE [CreditCardPayments] (
+    [Id] int NOT NULL,
+    [CardNumber] nvarchar(max) NOT NULL,
+    CONSTRAINT [PK_CreditCardPayments] PRIMARY KEY ([Id]),
+    CONSTRAINT [FK_CreditCardPayments_Payments_Id] FOREIGN KEY ([Id])
+        REFERENCES [Payments] ([Id]) ON DELETE CASCADE
+);
+```
+
+`UseTpcMappingStrategy()` による **TPC (table-per-concrete-type)** では、具象型ごとに独立したテーブルを作り、それぞれが基底型の列も持ちます。主キーが階層全体で一意になるよう、EF Core は共有シーケンスを作成します。
+
+```sql
+CREATE SEQUENCE [PaymentSequence] START WITH 1 INCREMENT BY 1 NO CYCLE;
+
+CREATE TABLE [CreditCardPayments] (
+    [Id] int NOT NULL DEFAULT (NEXT VALUE FOR [PaymentSequence]),
+    [Amount] decimal(18,2) NOT NULL,
+    [CardNumber] nvarchar(max) NOT NULL,
+    CONSTRAINT [PK_CreditCardPayments] PRIMARY KEY ([Id])
+);
+```
+
+| 方式 | テーブル数 | 特徴 |
+| --- | --- | --- |
+| TPH（既定） | 1 | 結合が不要で最も速い。派生型固有の列は NULL 許容になる |
+| TPT | 型の数だけ | 正規化されるが、取得のたびに結合が必要 |
+| TPC | 具象型の数だけ | 結合が不要。公式は「TPT で起きがちな性能問題に対処するもの」と説明 |
+
+> [!WARNING]
+> 基底型だけを `DbSet` に登録し、派生型をモデルに含めないと、次の実行時エラーになります（実測で確認済み）。
+>
+> ```text
+> The entity type 'Payment' cannot be instantiated because its corresponding CLR type is
+> abstract and there is no derived entity type in the model that corresponds to a concrete
+> CLR type. Add a concrete derived entity type to the model or change the entity type to
+> use a concrete CLR type.
+> ```
+>
+> 派生型ごとに `DbSet` を用意するか、`OnModelCreating` で `modelBuilder.Entity<CreditCardPayment>()` のように明示的に登録してください。
+
+> [!TIP]
+> Ruby on Rails の単一テーブル継承 (STI) は EF Core の TPH に、Django の多テーブル継承は TPT に相当します。Rails の STI が `type` 列を規約とするのに対し、EF Core の識別子列は既定で `Discriminator` という名前のシャドウプロパティになり、値には **CLR のクラス名がそのまま入ります**（実測でも `CreditCardPayment` / `BankTransferPayment` が格納されました）。`HasDiscriminator<string>("payment_type").HasValue<CreditCardPayment>("card")` のように列名と値を変更でき、エンティティの実プロパティにマッピングすることもできます。
+
+派生型を絞り込むクエリでは、EF Core が識別子列の条件を自動的に付け加えます。実測した SQL は次のとおりです。
+
+```sql
+-- context.Payments.OfType<CreditCardPayment>() が生成する SQL
+SELECT [p].[Id], [p].[Amount], [p].[Discriminator], [p].[CardNumber]
+FROM [Payments] AS [p]
+WHERE [p].[Discriminator] = N'CreditCardPayment'
+```
 
 ### シャドウプロパティとバッキングフィールド
 
@@ -3811,6 +3915,7 @@ flowchart TB
 
 - [モデルの作成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/)
 - [一括構成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/bulk-configuration)
+- [継承 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/inheritance)
 - [エンティティのプロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/entity-properties)
 - [リレーションシップ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships)
 - [値の変換 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/value-conversions)
