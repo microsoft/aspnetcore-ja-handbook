@@ -63,6 +63,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [セーブポイント](#セーブポイント)
    - [一括更新・一括削除](#一括更新一括削除)
    - [楽観的同時実行制御](#楽観的同時実行制御)
+   - [分離レベルによる同時実行制御](#分離レベルによる同時実行制御)
    - [接続の回復性とトランザクションの併用](#接続の回復性とトランザクションの併用)
    - [デッドロックへの対処](#デッドロックへの対処)
    - [インターセプターによる横断的な処理](#インターセプターによる横断的な処理)
@@ -2704,7 +2705,50 @@ builder.Property(b => b.LastUpdatedAt).IsConcurrencyToken();
 > ```
 
 > [!NOTE]
-> **Hibernate / JPA** の `@Version` と `jakarta.persistence.OptimisticLockException`（Hibernate 固有の例外ではなく Jakarta Persistence 仕様の標準例外です）、**Django** の `select_for_update()`（こちらは悲観的ロック）が対応する仕組みです。EF Core が既定で提供するのは楽観的同時実行制御であり、悲観的ロックが必要な場合は `FromSql` で `WITH (UPDLOCK)` などのヒントを指定するか、明示的なトランザクションと分離レベルで制御します。
+> **Hibernate / JPA** の `@Version` と `jakarta.persistence.OptimisticLockException`（Hibernate 固有の例外ではなく Jakarta Persistence 仕様の標準例外です）、**Django** の `select_for_update()`（こちらは悲観的ロック）が対応する仕組みです。EF Core が既定で提供するのは楽観的同時実行制御であり、公式ドキュメントも「悲観的な手法がデータを先にロックしてから変更するのに対し、楽観的同時実行制御はロックを取らない」と説明しています。
+
+### 分離レベルによる同時実行制御
+
+同時実行制御の手段は同時実行トークンだけではありません。公式ドキュメントは、**トランザクションの分離レベル**を上げる方法も紹介しています。同時実行トークンが不要になり、トランザクション内で常に同じデータが見えるという利点があります。
+
+分離レベルは `BeginTransactionAsync` に渡します。
+
+```csharp
+using var transaction = await context.Database
+    .BeginTransactionAsync(IsolationLevel.RepeatableRead, cancellationToken);
+
+var account = await context.Accounts.FirstAsync(a => a.Id == id, cancellationToken);
+account.Balance += amount;
+
+await context.SaveChangesAsync(cancellationToken);
+await transaction.CommitAsync(cancellationToken);
+```
+
+公式ドキュメントによると、データベースの実装によって次の 2 通りに分かれます。
+
+| 動作 | 該当する分離レベル | 分類 |
+| --- | --- | --- |
+| 読み取った行に共有ロックを取り、外部の更新をブロックする | SQL Server の `RepeatableRead`（`Serializable` も同様） | 悲観的ロック |
+| ロックは取らず、自分が更新する時点でシリアル化エラーにする | SQL Server の `Snapshot`、PostgreSQL の repeatable read | 楽観的ロック |
+
+SQL Server 2022 に対して実測したところ、公式の説明どおりの結果になりました。
+
+- **`RepeatableRead`** — トランザクション内で 1 行を読んだだけの状態で、別の接続から同じ行を `UPDATE` すると**ブロックされ**、コマンドタイムアウト（`Number=-2`）に至りました。
+- **`Snapshot`** — 同じ状況で別の接続からの `UPDATE` は**即座に成功**（0.2 秒）しました。その後で自分が更新して保存すると、次の例外になりました。
+
+```text
+SqlException Number=3960: Snapshot isolation transaction aborted due to update conflict.
+You cannot use snapshot isolation to access table 'dbo.Accounts' directly or indirectly
+in database 'v26' to update, delete, or insert the row that has been modified or deleted
+by another transaction. Retry the transaction or change the isolation level for the
+update/delete statement.
+```
+
+> [!WARNING]
+> 公式はこの方式の欠点を 2 つ挙げています。1 つは、ロックで実装される分離レベルでは、同じ行を変更しようとする他のトランザクションが**トランザクションの間ずっとブロックされる**こと（トランザクションは短く保つ必要があります）。もう 1 つは、**すべての操作を 1 つのトランザクションに含める必要がある**ことです。画面に表示してユーザーの入力を待つような場合、トランザクションが長時間生き続けてしまうため避けるべきで、この方式は「含まれる操作がすべて即座に実行され、トランザクションの長さが外部入力に左右されない場合」に適するとされています。
+
+> [!NOTE]
+> `Snapshot` を使うには、あらかじめデータベース側で有効にしておく必要があります（実測でも `ALTER DATABASE [DbName] SET ALLOW_SNAPSHOT_ISOLATION ON` が必要でした）。
 
 ### 接続の回復性とトランザクションの併用
 
