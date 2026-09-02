@@ -28,6 +28,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [値の変換・所有型・複合型](#値の変換所有型複合型)
    - [シャドウプロパティとバッキングフィールド](#シャドウプロパティとバッキングフィールド)
    - [シーケンスによる採番](#シーケンスによる採番)
+   - [一括構成規約前の構成](#一括構成規約前の構成)
    - [グローバルクエリフィルターと名前付きクエリフィルター](#グローバルクエリフィルターと名前付きクエリフィルター)
 3. [マイグレーションとスキーマ管理](#3-マイグレーションとスキーマ管理)
    - [マイグレーションの仕組み](#マイグレーションの仕組み)
@@ -1095,6 +1096,43 @@ CREATE TABLE [Orders] (
 > [!WARNING]
 > `NEXT VALUE FOR` は SQL Server の構文です。公式ドキュメントも「シーケンスから値を生成する SQL はデータベース固有であり、上の例は SQL Server では動くが他のデータベースでは失敗する」と明記しています。PostgreSQL では `nextval('...')` のように書き換える必要があり、SQLite にはシーケンス自体がありません。
 
+### 一括構成（規約前の構成）
+
+`HasMaxLength` や `HasPrecision` を全エンティティのプロパティに個別に書いていくのは現実的ではありません。EF Core には、CLR の型ごとにマッピング設定を一度だけ指定し、モデルの構築時にその型のすべてのプロパティへ自動適用する仕組みがあります。公式ドキュメントではこれを **規約前のモデル構成 (pre-convention model configuration)** と呼び、`DbContext` の `ConfigureConventions` をオーバーライドして記述します。
+
+```csharp
+protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+{
+    // すべての string プロパティを nvarchar(200) にする
+    configurationBuilder.Properties<string>()
+        .HaveMaxLength(200);
+
+    // すべての decimal プロパティの精度を固定する
+    configurationBuilder.Properties<decimal>()
+        .HavePrecision(18, 2);
+}
+```
+
+`OnModelCreating` の `Property(...)` 系メソッドが `Has` で始まるのに対し、`ConfigureConventions` 側は **`Have` で始まる** 点に注意してください（`HasMaxLength` ではなく `HaveMaxLength`）。
+
+実際に SQL Server 向けの DDL を生成して比較すると、文字列列の型が変わることを確認できます。
+
+```sql
+-- ConfigureConventions なし
+[Url] nvarchar(max) NOT NULL,
+[Title] nvarchar(max) NOT NULL,
+
+-- ConfigureConventions で HaveMaxLength(200) を指定
+[Url] nvarchar(200) NOT NULL,
+[Title] nvarchar(200) NOT NULL,
+```
+
+> [!NOTE]
+> 指定する型には、具体的な型だけでなく基底型・インターフェイス・ジェネリック型定義も使えます。複数の構成が一致する場合は、公式ドキュメントによると「インターフェイス → 基底型 → ジェネリック型定義 → 非 NULL 許容の値型 → 完全一致の型」の順に、**具体性の低いものから順に適用**されます。したがって、より具体的な指定が後勝ちになります。
+
+> [!TIP]
+> Ruby on Rails や Django のように、モデル定義側で列長を宣言する ORM に慣れていると「毎回 `HasMaxLength` を書くのか」と感じるかもしれません。EF Core では `ConfigureConventions` がその役割を担い、プロジェクト全体の既定値をコード 1 か所で決められます。
+
 ### グローバルクエリフィルターと名前付きクエリフィルター
 
 論理削除（ソフトデリート）やマルチテナントのように、「すべてのクエリに自動的に適用したい条件」はグローバルクエリフィルターで表現します。
@@ -2004,19 +2042,36 @@ await context.Database.ExecuteSqlAsync(
 > [!WARNING]
 > `FromSqlRaw` / `ExecuteSqlRaw` は文字列をそのまま SQL として扱うため、ユーザー入力を連結すると **SQL インジェクション** の脆弱性になります。可変値は必ずパラメーターとして渡し、どうしても `Raw` 系を使う場合は `new SqlParameter(...)` を明示的に指定してください。
 >
-> EF Core 10 では、生の SQL API に連結された文字列を渡すコードに対してコンパイル時のアナライザー警告 **`EF1003`** が出るようになりました。実際に文字列連結を渡してビルドすると、次の警告が報告されます（実測で確認済み）。
+> EF Core には、この誤りをコンパイル時に検出するアナライザーが 2 つあります。どちらもカテゴリーは **Security**、重大度は **Warning** です。
+>
+> | 診断 ID | 検出する書き方 | 導入バージョン |
+> | --- | --- | --- |
+> | `EF1002` | `FromSqlRaw` に **補間文字列** を渡す | EF Core 8 |
+> | `EF1003` | `FromSqlRaw` に **連結した文字列** を渡す | EF Core 10 |
+>
+> 実際に両方の書き方を含むコードをビルドすると、次の 2 件が報告されます（実測で確認済み）。
 >
 > ```text
+> warning EF1002: Method 'FromSqlRaw' inserts interpolated strings directly into the SQL,
+> without any protection against SQL injection. Consider using 'FromSql' instead...
+>
 > warning EF1003: Method 'FromSqlRaw' inserts concatenated strings directly into the SQL,
 > without any protection against SQL injection. Consider using 'FromSql' instead...
 > ```
 >
-> CI では `<WarningsAsErrors>EF1003</WarningsAsErrors>` を設定して、この警告をビルドエラーに昇格させておくと確実です。
+> **特に `EF1002` は見落としやすい落とし穴です。** `FromSql` に補間文字列を渡すと自動的にパラメーター化されるのに対し、`FromSqlRaw` に同じ見た目の補間文字列を渡すと、値が SQL に直接埋め込まれてしまいます。メソッド名を `FromSql` から `FromSqlRaw` に変えるだけで、安全なコードが危険なコードに変わるということです。
+>
+> CI では `<WarningsAsErrors>EF1002;EF1003</WarningsAsErrors>` を設定して、これらの警告をビルドエラーに昇格させておくと確実です。
 
 ```csharp
 // 危険：絶対に書かない（EF1003 警告が出る）
 var unsafeBlogs = await context.Blogs
     .FromSqlRaw("SELECT * FROM [Blogs] WHERE [Url] = '" + userInput + "'")
+    .ToListAsync(cancellationToken);
+
+// 危険：見た目は FromSql とほぼ同じだが値が埋め込まれる（EF1002 警告が出る）
+var alsoUnsafeBlogs = await context.Blogs
+    .FromSqlRaw($"SELECT * FROM [Blogs] WHERE [Url] = '{userInput}'")
     .ToListAsync(cancellationToken);
 
 // 安全：パラメーター化する
@@ -2418,7 +2473,7 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 > | `UseSqlServer(..., s => s.EnableRetryOnFailure())` | `SqlServerRetryingExecutionStrategy` |
 > | `UseAzureSql(...)` | `SqlServerRetryingExecutionStrategy` |
 >
-> EF Core のソースでも、エンジンの種類が Azure SQL / Azure Synapse のときは実行戦略が指定されていなければ `SqlServerRetryingExecutionStrategy` を既定にする実装になっています。なお、EF Core 9 以前にあった `UseSqlServer(...).UseAzureSqlDefaults()` は EF Core 10 で `[Obsolete]` となり、「`UseSqlServer` と `UseAzureSqlDefaults` の組み合わせではなく `UseAzureSql` を使うこと」という警告が出ます。
+> EF Core のソースでも、実行戦略が指定されていない場合にエンジンの種類が Azure SQL / Azure Synapse であれば `SqlServerRetryingExecutionStrategy` を既定にする実装になっています。実測でも、`UseSqlServer` では `SqlServerExecutionStrategy`（`RetriesOnFailure = false`）が、`UseAzureSql` では `SqlServerRetryingExecutionStrategy`（`RetriesOnFailure = true`）が選ばれることを確認しました。
 
 > [!WARNING]
 > 再試行を有効にした状態で `BeginTransactionAsync` による明示的トランザクションを使うと、`InvalidOperationException` が発生します。再試行戦略は個々の操作を再実行するため、トランザクション全体をやり直す必要があることを EF Core が判断できないためです。
@@ -3740,6 +3795,7 @@ flowchart TB
 ### モデルの作成
 
 - [モデルの作成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/)
+- [一括構成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/bulk-configuration)
 - [エンティティのプロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/entity-properties)
 - [リレーションシップ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships)
 - [値の変換 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/value-conversions)
