@@ -206,6 +206,22 @@ flowchart TB
 dotnet ef dbcontext scaffold "Server=(localdb)\mssqllocaldb;Database=Blogging;Trusted_Connection=True" Microsoft.EntityFrameworkCore.SqlServer --output-dir Models
 ```
 
+> [!WARNING]
+> このコマンドをそのまま実行すると、**生成された `DbContext` の `OnConfiguring` に接続文字列がそのまま埋め込まれます**。SQL Server 2022 に対して実際に実行したところ、パスワードを含む接続文字列がソースコードに書き出され、あわせて次の `#warning` が生成されました。
+>
+> ```csharp
+> protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+> #warning To protect potentially sensitive information in your connection string, you should move it out of source code.
+>     => optionsBuilder.UseSqlServer("Server=...;User Id=sa;Password=...");
+> ```
+>
+> 公式ドキュメントは、これは「生成されたコードが最初に使うときにいきなり動かないという体験を避けるため」であり、**接続文字列が製品コードに存在してはならない**と明記しています。`--no-onconfiguring` オプションを付けると `OnConfiguring` の生成そのものを抑止でき、実測でも接続文字列を含まない、DI 用のコンストラクターだけを持つクラスが生成されました。
+>
+> ```bash
+> dotnet ef dbcontext scaffold "<接続文字列>" Microsoft.EntityFrameworkCore.SqlServer \
+>     --output-dir Models --no-onconfiguring
+> ```
+
 ### パッケージの追加とツールの準備
 
 Web API プロジェクトに SQL Server プロバイダーを追加します。
@@ -236,7 +252,7 @@ dotnet ef --version
 ```
 
 > [!TIP]
-> チーム開発では、グローバルツールの代わりに **ローカルツール** としてリポジトリに固定すると、開発者間でバージョンを揃えられます。`dotnet new tool-manifest` を実行してから `dotnet tool install dotnet-ef` を実行すると、`.config/dotnet-tools.json` にバージョンが記録され、`dotnet tool restore` で復元できます。
+> チーム開発では、グローバルツールの代わりに **ローカルツール** としてリポジトリに固定すると、開発者間でバージョンを揃えられます。`dotnet new tool-manifest` を実行してから `dotnet tool install dotnet-ef` を実行すると、ツールマニフェストファイルにバージョンが記録されます。このファイルをリポジトリにコミットしておけば、他の開発者は `dotnet tool restore` を実行するだけで同じバージョンを復元できます。実測では、マニフェストに `"version": "10.0.11"` が記録され、`dotnet tool restore` で復元できることを確認しました。
 
 <details>
 <summary>Visual Studio のパッケージマネージャーコンソールを使う場合</summary>
@@ -1379,10 +1395,14 @@ dotnet ef migrations script AddNewTables AddAuditTable
 
 `--idempotent` を付けると、各マイグレーションが未適用かどうかを確認してから実行するスクリプトが生成されるため、現在の適用状況が分からないデータベースにも安全に流せます。
 
-自動デプロイには **マイグレーションバンドル** が推奨されます。バンドルは CI で生成でき、実行時に .NET SDK も EF Core ツールもアプリケーションのソースコードも必要としない単一の実行可能ファイルです。
+自動デプロイには **マイグレーションバンドル** が推奨されます。公式ドキュメントによれば、バンドルは CI で生成でき、実行時に .NET SDK も EF Core ツールもアプリケーションのソースコードも不要で、**自己完結型にすれば .NET ランタイムすら不要**な単一の実行可能ファイルです。EF Core のマイグレーションロックも機能します。
 
 ```bash
-dotnet ef migrations bundle --self-contained --runtime linux-x64 --output efbundle
+# .NET ランタイムがインストール済みの環境向け
+dotnet ef migrations bundle --output efbundle
+
+# .NET ランタイムごと同梱する（Linux x64 向け）
+dotnet ef migrations bundle --self-contained --target-runtime linux-x64 --output efbundle
 ```
 
 生成したバンドルは、デプロイ先で実行可能ファイルとして起動します。
@@ -1391,6 +1411,18 @@ dotnet ef migrations bundle --self-contained --runtime linux-x64 --output efbund
 # デプロイ先で実行
 ./efbundle --connection "$CONNECTION_STRING"
 ```
+
+> [!WARNING]
+> 対象ランタイムを指定するオプションは **`--target-runtime`（短縮形 `-r`）** です。よく似た `--runtime` というオプションも存在しますが、こちらは「ツールがビルドに使うランタイム」を指す別のオプションで、`--self-contained` と組み合わせると次のエラーで失敗することがあります（実測）。
+>
+> ```text
+> error NETSDK1047: 資産ファイル 'obj/project.assets.json' に 'net10.0/linux-x64' のターゲットがありません。
+> ```
+>
+> `--target-runtime` を使えば、プロジェクトに `RuntimeIdentifiers` を追加しなくても生成できます。実測では macOS 上から `--target-runtime linux-x64` でバンドルを生成し、Linux 向けの実行可能ファイル（ELF 64-bit）が出力されることを確認しました。生成したバンドルを実際に SQL Server 2022 に対して実行し、マイグレーションが適用されることも確認済みです。
+
+> [!NOTE]
+> 公式ドキュメントは、バンドルの制約として「SQL スクリプトと違い、実行される SQL を事前に確認したり、含まれるマイグレーションを一覧したりする手段が現時点ではない」と述べています。デプロイ前に SQL のレビューが必要な運用では、バンドルではなく `dotnet ef migrations script` でスクリプトを生成してください。
 
 > [!TIP]
 > EF Core 9 以降、マイグレーションの実行はデータベース全体のロックで保護されます（SQL スクリプトによる適用は除く）。これにより、複数のインスタンスが同時にマイグレーションを試みても、実行は 1 つに直列化されます。実際に SQL Server 2022 へ `dotnet ef database update` を実行すると、適用の前に次のメッセージが表示され、ロックの取得が行われていることが確認できます。
@@ -1509,11 +1541,46 @@ public class BloggingContextFactory : IDesignTimeDbContextFactory<BloggingContex
 }
 ```
 
-マイグレーションを別プロジェクトに置く場合は、コマンドで対象を指定します。
+マイグレーションを別プロジェクトに置く場合は、コマンドで対象を指定します。ここで指定する 2 つのオプションは役割が異なります。公式ドキュメントによれば、`--project`（対象プロジェクト）は**生成されたファイルを受け取るプロジェクト**、`--startup-project`（スタートアッププロジェクト）は**ツールがビルドして実行するプロジェクト**です。ツールは接続文字列やモデルの構成を得るために、設計時にアプリケーションのコードを実行する必要があるためです。
 
 ```bash
-dotnet ef migrations add InitialCreate --project BloggingApi.Data --startup-project BloggingApi
+dotnet ef migrations add InitialCreate \
+    --project BloggingApi.Data \
+    --startup-project BloggingApi.Data
 ```
+
+> [!WARNING]
+> **`--startup-project` に Web アプリケーションを指定すると、そちらにも `Microsoft.EntityFrameworkCore.Design` が必要になります。** 実際に Web アプリケーション側へパッケージを追加せずに実行すると、次のエラーで失敗します（実測）。
+>
+> ```text
+> Your startup project 'BloggingApi' doesn't reference Microsoft.EntityFrameworkCore.Design.
+> This package is required for the Entity Framework Core Tools to work.
+> Ensure your startup project is correct, install the package, and try again.
+> ```
+>
+> `Microsoft.EntityFrameworkCore.Design` は `<PrivateAssets>all</PrivateAssets>` 付きで追加されるため、**プロジェクト参照をたどって伝播しません**。クラスライブラリに入れても、スタートアッププロジェクト側には効きません。
+>
+> 公式ドキュメントは、この構成では**マイグレーションを持つプロジェクトを対象とスタートアップの両方に指定する**ことを推奨しています。そうすればツールがアプリケーションの起動コードを実行せずに済み、Web アプリケーション側に設計時パッケージを追加する必要もなくなります。上のコマンド例が両方を `BloggingApi.Data` にしているのはこのためです。
+
+> [!TIP]
+> マイグレーションを `DbContext` と**同じアセンブリ**に置いている限り、追加の構成は不要です。実行時にも `DbContext` のあるアセンブリからマイグレーションが自動的に発見されることを確認しています。
+>
+> 一方、`DbContext` とマイグレーションを**別々のプロジェクト**に分ける（データプロジェクトとマイグレーションプロジェクトを分離する）場合は、マイグレーションアセンブリの指定が必須です。指定せずに実行すると次のエラーになります（実測）。
+>
+> ```text
+> Your target project 'BloggingApi.Migrations' doesn't match your migrations assembly 'BloggingApi.Data'.
+> Either change your target project or change your migrations assembly.
+> ```
+>
+> このときは、実行時と設計時の両方で次のように構成します。
+>
+> ```csharp
+> options.UseSqlServer(
+>     connectionString,
+>     b => b.MigrationsAssembly("BloggingApi.Migrations"));
+> ```
+>
+> なお公式ドキュメントは、**データプロジェクトからマイグレーションプロジェクトを参照してはならない**と明記しています。マイグレーションプロジェクトがすでにデータプロジェクトを参照しているため、循環参照になるからです。
 
 > [!NOTE]
 > **Spring Boot** では Flyway や Liquibase がマイグレーションを担い、SQL または XML/YAML でスキーマ変更を記述します。**Django** の `makemigrations` / `migrate` は、EF Core と同じく **モデルの差分を自動検出してマイグレーションファイルを生成する** 方式です。一方 **Laravel** の `php artisan make:migration` / `migrate` は、適用状況の管理とロールバックの仕組みこそ似ていますが、生成されるのは空のマイグレーションであり、`Schema` ファサードを使って変更内容を **自分で記述します**。モデルからの差分検出は行われません。
