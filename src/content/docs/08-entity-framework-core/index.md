@@ -57,6 +57,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
 5. [更新／変更操作とトランザクション](#5-更新変更操作とトランザクション)
    - [追加・更新・削除の基本](#追加更新削除の基本)
    - [SaveChanges の既定のトランザクション動作](#savechanges-の既定のトランザクション動作)
+   - [データベーストリガーがあるテーブルの保存](#データベーストリガーがあるテーブルの保存)
    - [明示的なトランザクション制御](#明示的なトランザクション制御)
    - [セーブポイント](#セーブポイント)
    - [一括更新・一括削除](#一括更新一括削除)
@@ -2338,6 +2339,57 @@ await context.SaveChangesAsync(cancellationToken);
 
 したがって、単一の作業単位で完結する処理には明示的なトランザクションは不要です。
 
+### データベーストリガーがあるテーブルの保存
+
+EF Core は `SaveChanges` のとき、SQL Server では T-SQL の **`OUTPUT` 句** を使って生成された値（`IDENTITY` の主キーなど）を効率よく取得します。ところが `OUTPUT` 句には制約があり、**トリガーが有効なテーブルには使えません**。
+
+トリガーを付けたテーブルに対して何も構成せずに保存すると、実測では次の例外が発生しました。
+
+```text
+DbUpdateException: The target table 'Blogs' of the DML statement cannot have any
+enabled triggers if the statement contains an OUTPUT clause without INTO clause.
+```
+
+対処方法は 2 つあります。テーブルにトリガーがあることを EF Core に伝えるか、`OUTPUT` 句の使用を直接無効にします。
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    // 方法 1: トリガーの存在を宣言する
+    modelBuilder.Entity<Blog>()
+        .ToTable(tb => tb.HasTrigger("TR_Blogs_Insert"));
+
+    // 方法 2: OUTPUT 句の使用を無効にする
+    modelBuilder.Entity<Blog>()
+        .ToTable(tb => tb.UseSqlOutputClause(false));
+}
+```
+
+どちらを構成しても保存は成功しました（実測）。生成される SQL は次のように変わります。
+
+```sql
+-- 既定: MERGE と OUTPUT 句で複数行をまとめて挿入し、生成された Id を一度に受け取る
+MERGE ... INSERT ([Name]) VALUES (i.[Name])
+OUTPUT INSERTED.[Id], i._Position;
+
+-- 構成後: 1 行ずつ INSERT し、その都度 SELECT で Id を取得する
+INSERT INTO [Blogs] ([Name]) VALUES (@p0);
+SELECT [Id] ...
+INSERT INTO [Blogs] ([Name]) VALUES (@p1);
+SELECT [Id] ...
+```
+
+> [!WARNING]
+> これは EF Core 7 で入った破壊的変更です。公式の破壊的変更一覧でも影響度 **High** に分類されており、「既定でより効率的な手法で保存するようになったが、その手法は対象テーブルにトリガーがある場合 SQL Server ではサポートされない」と説明されています。EF Core 6 以前から移行してきて保存だけが失敗する場合は、まずトリガーの有無を疑ってください。
+
+> [!NOTE]
+> 上の SQL のとおり、構成すると **1 行ずつの往復に戻る**ため、まとめて挿入する場合の性能は落ちます。公式もこの手法を「以前の、効率の劣る手法」と表現しています。トリガーがあるテーブルは必要な範囲に限定するのが望ましいです。
+>
+> 多くのテーブルにトリガーがある場合は、`IModelFinalizingConvention` を実装したモデル構築規約で全テーブルにまとめて適用する方法が公式に案内されています。
+
+> [!TIP]
+> SQLite にも同種の制限があります。EF Core は `RETURNING` 句を使うため、**AFTER トリガーを持つテーブルや仮想テーブル**では同じ構成が必要です。こちらも EF Core 7 の破壊的変更として影響度 High で挙げられています。
+
 ### 明示的なトランザクション制御
 
 複数回の `SaveChangesAsync` や、生の SQL を含む処理を 1 つのトランザクションにまとめたい場合は、明示的にトランザクションを開始します。
@@ -3982,6 +4034,8 @@ flowchart TB
 - [一括構成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/bulk-configuration)
 - [継承 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/inheritance)
 - [生成されるプロパティ値 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/generated-properties)
+- [SQL Server プロバイダーのその他の考慮事項 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/misc)
+- [EF Core 7.0 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-7.0/breaking-changes)
 - [エンティティのプロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/entity-properties)
 - [リレーションシップ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships)
 - [値の変換 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/value-conversions)
