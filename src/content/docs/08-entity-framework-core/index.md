@@ -29,6 +29,8 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [継承のマッピング](#継承のマッピング)
    - [シャドウプロパティとバッキングフィールド](#シャドウプロパティとバッキングフィールド)
    - [シーケンスによる採番](#シーケンスによる採番)
+   - [計算列](#計算列)
+   - [コマンドのタイムアウト](#コマンドのタイムアウト)
    - [一括構成規約前の構成](#一括構成規約前の構成)
    - [グローバルクエリフィルターと名前付きクエリフィルター](#グローバルクエリフィルターと名前付きクエリフィルター)
 3. [マイグレーションとスキーマ管理](#3-マイグレーションとスキーマ管理)
@@ -1199,6 +1201,69 @@ CREATE TABLE [Orders] (
 
 > [!WARNING]
 > `NEXT VALUE FOR` は SQL Server の構文です。公式ドキュメントも「シーケンスから値を生成する SQL はデータベース固有であり、上の例は SQL Server では動くが他のデータベースでは失敗する」と明記しています。PostgreSQL では `nextval('...')` のように書き換える必要があり、SQLite にはシーケンス自体がありません。
+
+### 計算列
+
+データベース側で他の列から値を導出する **計算列 (computed column)** は、`HasComputedColumnSql` で構成します。
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Person>()
+        .Property(p => p.DisplayName)
+        .HasComputedColumnSql("[FirstName] + ' ' + [LastName]");
+
+    modelBuilder.Entity<Person>()
+        .Property(p => p.PersistedName)
+        .HasComputedColumnSql("[LastName] + ', ' + [FirstName]", stored: true);
+}
+```
+
+第 2 引数 `stored` を省略すると **仮想 (virtual) 計算列** になり、値は取得のたびに計算されます。`stored: true` を指定すると **格納 (stored / persisted) 計算列** になり、行の更新のたびに計算されて他の列と同じようにディスクに保存されます。SQL Server 2022 に対して生成された DDL は次のとおりです（実測）。
+
+```sql
+CREATE TABLE [People] (
+    [Id] int NOT NULL IDENTITY,
+    [FirstName] nvarchar(max) NOT NULL,
+    [LastName] nvarchar(max) NOT NULL,
+    [DisplayName] AS [FirstName] + ' ' + [LastName],
+    [PersistedName] AS [LastName] + ', ' + [FirstName] PERSISTED,
+    CONSTRAINT [PK_People] PRIMARY KEY ([Id])
+);
+```
+
+`FirstName = "Taro"` / `LastName = "Yamada"` を保存して読み直すと、`DisplayName` は `Taro Yamada`、`PersistedName` は `Yamada, Taro` になりました（実測）。
+
+> [!WARNING]
+> 計算列のプロパティに C# 側で値を代入しても、その値はデータベースに書き込まれません。実測では例外も発生せず `SaveChanges` が成功し、値は無視されました。公式ドキュメントも「既定値の代わりに明示的な値を指定することはできるが、計算列に対して同じことはできない」と述べています。**アプリケーションから書き換えたい値には計算列を使わないでください。**
+
+> [!NOTE]
+> 「最終更新日時」を格納計算列で管理したくなりますが、多くのデータベースは計算列に `GETDATE()` のような関数を指定できません。公式ドキュメントはこの用途にはデータベーストリガーを使うよう案内しています。
+
+### コマンドのタイムアウト
+
+EF Core の `CommandTimeout` は **既定では未設定 (`null`)** です。実測でも `db.Database.GetCommandTimeout()` は `null` を返しました。この場合は ADO.NET プロバイダーの既定値が使われ、`Microsoft.Data.SqlClient` の `SqlCommand.CommandTimeout` は公式ドキュメントに「既定は 30 秒」と記載されています。ログに `CommandTimeout='30'` と出るのはこのためです。
+
+設定方法は 2 つあります。
+
+```csharp
+// 1. DbContext 全体の既定として構成する
+builder.Services.AddDbContext<BloggingContext>(options =>
+    options.UseSqlServer(connectionString, sqlOptions => sqlOptions.CommandTimeout(120)));
+
+// 2. 特定の処理だけ実行時に変更する
+context.Database.SetCommandTimeout(180);
+```
+
+実測では、`CommandTimeout` を 3 秒に設定して 10 秒かかるコマンドを実行すると、約 3.2 秒で `SqlException` が発生しました。エラー番号は `-2`（タイムアウト）です。
+
+```text
+SqlException Number=-2: 実行タイムアウトの期限が切れました。
+操作完了前にタイムアウト期間が過ぎたか、サーバーが応答していません。
+```
+
+> [!TIP]
+> `CommandTimeout` は 1 つのコマンドの実行時間の上限で、接続の確立を待つ時間の上限である接続文字列の `Connect Timeout` とは別物です。レポート生成や一括更新のような長時間かかる処理だけを対象に `SetCommandTimeout` で個別に延ばすほうが、全体の既定値を大きくするより安全です。
 
 ### 一括構成（規約前の構成）
 
@@ -3916,6 +3981,7 @@ flowchart TB
 - [モデルの作成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/)
 - [一括構成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/bulk-configuration)
 - [継承 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/inheritance)
+- [生成されるプロパティ値 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/generated-properties)
 - [エンティティのプロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/entity-properties)
 - [リレーションシップ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships)
 - [値の変換 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/value-conversions)
