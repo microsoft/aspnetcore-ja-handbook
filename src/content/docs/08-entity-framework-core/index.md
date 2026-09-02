@@ -57,6 +57,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
 5. [更新／変更操作とトランザクション](#5-更新変更操作とトランザクション)
    - [追加・更新・削除の基本](#追加更新削除の基本)
    - [SaveChanges の既定のトランザクション動作](#savechanges-の既定のトランザクション動作)
+   - [保存のバッチ処理](#保存のバッチ処理)
    - [データベーストリガーがあるテーブルの保存](#データベーストリガーがあるテーブルの保存)
    - [明示的なトランザクション制御](#明示的なトランザクション制御)
    - [セーブポイント](#セーブポイント)
@@ -2339,6 +2340,45 @@ await context.SaveChangesAsync(cancellationToken);
 
 したがって、単一の作業単位で完結する処理には明示的なトランザクションは不要です。
 
+### 保存のバッチ処理
+
+EF Core は `SaveChanges` の呼び出しごとに、追跡している変更をまとめて 1 回の往復で送ります。ただし何件でも 1 回にまとめるわけではありません。公式ドキュメントは SQL Server について「4 文未満ではバッチ処理は概して効率が悪く、40 文前後を超えると利点が薄れるため、**既定では 1 回のバッチで最大 42 文まで**を実行し、残りは別の往復で実行する」と説明しています。
+
+実際に SQL Server 2022 に対して N 件の `Add` を保存し、発行された `DbCommand` の回数を数えたところ、公式の説明どおり 42 と 43 の間で分割されました（実測）。
+
+| 保存した件数 | 発行された `DbCommand` |
+| --- | --- |
+| 42 | 1 回 |
+| 43 | 2 回 |
+| 84 | 2 回 |
+| 85 | 3 回 |
+
+この上限は `MaxBatchSize` で変更できます。`MinBatchSize` でバッチ処理を始める下限も指定できます。
+
+```csharp
+builder.Services.AddDbContext<BloggingContext>(options =>
+    options.UseSqlServer(connectionString, sqlOptions => sqlOptions
+        .MinBatchSize(1)
+        .MaxBatchSize(100)));
+```
+
+> [!NOTE]
+> SQL Server プロバイダーの `MaxBatchSize` には実装上の上限があります。`SqlServerModificationCommandBatchFactory` は `MaxMaxBatchSize = 1000` と定義しており、指定値と 1000 の小さいほうを採用します。実測でも、1,200 件の保存で `MaxBatchSize(2000)` を指定したときの往復は 2 回で、`MaxBatchSize(1000)` と同じでした。**1000 を超える値を指定しても意味がありません。**
+
+> [!WARNING]
+> `MaxBatchSize` を小さくすると往復回数がそのまま増えます。ネットワーク遅延のある環境では影響が非常に大きく、Azure Container Instances 上の SQL Server 2022 に対して 1,000 件を挿入した実測では次のようになりました（3 回測定の中央値）。
+>
+> | `MaxBatchSize` | 所要時間 |
+> | --- | --- |
+> | 1 | 209,354 ms |
+> | 既定（42） | 5,542 ms |
+> | 1000 | 272 ms |
+>
+> この数値はネットワーク遅延が大きい構成での測定であり、往復回数の削減がそのまま効いています。**同一ネットワーク内のデータベースでは差はここまで大きくなりません。**公式が「40 文前後を超えると利点が薄れる」としているとおり、既定値を変えるかどうかは必ず自分の環境で計測してから判断してください。
+
+> [!TIP]
+> そもそも大量の行を同じ条件で更新・削除するなら、バッチサイズを調整するより `ExecuteUpdate` / `ExecuteDelete` を使うほうが効果的です。公式も、変更追跡を経由せず 1 回の往復で完結する点を利点として挙げています。詳しくは後述の [一括更新・一括削除](#一括更新一括削除) を参照してください。
+
 ### データベーストリガーがあるテーブルの保存
 
 EF Core は `SaveChanges` のとき、SQL Server では T-SQL の **`OUTPUT` 句** を使って生成された値（`IDENTITY` の主キーなど）を効率よく取得します。ところが `OUTPUT` 句には制約があり、**トリガーが有効なテーブルには使えません**。
@@ -4036,6 +4076,7 @@ flowchart TB
 - [生成されるプロパティ値 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/generated-properties)
 - [SQL Server プロバイダーのその他の考慮事項 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/misc)
 - [EF Core 7.0 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-7.0/breaking-changes)
+- [効率的な更新 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/performance/efficient-updating)
 - [エンティティのプロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/entity-properties)
 - [リレーションシップ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships)
 - [値の変換 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/value-conversions)
