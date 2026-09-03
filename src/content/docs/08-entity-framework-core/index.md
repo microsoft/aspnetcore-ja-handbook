@@ -514,7 +514,11 @@ Trust Server Certificate=True;Application Name="EFCore/10.0.11 (macOS 26.6.2 Arm
 > from singleton 'MyBackgroundService'.
 > ```
 >
-> この状況の解決策は後述の `IServiceScopeFactory` か `IDbContextFactory<T>` です。なお、`AddDbContext` でプロバイダー（`UseSqlServer` など）の指定を忘れた場合は、解決時に別の例外になります。
+> この状況の解決策は後述の `IServiceScopeFactory` か `IDbContextFactory<T>` です。
+>
+> **ただし、この検証が働くのは開発環境だけです。** 同じコードの環境名だけを `Production` に変えて起動したところ、**例外は発生せずアプリケーションはそのまま起動しました**。公式ドキュメントも、この検証は「アプリケーションが開発環境で実行され、`CreateApplicationBuilder` でホストを構築したとき」に既定のサービスプロバイダーが行うものと説明しています。本番環境では検出されないため、開発環境での起動確認を省かないでください。
+>
+> なお、`AddDbContext` でプロバイダー（`UseSqlServer` など）の指定を忘れた場合は、解決時に別の例外になります。
 >
 > ```text
 > System.InvalidOperationException: No database provider has been configured for this DbContext.
@@ -571,6 +575,44 @@ sequenceDiagram
 > 検出を無効にすると、**実行のたびに違う低レベルの例外が出て、原因にたどり着けなくなります。** 公式が言う「予測できない形で失敗する」とはこのことです。この設定は原則として既定のままにしてください。
 
 Singleton サービスやバックグラウンドサービスから `DbContext` を使う場合は、`IServiceScopeFactory` でスコープを作るか、`IDbContextFactory<T>` を使います。
+
+公式ドキュメントは `BackgroundService` のようなホステッドサービスについて、**依存関係をコンストラクター注入せず、`IServiceScopeFactory` を注入してスコープを作り、そのスコープから解決する**よう案内しています。EF Core 側の公式ドキュメントも、複数のスレッドから使う場合の手段として `IServiceScopeFactory` によるスコープ作成を挙げています。
+
+```csharp
+public class ReportWorker(
+    IServiceScopeFactory scopeFactory,
+    ILogger<ReportWorker> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        // スコープを作り、その中から DbContext を解決する
+        using var scope = scopeFactory.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<BloggingContext>();
+
+        logger.LogInformation(
+            "ブログ件数={Count}",
+            await context.Blogs.CountAsync(stoppingToken));
+    }
+}
+```
+
+`DbContext` を直接コンストラクターで受け取る形と、この形の実測結果は次のとおりです。
+
+| 実装 | 環境 | 結果 |
+| --- | --- | --- |
+| `BackgroundService(BloggingContext ctx)` | Development | `AggregateException` → `Cannot consume scoped service 'BloggingContext' from singleton 'Microsoft.Extensions.Hosting.IHostedService'.` |
+| 同上 | Production | **例外なく起動してしまう** |
+| `IServiceScopeFactory` でスコープを作る | Development | 正常に動作し、クエリが実行された |
+
+> [!TIP]
+> スコープの検証では、もう 1 つ「**Scoped サービスをルートのサービスプロバイダーから解決していないか**」も確認されます。`app.Services.GetRequiredService<BloggingContext>()` のようにスコープを作らずに解決すると、次の例外になります（実測）。
+>
+> ```text
+> System.InvalidOperationException: Cannot resolve scoped service
+> 'BloggingContext' from root provider.
+> ```
+>
+> ルートコンテナーで作られた Scoped サービスは、アプリケーションの終了時まで破棄されず、実質的に Singleton に昇格してしまうためです。
 
 ```csharp
 builder.Services.AddDbContextFactory<BloggingContext>(options =>
