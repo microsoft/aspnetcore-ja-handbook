@@ -637,6 +637,36 @@ public class ReportGenerator(IDbContextFactory<BloggingContext> contextFactory)
 > [!NOTE]
 > **Spring Boot** の `EntityManager` は `@PersistenceContext` によって注入されますが、そのスコープはリクエスト単位ではなく **トランザクションスコープ** です（Jakarta Persistence の仕様が「特に指定しなければトランザクションスコープの永続化コンテキストが使われる」と定めています）。EF Core の `DbContext` は明示的に Scoped として登録され、`SaveChangesAsync` の呼び出しが保存の契機になる点が異なります。**Django** の ORM は 1 つのスレッドが 1 つの接続を保持する形で暗黙的に接続を管理しますが、EF Core はインスタンスの寿命を DI コンテナーが管理します。
 
+#### サーバー側 Blazor での DbContext
+
+サーバー側の Blazor は、リクエストごとではなく**ユーザーの接続（サーキット）単位で状態を保持する**アプリケーションフレームワークです。そのため Scoped の `DbContext` は、そのサーキット内の**複数のコンポーネントで共有**されます。`DbContext` はスレッドセーフではなく同時利用を想定していないため、公式ドキュメントは既存のライフタイムがいずれも適さないと説明しています。
+
+| ライフタイム | 公式が挙げる問題 |
+| --- | --- |
+| Singleton | アプリケーションの全ユーザーで状態が共有され、不適切な同時利用になる |
+| Scoped（既定） | 同じユーザーのコンポーネント間で同様の問題が起きる |
+| Transient | 要求ごとに新しいインスタンスになるが、コンポーネントが長寿命になり得るため、意図より長寿命なコンテキストになる |
+
+1 つの `DbContext` インスタンスに対して 2 つの操作を同時に実行すると、実際に次の例外になります（実測）。
+
+```text
+System.InvalidOperationException: A second operation was started on this context
+instance before a previous operation completed. This is usually caused by
+different threads concurrently using the same instance of DbContext.
+```
+
+対して、`IDbContextFactory<T>` から操作ごとにインスタンスを作れば、同じ 2 つの操作を並行実行しても例外は発生しませんでした。
+
+公式ドキュメントが示す指針は次のとおりです。
+
+- **操作ごとに 1 つのコンテキスト**を使うことを検討する（`DbContext` は生成コストが小さくなるよう設計されている）
+- 同時実行を防ぐ**フラグ**（`Loading` など）を用意する。これはデータベース行のロックが目的ではなく、取得中に UI 操作をさせないためのもの
+- 同じコード部分に複数のスレッドが入る可能性があるなら、**ファクトリーを注入して操作ごとに新しいインスタンスを作る**
+- 変更追跡や同時実行制御を活かす長めの操作では、**コンテキストをコンポーネントの寿命に合わせる**
+
+> [!NOTE]
+> この記事が扱うのは**サーバー側の Blazor** です。Blazor WebAssembly は WebAssembly のサンドボックス内で動作し、ほとんどの直接的なデータベース接続ができないため、公式ドキュメントでも対象外とされています。
+
 ### 規約・データ注釈・Fluent API
 
 EF Core はモデルを 3 段階で構成します。優先順位は下にあるものほど強くなります。
@@ -4203,6 +4233,7 @@ flowchart TB
 - [EF Core 10 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-10.0/breaking-changes)
 - [データベースプロバイダー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/)
 - [DbContext の有効期間、構成、初期化 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/dbcontext-configuration/)
+- [Entity Framework Core を使用した ASP.NET Core Blazor | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/blazor/blazor-ef-core?view=aspnetcore-10.0)
 - [接続文字列 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-strings)
 
 ### モデルの作成
