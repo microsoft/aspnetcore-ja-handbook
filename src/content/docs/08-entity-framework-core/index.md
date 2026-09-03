@@ -2096,6 +2096,47 @@ var page = await context.Posts
 | オフセット | 任意のページに直接ジャンプできる | 深いページで遅い。行の増減でずれる |
 | キーセット | ページ位置に関係なく高速。ずれにくい | 「10 ページ目へ」のようなランダムアクセスができない |
 
+> [!NOTE]
+> 公式ドキュメントは、ランダムアクセスが本当に必要かをよく検討するよう促したうえで、必要な場合の実装として「**次へ／前への移動はキーセット、任意のページへのジャンプはオフセット**」という併用を挙げています。
+
+#### 複数の列で並べ替えるキーセットページング
+
+並べ替えのキーが 1 つでは一意にならない場合、キーセットページングの条件は**単純な `>` の連鎖では書けません**。次のように書くと、境界にある行が丸ごと欠落します。
+
+```csharp
+// 誤り: 同じ Date の行が残っていても次の日付へ飛んでしまう
+.Where(p => p.Date > lastDate)
+```
+
+日付が重複するデータ 6 件（`2026-01-01` が 3 件、`2026-01-02` が 3 件）を用意し、`Date` と `Id` の昇順で 2 件ずつページングして実測しました。1 ページ目は `Id=1, 2` で、境界は `Date=2026-01-01, Id=2` です。
+
+| 条件 | 生成される `WHERE` 句 | 2 ページ目の結果 |
+| --- | --- | --- |
+| `p.Date > lastDate` | `[p].[Date] > @lastDate` | `Id=4, 5` — **`Id=3` が欠落** |
+| 公式の OR パターン | `[p].[Date] > @lastDate OR ([p].[Date] = @lastDate AND [p].[Id] > @lastId)` | `Id=3, 4` — 正しい |
+
+公式ドキュメントが示す正しい書き方は、**最後のキー以外が等しい場合を `OR` でつなぐ**形です。
+
+```csharp
+var page = await context.Posts
+    .AsNoTracking()
+    .OrderBy(p => p.Date)
+    .ThenBy(p => p.Id)
+    .Where(p => p.Date > lastDate || (p.Date == lastDate && p.Id > lastId))
+    .Take(pageSize)
+    .ToListAsync(cancellationToken);
+```
+
+並べ替えキーが増えるほど、この `OR` の項も増えていきます。
+
+> [!WARNING]
+> 多くの SQL データベースは、これをより簡潔かつ効率的に書ける **行値 (row values)** 構文 `WHERE (Date, Id) > (@lastDate, @lastId)` をサポートしていますが、**EF Core は現時点でこれを LINQ で表現できません**。公式ドキュメントにもその旨が明記されており、[dotnet/efcore#26822](https://github.com/dotnet/efcore/issues/26822) で追跡されています。EF Core 10 の時点でもこの Issue は Backlog のままです。
+>
+> 実際に `ValueTuple.Create(p.Date, p.Id).CompareTo(...)` の形で書いて実行したところ、SQL に変換できず `InvalidOperationException`（`The LINQ expression ... could not be translated`）になりました。上記の `OR` パターンを使ってください。
+
+> [!TIP]
+> ページングでは、**並べ替えに対応するインデックスが性能を左右します**。公式ドキュメントも「ページングの並べ替えに対応するインデックスを用意すること」を求めており、複数の列で並べ替える場合はそれらをまとめた**複合インデックス (composite index)** を定義します。
+
 > [!IMPORTANT]
 > ページングでは、並び順が一意になるようにしてください。並び順が同値の行があると、ページ間で行の順序が不定になります。上の例のように、末尾に主キーを加えるのが確実です。
 
