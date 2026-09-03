@@ -3311,7 +3311,60 @@ modelBuilder.Entity<Post>().HasIndex(p => p.Title).HasFilter("[Title] IS NOT NUL
 ```
 
 > [!IMPORTANT]
-> インデックスは読み取りを高速化する一方で、書き込み時のコストとストレージを増やします。すべての列にインデックスを張るのではなく、実際のクエリパターンに基づいて必要なものだけを作成してください。
+> インデックスは読み取りを高速化する一方で、書き込み時のコストとストレージを増やします。すべての列にインデックスを張るのではなく、実際のクエリパターンに基づいて必要なものだけを作成してください。公式ドキュメントは、不要なインデックスを避けるほかに、**インデックスフィルターで対象行を絞り込んでオーバーヘッドを減らす**ことも挙げています。上の `HasFilter` の例は、検索対象が `Title IS NOT NULL` の行だけだとわかっている場合に、インデックスのサイズと更新コストを下げる手段でもあります。
+
+#### インデックスが効く条件と効かない条件
+
+公式ドキュメントは「インデックスがあれば必ず速くなるわけではない」として、いくつかの注意点を挙げています。SQL Server 2022 に 20,000 行のテーブルを作り、統計を更新したうえで `SET SHOWPLAN_ALL ON` で実行プランの物理演算子を確認したところ、いずれも公式の説明どおりの結果になりました。
+
+| 絞り込みの書き方 | 生成される条件 | 物理演算子 |
+| --- | --- | --- |
+| `Title.StartsWith("T0001")` | `LIKE N'T0001%'` | **Index Seek** |
+| `Title.EndsWith("A")` | `LIKE N'%A'` | Index Scan |
+| 複合インデックス `(BlogId, Price)` を `BlogId` で絞る | `BlogId = 7` | **Index Seek** |
+| 同じインデックスを `Price` **だけ**で絞る | `Price = 7` | Index Scan |
+| 同じインデックスを両方で絞る | `BlogId = 7 AND Price = 7` | **Index Seek** |
+| 列に対する式で絞る | `Price / 2 = 7` | Index Scan |
+
+ここから読み取れることは 2 つあります。
+
+1. **複合インデックスの列順序には非対称性がある。** 公式ドキュメントは「A と B の列にインデックスを張ると、A と B での絞り込みも、**A だけでの絞り込みも**高速化されるが、**B だけでの絞り込みは高速化されない**」と説明しています。上の表はこの説明をそのまま再現しています。`(BlogId, Price)` のインデックスは `Price` 単独の検索には使えないため、`Price` だけで絞り込むクエリが多いなら別のインデックスが必要です。
+2. **列に式を適用すると単純なインデックスは使えなくなる。** `Price / 2 = 7` のように列を計算した結果で絞り込むと、`Price` にインデックスがあってもスキャンになります。公式の対処は、**永続化された計算列を定義してそこにインデックスを張る**ことです。
+
+```csharp
+public class Post
+{
+    public decimal Price { get; set; }
+    public decimal HalfPrice { get; set; }
+}
+
+modelBuilder.Entity<Post>()
+    .Property(p => p.HalfPrice)
+    .HasComputedColumnSql("[Price] / 2", stored: true);
+
+modelBuilder.Entity<Post>().HasIndex(p => p.HalfPrice);
+```
+
+同じ 20,000 行のテーブルでこの構成にして `WHERE [HalfPrice] = 7` を実行すると、物理演算子は **Index Seek** に変わりました。計算列については「[計算列](#計算列)」も参照してください。
+
+#### SQL Server 固有のインデックス構成
+
+インデックスの細かな性質はデータベースごとに異なるため、EF Core はプロバイダー固有の API で構成します。SQL Server プロバイダーでは**クラスター化**と**フィル ファクター**を指定できます。
+
+```csharp
+modelBuilder.Entity<Blog>().HasIndex(b => b.PublishedOn).IsClustered();
+
+modelBuilder.Entity<Blog>().HasIndex(b => b.PublishedOn).HasFillFactor(80);
+```
+
+`IsClustered(false)` と `HasFillFactor(80)` を指定したモデルで `GenerateCreateScript()` を実行すると、次の DDL が生成されました。
+
+```sql
+CREATE NONCLUSTERED INDEX [IX_Posts_Price] ON [Posts] ([Price]) WITH (FILLFACTOR = 80);
+```
+
+> [!NOTE]
+> クラスター化インデックスはテーブルごとに 1 つだけです。EF Core は主キーに対してクラスター化インデックスを既定で作成するため、別の列を `IsClustered()` にする場合は主キー側を `IsClustered(false)` にする必要があります。
 
 ### DbContext プーリング
 
@@ -4256,6 +4309,7 @@ flowchart TB
 - [一括構成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/bulk-configuration)
 - [継承 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/inheritance)
 - [生成されるプロパティ値 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/generated-properties)
+- [SQL Server プロバイダーのインデックス | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/indexes)
 - [SQL Server プロバイダーのその他の考慮事項 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/misc)
 - [EF Core 7.0 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-7.0/breaking-changes)
 - [効率的な更新 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/performance/efficient-updating)
