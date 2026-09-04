@@ -52,6 +52,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [本番環境への適用戦略](#本番環境への適用戦略)
    - [SQL スクリプトとマイグレーションバンドル](#sql-スクリプトとマイグレーションバンドル)
    - [起動時マイグレーションの是非](#起動時マイグレーションの是非)
+   - [同時にマイグレーションが走らないようにする](#同時にマイグレーションが走らないようにする)
    - [初期データの投入（シード）](#初期データの投入シード)
    - [設計時 DbContext ファクトリ](#設計時-dbcontext-ファクトリ)
 4. [クエリ操作と LINQ](#4-クエリ操作と-linq)
@@ -86,6 +87,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [インターセプターによる横断的な処理](#インターセプターによる横断的な処理)
 6. [パフォーマンス最適化](#6-パフォーマンス最適化)
    - [まず計測する](#まず計測する)
+   - [EF Core が公開しているメトリックを見る](#ef-core-が公開しているメトリックを見る)
    - [パラメーター名が EF Core 10 で変わった](#パラメーター名が-ef-core-10-で変わった)
    - [クエリタグでログと LINQ を結びつける](#クエリタグでログと-linq-を結びつける)
    - [インデックスを正しく張る](#インデックスを正しく張る)
@@ -631,6 +633,21 @@ Trust Server Certificate=True;Application Name="EFCore/10.0.11 (macOS 26.6.2 Arm
   }
 }
 ```
+
+#### AddDbContext を 2 回呼ぶと後の設定が勝つ
+
+`AddDbContext` を同じ `DbContext` 型に対して複数回呼び出したとき、**どちらの構成が使われるか**は EF Core 8 で変わりました。以前は最初の呼び出しが勝ちましたが、現在は**最後の呼び出しが勝ちます**。
+
+```csharp
+services.AddDbContext<BloggingContext>(o => o.UseSqlServer(first));
+services.AddDbContext<BloggingContext>(o => o.UseSqlServer(second));
+// → second が使われる
+```
+
+実際に接続文字列を変えて 2 回登録し、解決された `DbContext` の接続先を確認したところ、2 つ目の設定が使われました（実測）。これは `AddDbContext` が `TryAdd` ではなく通常の登録を使うようになったためで、公式ドキュメントは「他の `Add*` メソッドと一貫した動作になった」と説明しています。
+
+> [!WARNING]
+> ライブラリが内部で `AddDbContext` を呼んでいる場合、アプリケーション側の登録順によって構成が入れ替わります。**ライブラリの登録より後にアプリケーション側の登録を書く**のが安全です。
 
 ### DbContext のライフタイムとスレッド安全性
 
@@ -1208,6 +1225,34 @@ Never:                Remove 直後の子の状態 = Unchanged
 >
 > `OnSaveChanges` が役に立つのは、「子を一時的に切り離して別の親に付け替える」といった操作を `SaveChanges` までの間に行いたい場合です。`Immediate` のままだと、切り離した瞬間に子が削除対象になってしまいます。
 
+#### 参照を切っても子は削除されない
+
+親子関係を切るときに、`Remove` ではなく**コレクションから外す**書き方をすることがあります。
+
+```csharp
+var blog = await db.Blogs.Include(b => b.Posts).SingleAsync(b => b.Id == 1);
+blog.Posts.Clear();
+await db.SaveChangesAsync();
+```
+
+このとき子（`Post`）がどうなるかは、リレーションシップが**必須か省略可能か**で変わります。EF Core 7 以降、**省略可能なリレーションシップでは子は削除されず、外部キーが `NULL` になるだけ**です。実測でも、`Clear()` して保存したあとに `Post` は 1 件残り、`BlogId` が `NULL` になっていました。
+
+EF Core 6 までは、カスケード削除が構成されていれば子も削除されていました。**アップグレードすると、消えるはずだった行が孤児として残り続けます。**
+
+必須のリレーションシップ（外部キーが `NOT NULL`）であれば、外部キーを `NULL` にできないため、これまでどおり子も削除されます。また、**主体（親）そのものを `Remove` した場合は、省略可能なリレーションシップでもカスケード削除が働きます**。
+
+```csharp
+db.Blogs.Remove(blog);   // → Post も削除される（構成に従う）
+blog.Posts.Clear();      // → Post は残り、BlogId が NULL になる
+```
+
+子を確実に消したいのであれば、明示的に削除します。
+
+```csharp
+db.Posts.RemoveRange(blog.Posts);
+await db.SaveChangesAsync();
+```
+
 #### SQL Server では循環するカスケードを作れない
 
 必須リレーションシップは既定でカスケード削除になるため、3 つ以上のエンティティが輪を作ると SQL Server がテーブルを作成できません。ブログ・投稿・人物が互いに必須リレーションシップで結ばれたモデルでデータベースを作成しようとしたところ、次の例外になりました。
@@ -1544,6 +1589,28 @@ CREATE TABLE [CreditCardPayments] (
 SELECT [p].[Id], [p].[Amount], [p].[Discriminator], [p].[CardNumber]
 FROM [Payments] AS [p]
 WHERE [p].[Discriminator] = N'CreditCardPayment'
+```
+
+#### 識別子列は必要な長さしか取らない
+
+TPH の識別子列は、EF Core 8 以降、**既知の識別子値をすべて収められる最大長**で作られます。それより前は `nvarchar(max)` でした。実際に生成される DDL を型名の長さを変えて比べると、次のようになりました（実測）。
+
+```text
+識別子の値: Animal, Cat, Dog
+  → [Discriminator] nvarchar(8) NOT NULL
+
+識別子の値: Car, Vehicle, VeryLongVehicleTypeNameForTesting
+  → [Discriminator] nvarchar(34) NOT NULL
+```
+
+インデックスを張れる、格納効率がよいといった利点がありますが、公式ドキュメントは注意点も挙げています。**既存のデータベースをアップグレードすると `AlterColumn` が生成され、識別子列がインデックスなどで制約されている場合には失敗することがある**という点です。既存のマイグレーションを持つプロジェクトでは、生成された `AlterColumn` を必ず目視で確認してください。
+
+長さを固定したい場合は明示的に構成できます。
+
+```csharp
+modelBuilder.Entity<Animal>()
+    .Property<string>("Discriminator")
+    .HasMaxLength(50);
 ```
 
 ### 代替キーと一意インデックス
@@ -2785,6 +2852,62 @@ app.Run();
 >
 > `EnsureCreated` はテストやプロトタイプ専用と考えてください。
 
+### 同時にマイグレーションが走らないようにする
+
+起動時マイグレーションでいちばん怖いのは、**複数のインスタンスが同時に起動してマイグレーションを二重に適用する**ことです。コンテナーをスケールアウトした瞬間や、ローリングデプロイの最中に起こります。
+
+公式ドキュメントによれば、EF Core 9 以降の `Migrate()` / `MigrateAsync()` は、マイグレーションを適用する前に**データベース全体のロックを自動で取得**します。ロックはマイグレーションの実行中（シードコードの実行も含む）保持され、完了すると自動的に解放されます。ロックは `dotnet ef database update`、`Update-Database`、マイグレーションバンドル、実行時マイグレーションのいずれにも適用されます。SQL スクリプトは EF Core の外で適用されるため対象外です。
+
+SQL Server ではセッションレベルのアプリケーションロックが使われます。実際に `MigrateAsync()` が発行した SQL をログで拾うと、次の 2 本が確認できました（実測）。
+
+```sql
+DECLARE @result int;
+EXEC @result = sp_getapplock @Resource = '__EFMigrationsLock', @LockOwner = 'Session', @LockMode = 'Exclusive';
+SELECT @result
+
+-- （マイグレーション適用後）
+DECLARE @result int;
+EXEC @result = sp_releaseapplock @Resource = '__EFMigrationsLock', @LockOwner = 'Session';
+SELECT @result
+```
+
+このロックが本当に効くかを確かめるため、別の接続から先に `sp_getapplock` で同じリソース名を握った状態で `MigrateAsync()` を呼び、6 秒後にロックを解放してみました。
+
+```text
+先行ロック取得: 戻り値 0
+6.0 秒後にロックを解放した
+MigrateAsync 完了まで 6.1 秒（待たされた）
+```
+
+`MigrateAsync()` は**ロックが解放されるまで待ち**、解放された直後に処理を続けました。二重適用は起こりません。
+
+#### SQLite では放置されたロックが残る
+
+SQLite にはアプリケーションロックの仕組みがないため、公式ドキュメントによれば EF Core は代わりに **`__EFMigrationsLock` テーブル**を作成し、そこに行を挿入することでロックを表現します。実際にマイグレーションを適用した直後のテーブル一覧を見ると、次のようになっていました（実測）。
+
+```text
+テーブル: __EFMigrationsLock, __EFMigrationsHistory
+```
+
+問題は、公式ドキュメントも警告しているとおり、**マイグレーションの途中でプロセスが強制終了するとロック行が残ってしまう**ことです。この状態を手で再現し、その後もう一度マイグレーションを実行してみました。
+
+```text
+放置されたロック行を挿入した
+8 秒経ってもロック待ちのまま（無期限に待つ）
+ロックテーブルを削除したら完了した
+```
+
+タイムアウトはありません。**ロックが解放されるまで無期限に待ち続けます**。公式ドキュメントが示す解決方法は、`__EFMigrationsLock` テーブルを削除することです。
+
+```sql
+DROP TABLE "__EFMigrationsLock";
+```
+
+> [!WARNING]
+> 公式ドキュメントは「ロックの仕組みはプロバイダーによって大きく異なり、プロバイダー固有の問題を伴うことがある」と明記しています。使用するプロバイダーのドキュメントを必ず確認してください。
+>
+> また、`MigrateAsync()` を**明示的なトランザクションで囲むことはサポートされていません**。マイグレーションのトランザクションは EF Core 自身が管理します。
+
 ### 初期データの投入（シード）
 
 マスターデータや動作確認用の初期データを投入する方法は 2 つあります。
@@ -3405,6 +3528,38 @@ modelBuilder.Entity<Customer>()
     .Property(c => c.Name)
     .UseCollation("SQL_Latin1_General_CP1_CS_AS");
 ```
+
+#### 文字列の主キーは大文字小文字を区別せずに比較される
+
+照合順序の話にはもう 1 つ落とし穴があります。EF Core 8 以降、SQL Server / Azure SQL プロバイダーでは、**文字列の主キーや外部キーの値を .NET 側でも大文字小文字を区別せずに比較します**。データベース側の既定の照合順序に合わせるための変更です。
+
+つまり、`abc` を追跡している状態で `ABC` という別のインスタンスを追跡させようとすると、**同じキーとみなされて失敗します**。
+
+```csharp
+db.Attach(new Customer { Id = "abc", Name = "小文字" });
+db.Attach(new Customer { Id = "ABC", Name = "大文字" }); // ここで例外
+```
+
+```text
+InvalidOperationException: The instance of entity type 'Customer' cannot be tracked
+because another instance with the same key value for {'Id'} is already being tracked.
+```
+
+実測でもこの例外が発生しました。データベースに問い合わせる前の、**変更追跡の段階で弾かれる**点が重要です。
+
+大文字小文字を区別したいのであれば、公式ドキュメントが示すとおり、キーのプロパティに**プロバイダー値比較子 (provider value comparer)** を明示的に構成します。
+
+```csharp
+modelBuilder.Entity<Customer>()
+    .Property(c => c.Id)
+    .Metadata.SetProviderValueComparer(
+        new ValueComparer<string>(
+            (l, r) => string.Equals(l, r, StringComparison.Ordinal),
+            v => v.GetHashCode()));
+```
+
+> [!WARNING]
+> データベース側の列の照合順序も合わせて大文字小文字を区別するものに変更しないと、.NET 側とデータベース側で判定が食い違います。**片方だけを変えてはいけません。**
 
 ### 生の SQL を使う
 
@@ -4850,6 +5005,58 @@ var query = context.Blogs.Where(b => b.Url.Contains("dotnet"));
 Console.WriteLine(query.ToQueryString());
 ```
 
+### EF Core が公開しているメトリックを見る
+
+ログよりも軽量に、アプリケーション全体の傾向をつかみたいときはメトリックが使えます。EF Core 9 以降、EF Core は `System.Diagnostics.Metrics` API で **`Microsoft.EntityFrameworkCore`** という名前のメーターを公開しています。公式ドキュメントに記載されているのは次の 7 つです。
+
+| メトリック | 種類 | 意味 |
+| --- | --- | --- |
+| `microsoft.entityframeworkcore.active_dbcontexts` | UpDownCounter | 現在アクティブな `DbContext` の数 |
+| `microsoft.entityframeworkcore.queries` | Counter | 実行されたクエリの累計 |
+| `microsoft.entityframeworkcore.savechanges` | Counter | `SaveChanges` の累計 |
+| `microsoft.entityframeworkcore.compiled_query_cache_hits` | Counter | クエリキャッシュにヒットした回数 |
+| `microsoft.entityframeworkcore.compiled_query_cache_misses` | Counter | クエリキャッシュを外した回数 |
+| `microsoft.entityframeworkcore.execution_strategy_operation_failures` | Counter | 実行戦略が捉えた操作の失敗回数 |
+| `microsoft.entityframeworkcore.optimistic_concurrency_failures` | Counter | 楽観的同時実行制御の失敗回数 |
+
+`MeterListener` で購読して実測してみます。**同じ形のクエリを 3 回、別の形のクエリを 1 回、`SaveChanges` を 1 回**実行した結果です。
+
+```text
+active_dbcontexts                     = 0
+compiled_query_cache_hits             = 2
+compiled_query_cache_misses           = 2
+execution_strategy_operation_failures = 0
+optimistic_concurrency_failures       = 0
+queries                               = 4
+savechanges                           = 1
+```
+
+`misses` が 2 なのは、**クエリの形が 2 種類**あったからです。同じ形の 2 回目と 3 回目は `hits` に入っています。**`misses` がクエリ実行回数と同じ勢いで増えていたら、キャッシュがまったく効いていない**ことを意味します。動的に組み立てた式ツリーや、定数を埋め込んでしまったクエリが原因になりがちです。
+
+```csharp
+var meter = new MeterListener();
+meter.InstrumentPublished = (instrument, listener) =>
+{
+    if (instrument.Meter.Name == "Microsoft.EntityFrameworkCore")
+    {
+        listener.EnableMeasurementEvents(instrument);
+    }
+};
+meter.SetMeasurementEventCallback<long>((instrument, value, _, _) =>
+    Console.WriteLine($"{instrument.Name} = {value}"));
+meter.Start();
+
+// ここでクエリを実行する
+
+meter.RecordObservableInstruments();
+```
+
+> [!WARNING]
+> EF Core のメトリックはすべて**観測可能な計測器 (observable instrument)** です。値を取り出すには `RecordObservableInstruments()` を明示的に呼ぶ必要があります。これを忘れるとコールバックが 1 度も呼ばれず、「メトリックが取れない」と誤解しがちです（実測で確認）。
+
+> [!TIP]
+> `compiled_query_cache_misses` と `optimistic_concurrency_failures` は、そのまま監視のアラート条件にできます。前者は本章の「[コンパイル済みクエリ](#コンパイル済みクエリ)」で説明したキャッシュの効き具合を、後者は「[楽観的同時実行制御](#楽観的同時実行制御)」で説明した競合の発生頻度を表します。
+
 ### パラメーター名が EF Core 10 で変わった
 
 ログや実行プランに現れる SQL パラメーターの名前は、EF Core 10 で**変数名そのもの**に変わりました。
@@ -6283,6 +6490,7 @@ flowchart TB
 
 - [マイグレーションの概要 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/migrations/)
 - [マイグレーションの適用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/migrations/applying)
+- [EF Core のメトリック | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/metrics)
 - [EF Core ツールのリファレンス (.NET CLI) | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/cli/dotnet)
 - [リバースエンジニアリング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/scaffolding/)
 
