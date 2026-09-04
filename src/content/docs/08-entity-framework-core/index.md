@@ -27,6 +27,8 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [リレーションシップの定義](#リレーションシップの定義)
    - [値の変換・所有型・複合型](#値の変換所有型複合型)
    - [継承のマッピング](#継承のマッピング)
+   - [代替キーと一意インデックス](#代替キーと一意インデックス)
+   - [1 つのテーブルを複数のエンティティで共有する](#1-つのテーブルを複数のエンティティで共有する)
    - [シャドウプロパティとバッキングフィールド](#シャドウプロパティとバッキングフィールド)
    - [シーケンスによる採番](#シーケンスによる採番)
    - [計算列](#計算列)
@@ -1289,6 +1291,109 @@ SELECT [p].[Id], [p].[Amount], [p].[Discriminator], [p].[CardNumber]
 FROM [Payments] AS [p]
 WHERE [p].[Discriminator] = N'CreditCardPayment'
 ```
+
+### 代替キーと一意インデックス
+
+主キー以外の列を「もう 1 つの一意な識別子」として扱いたい場合は **代替キー (alternate key)** を構成します。
+
+```csharp
+modelBuilder.Entity<User>().HasAlternateKey(u => u.Email);
+```
+
+実測した DDL では、`AK_` で始まる名前の一意制約が作られました。
+
+```sql
+[Email] nvarchar(450) NOT NULL,
+CONSTRAINT [AK_Users_Email] UNIQUE ([Email])
+```
+
+代替キーは外部キーの参照先にできます。
+
+```csharp
+modelBuilder.Entity<Order>()
+    .HasOne(o => o.User)
+    .WithMany(u => u.Orders)
+    .HasForeignKey(o => o.UserEmail)
+    .HasPrincipalKey(u => u.Email);
+```
+
+```sql
+CONSTRAINT [FK_Orders_Users_UserEmail] FOREIGN KEY ([UserEmail]) REFERENCES [Users] ([Email]) ON DELETE CASCADE
+```
+
+存在しないメールアドレスで `Order` を保存しようとすると、データベース側で拒否されました。
+
+```text
+The INSERT statement conflicted with the FOREIGN KEY constraint "FK_Orders_Users_UserEmail".
+```
+
+> [!TIP]
+> **単に一意性を強制したいだけなら、代替キーではなく一意インデックス (`HasIndex(...).IsUnique()`) を使ってください。** 公式ドキュメントも同じ指針を示しています。代替キーが一意インデックスと違うのは、外部キーの参照先にできる点です。
+>
+> なお、代替キーは明示的に構成しなくても導入されることがあります。一意インデックスだけを定義したプロパティを `HasPrincipalKey` の対象に指定したところ、EF Core が代替キーを自動的に追加し、`AK_Users_Email` 制約と `IX_Users_Email` 一意インデックスの両方が生成されました。
+
+### 1 つのテーブルを複数のエンティティで共有する
+
+大きな列を含むテーブルを扱うとき、「一覧では軽い列だけ読みたい」という要求があります。EF Core は 2 つのエンティティ型を同じテーブルにマップできます。これを **テーブル分割 (table splitting)** と呼びます。
+
+```csharp
+modelBuilder.Entity<Order>(b =>
+{
+    b.ToTable("Orders");
+    b.Property(o => o.Status).HasColumnName("Status");
+});
+modelBuilder.Entity<DetailedOrder>(b =>
+{
+    b.ToTable("Orders");
+    b.Property(o => o.Status).HasColumnName("Status");
+});
+modelBuilder.Entity<Order>()
+    .HasOne(o => o.DetailedOrder)
+    .WithOne()
+    .HasForeignKey<DetailedOrder>(o => o.Id);
+```
+
+テーブルは 1 つだけ作られ、それぞれのエンティティは自分がマップされた列だけを読みます。実測したクエリは次のとおりです。
+
+```sql
+-- context.Orders
+SELECT [o].[Id], [o].[Status] FROM [Orders] AS [o]
+
+-- context.Detailed
+SELECT [o].[Id], [o].[BillingAddress], [o].[ShippingAddress], [o].[Status]
+FROM [Orders] AS [o]
+WHERE [o].[BillingAddress] IS NOT NULL OR [o].[ShippingAddress] IS NOT NULL
+```
+
+> [!WARNING]
+> 依存側のクエリに `IS NOT NULL` の条件が自動的に付いている点に注目してください。公式ドキュメントによると、**依存エンティティが使う列がすべて `NULL` の場合、EF Core はそのインスタンスを作りません。** 実測でも `Order` だけを保存した後、`Orders` は 2 行なのに `Detailed` は 1 件しか返りませんでした。
+>
+> これは任意の依存エンティティを表現するための仕様ですが、公式は「依存側のプロパティがすべて省略可能でたまたま全部 `null` になった場合にも同じことが起きる。これは期待した動作ではないかもしれない」と注意しています。加えて、この判定はクエリ性能にも影響します。避けたい場合は依存エンティティを必須として構成してください。
+
+1 つのエンティティを複数のテーブルに分けることもできます。こちらは **エンティティ分割 (entity splitting)** です。
+
+```csharp
+modelBuilder.Entity<Customer>(b =>
+{
+    b.ToTable("Customers");
+    b.SplitToTable("CustomerAddresses", t =>
+    {
+        t.Property(c => c.Street);
+        t.Property(c => c.City);
+    });
+});
+```
+
+実測では 2 つのテーブルが作られ、クエリは `INNER JOIN` になり、1 件の保存で 2 行が書き込まれました（影響行数 2）。
+
+```sql
+SELECT TOP(@p) [c].[Id], [c0].[City], [c].[Name], [c0].[Street]
+FROM [Customers] AS [c]
+INNER JOIN [CustomerAddresses] AS [c0] ON [c].[Id] = [c0].[Id]
+```
+
+> [!NOTE]
+> 公式ドキュメントはエンティティ分割の制限として、**継承階層にある型では使えないこと**と、**主テーブルの行に対して分割先テーブルの行が必ず存在しなければならないこと**（分割された部分は省略できない）を挙げています。`INNER JOIN` になるのはこのためです。
 
 ### シャドウプロパティとバッキングフィールド
 
@@ -4995,6 +5100,8 @@ flowchart TB
 - [切断されたエンティティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/disconnected-entities)
 - [チェンジトラッカーのデバッグ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/debug-views)
 - [多対多のリレーションシップ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/many-to-many)
+- [キー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/keys)
+- [高度なテーブルマッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/table-splitting)
 - [カスケード削除 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/cascade-delete)
 - [ID 解決 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/identity-resolution)
 - [外部キーとナビゲーションの変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/relationship-changes)
