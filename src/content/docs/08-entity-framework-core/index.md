@@ -34,6 +34,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [キーなしエンティティ型でビューや集計結果を読む](#キーなしエンティティ型でビューや集計結果を読む)
    - [シャドウプロパティとバッキングフィールド](#シャドウプロパティとバッキングフィールド)
    - [シーケンスによる採番](#シーケンスによる採番)
+   - [主キーの採番方法を細かく制御する](#主キーの採番方法を細かく制御する)
    - [監査履歴を自動で残す（テンポラルテーブル）](#監査履歴を自動で残すテンポラルテーブル)
    - [空間データ](#空間データ)
    - [hierarchyid で階層構造を扱う](#hierarchyid-で階層構造を扱う)
@@ -83,6 +84,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [インターセプターによる横断的な処理](#インターセプターによる横断的な処理)
 6. [パフォーマンス最適化](#6-パフォーマンス最適化)
    - [まず計測する](#まず計測する)
+   - [パラメーター名が EF Core 10 で変わった](#パラメーター名が-ef-core-10-で変わった)
    - [クエリタグでログと LINQ を結びつける](#クエリタグでログと-linq-を結びつける)
    - [インデックスを正しく張る](#インデックスを正しく張る)
    - [DbContext プーリング](#dbcontext-プーリング)
@@ -105,6 +107,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [InMemory プロバイダーが推奨されない理由](#inmemory-プロバイダーが推奨されない理由)
    - [実データベースに対するテスト](#実データベースに対するテスト)
    - [SQLite インメモリを使ったテスト](#sqlite-インメモリを使ったテスト)
+   - [SQLite プロバイダーの制限を把握する](#sqlite-プロバイダーの制限を把握する)
    - [リポジトリパターンとモック](#リポジトリパターンとモック)
    - [WebApplicationFactory を使った統合テスト](#webapplicationfactory-を使った統合テスト)
    - [アーキテクチャ例：レイヤー構成のまとめ](#アーキテクチャ例レイヤー構成のまとめ)
@@ -1825,6 +1828,106 @@ CREATE TABLE [Orders] (
 
 > [!WARNING]
 > `NEXT VALUE FOR` は SQL Server の構文です。公式ドキュメントも「シーケンスから値を生成する SQL はデータベース固有であり、上の例は SQL Server では動くが他のデータベースでは失敗する」と明記しています。PostgreSQL では `nextval('...')` のように書き換える必要があり、SQLite にはシーケンス自体がありません。
+
+### 主キーの採番方法を細かく制御する
+
+整数の主キーは、規約により SQL Server では `IDENTITY(1, 1)`、SQLite では `AUTOINCREMENT` になります。ここでは、その既定を変えたい場面と、既定のままでは詰まる場面を扱います。
+
+#### 開始値と増分を変える（SQL Server）
+
+`UseIdentityColumn` に開始値 (seed) と増分 (increment) を渡すと、`IDENTITY` の引数がそのまま変わります。
+
+```csharp
+modelBuilder.Entity<Blog>()
+    .Property(b => b.Id)
+    .UseIdentityColumn(seed: 1000, increment: 10);
+```
+
+SQL Server 2022 に対して生成された DDL と、実際に採番された値は次のとおりです。
+
+```sql
+CREATE TABLE [Blogs] (
+    [Id] int NOT NULL IDENTITY(1000, 10),
+    ...
+);
+```
+
+```text
+採番された Id: 1000, 1010
+```
+
+#### `IDENTITY` 列に明示的な値を入れる
+
+`IDENTITY` 列を持つエンティティに自分で `Id` を設定して `SaveChanges` すると、次のように失敗します。論理削除した行を元の ID のまま復元したい、といった場面で必ず踏みます。
+
+```text
+SqlException: Cannot insert explicit value for identity column in table 'Blogs'
+when IDENTITY_INSERT is set to OFF.
+```
+
+公式が案内している回避策は、`SET IDENTITY_INSERT` を自分で切り替える方法です。**この設定はトランザクションではなく接続に対して働く**ため、EF Core の操作と同じ接続で実行する必要があります。`DbContext` 経由で SQL を発行すれば同じ接続が使われます。
+
+```csharp
+using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
+
+await context.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT dbo.Blogs ON", cancellationToken);
+
+context.Blogs.Add(new Blog { Id = 999, Name = "復元した行" });
+await context.SaveChangesAsync(cancellationToken);
+
+await context.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT dbo.Blogs OFF", cancellationToken);
+await transaction.CommitAsync(cancellationToken);
+```
+
+この手順で `Id = 999` の行が挿入できることを SQL Server 2022 で確認しました。
+
+> [!WARNING]
+> `SET IDENTITY_INSERT` は**同時に 1 つのテーブルにしか設定できません。** 複数テーブルへ明示的な ID で挿入する場合は、テーブルごとに `ON` と `OFF` を往復させる必要があります。
+
+#### `Guid` の主キーは連番になる
+
+主キーを `Guid` にすると、EF Core は値を**クライアント側で**生成します。このとき使われる `SequentialGuidValueGenerator` は、完全なランダム値ではなく **SQL Server の `uniqueidentifier` の並び順で単調増加する値**を作ります。実際に 5 件を連続して挿入したときの値は次のようになりました。
+
+```text
+438d4606-b71f-460f-9fbd-08df0a6347c0
+5461ab70-518b-4de5-9fbe-08df0a6347c0
+f558d325-061a-4363-9fbf-08df0a6347c0
+a1dcee1b-8378-46a7-9fc0-08df0a6347c0
+6cc905b7-80ec-403e-9fc1-08df0a6347c0
+```
+
+先頭は毎回変わりますが、末尾のブロックが共通で、その手前が `9fbd → 9fc1` と 1 ずつ増えています。この状態でデータベース側に `ORDER BY Id` で並べ替えさせると、挿入した順序どおりに返ってきました。クラスター化インデックスの断片化を避けるための設計です。
+
+> [!NOTE]
+> 値がクライアントで生成されるため、`SaveChanges` の**前**に `entity.Id` を読めます。データベースへの往復を待たずに、その ID を使って他のエンティティを組み立てられるのが `IDENTITY` との大きな違いです。一方で、`NEWSEQUENTIALID()` のような**データベース側**の既定値は使われません。
+
+#### SQLite の `AUTOINCREMENT` を止める
+
+SQLite では整数の主キーに `AUTOINCREMENT` が付きます。EF Core 10 からは、これを無効化できるようになりました。
+
+```csharp
+// 方法 1: SQLite 固有の設定で止める
+modelBuilder.Entity<Blog>()
+    .Property(b => b.Id)
+    .Metadata.SetValueGenerationStrategy(SqliteValueGenerationStrategy.None);
+
+// 方法 2: 値生成そのものを行わない（アプリケーションが値を設定する）
+modelBuilder.Entity<Blog>()
+    .Property(b => b.Id)
+    .ValueGeneratedNever();
+```
+
+どちらでも `AUTOINCREMENT` が消えることを確認しました。
+
+```sql
+-- 既定
+"Id" INTEGER NOT NULL CONSTRAINT "PK_Blogs" PRIMARY KEY AUTOINCREMENT,
+
+-- 上記いずれかを指定した場合
+"Id" INTEGER NOT NULL CONSTRAINT "PK_Blogs" PRIMARY KEY,
+```
+
+なお `AUTOINCREMENT` を外しても、SQLite は `INTEGER PRIMARY KEY` を **rowid の別名**として扱うため、値を指定しなければ自動採番されます。完全に止めるには列型を `INTEGER` から `INT` に変える必要がある、と公式は説明しています。
 
 ### 監査履歴を自動で残す（テンポラルテーブル）
 
@@ -4617,6 +4720,30 @@ var query = context.Blogs.Where(b => b.Url.Contains("dotnet"));
 Console.WriteLine(query.ToQueryString());
 ```
 
+### パラメーター名が EF Core 10 で変わった
+
+ログや実行プランに現れる SQL パラメーターの名前は、EF Core 10 で**変数名そのもの**に変わりました。
+
+```csharp
+var city = "London";
+var blogs = await context.Blogs.Where(b => b.City == city).ToListAsync(cancellationToken);
+```
+
+```sql
+-- EF Core 9 まで
+@__city_0='London'
+WHERE [b].[City] = @__city_0
+
+-- EF Core 10 以降（実測）
+@city='London'
+WHERE [b].[City] = @city
+```
+
+名前が重複する場合にだけ数字が付きます。読みやすさの改善であり、ほとんどのアプリケーションには影響しませんが、次の 2 つは実害が出ます。
+
+- **SQL の文字列を比較するテスト。** `ToQueryString()` の結果や、インターセプターで受け取った `DbCommand.CommandText` を期待値と突き合わせているコードは、すべて書き換えが必要です。`DbParameter.ParameterName` を直接見ているコードも同様です。
+- **クエリプランのキャッシュ。** パラメーター名は SQL 文字列の一部なので、アップグレード直後は**ほぼすべてのプランが再コンパイルされます。** 公式も「大規模なシステムでは、配置直後に一時的なコンパイルのスパイクが起きることを見込んでおくべき」と述べています。負荷の高い時間帯を避けて配置してください。
+
 ### クエリタグでログと LINQ を結びつける
 
 ログに大量の SQL が流れると、「この重いクエリはソースコードのどこが出しているのか」が分からなくなります。**クエリタグ (Query Tag)** を使うと、LINQ クエリに付けた注釈が SQL のコメントとしてそのまま出力されます。
@@ -5709,6 +5836,65 @@ public sealed class SqliteContextFactory : IDisposable
 >
 > どちらも「オフセットを保持したい」用途では意図しない結果になります。SQLite に日時を保存するときは、`DateTimeOffset` をそのまま渡すのではなく **UTC の `DateTime` に統一して保存し、表示時にタイムゾーンを適用する** 設計にしておくと、これらの差異の影響を受けません。
 
+### SQLite プロバイダーの制限を把握する
+
+前節のとおり SQLite はテストの実行先として有力ですが、**本番が SQL Server なら SQLite で通ったテストが本番で通る保証はありません。** 公式が挙げている制限のうち、実際に踏みやすいものを SQLite 上で確認しました。
+
+| 検証した内容 | 結果 |
+| --- | --- |
+| `decimal` 列の型 | `TEXT` にマップされる |
+| `decimal` の等価比較 | `WHERE "Price" = '10.5'` としてそのまま翻訳される |
+| `decimal` の大小比較 | `WHERE ef_compare("Price", '5.0') > 0` に翻訳される |
+| `decimal` の並べ替え | `ORDER BY "Price" COLLATE EF_DECIMAL` に翻訳される |
+| `DateTimeOffset` の大小比較 | `InvalidOperationException`（翻訳できない） |
+| `TimeSpan` の大小比較 | `InvalidOperationException`（翻訳できない） |
+| `ToTable("Items", "sales")` | スキーマが**無視され**て `CREATE TABLE "Items"` になる |
+| `HasSequence<int>()` | `NotSupportedException: SQLite does not support sequences.` |
+| `IsRowVersion()` | 例外にならず `"RowVersion" BLOB NOT NULL` が作られる |
+
+危険なのは表の下 3 行です。**例外が出ないため、テストは通ってしまいます。**
+
+- スキーマ指定は静かに捨てられるので、SQL Server で `sales.Items` と `dbo.Items` を使い分けている設計は SQLite 上では区別されません。
+- `IsRowVersion()` は列こそ作られますが、SQLite はデータベース側で値を生成しないため、**同時実行制御が働きません。** 公式は「データベースが生成する同時実行トークンは未サポート」と明記しています。楽観的同時実行の失敗を再現するテストは、SQLite では書けないと考えてください。
+
+> [!NOTE]
+> `decimal` の扱いは EF Core 10 で改善されました。以前は大小比較と並べ替えがクライアント評価を必要としましたが、EF Core 10 は `ef_compare()` という独自関数と `EF_DECIMAL` という独自の照合順序を接続に登録し、データベース側で処理します。ただし `TEXT` 格納であることは変わらないため、SQL Server の `decimal(18, 2)` と厳密に同じ丸めになるとは限りません。
+
+#### マイグレーションの制限
+
+SQLite は `ALTER TABLE` でできることが極端に少ないため、EF Core は多くの変更を**テーブルの作り直し**で実現します。`Note` 列を削除して `Rank` 列を追加するマイグレーションで、実際に生成された SQL は次のとおりでした。
+
+```sql
+BEGIN TRANSACTION;
+ALTER TABLE "Blogs" ADD "Rank" INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE "ef_temp_Blogs" (
+    "Id" INTEGER NOT NULL CONSTRAINT "PK_Blogs" PRIMARY KEY AUTOINCREMENT,
+    "Name" TEXT NOT NULL,
+    "Rank" INTEGER NOT NULL
+);
+INSERT INTO "ef_temp_Blogs" ("Id", "Name", "Rank")
+SELECT "Id", "Name", "Rank" FROM "Blogs";
+COMMIT;
+
+PRAGMA foreign_keys = 0;
+BEGIN TRANSACTION;
+DROP TABLE "Blogs";
+ALTER TABLE "ef_temp_Blogs" RENAME TO "Blogs";
+COMMIT;
+PRAGMA foreign_keys = 1;
+```
+
+列を 1 つ落とすだけで、全行のコピーと外部キー検査の一時停止が発生します。行数の多いテーブルでは所要時間と一時的なディスク使用量に注意してください。
+
+また、[SQL スクリプトとマイグレーションバンドル](#sql-スクリプトとマイグレーションバンドル)で紹介した冪等スクリプトは、SQLite では生成できません。
+
+```text
+Generating idempotent scripts for migrations is not currently supported for SQLite.
+```
+
+> [!TIP]
+> 制限を回避しつつテストを速く保つ現実的な折衷案は、**単体テストは SQLite、スキーマや同時実行が絡むテストは本番と同じデータベースエンジン**、と使い分けることです。SQL Server なら [Testcontainers](https://dotnet.testcontainers.org/) や開発者向けのコンテナーイメージで、テスト実行時に本物を立てられます。
+
 ### リポジトリパターンとモック
 
 データベースをまったく使わずにビジネスロジックだけをテストしたい場合は、データアクセスをインターフェイスの背後に隠します。
@@ -5911,6 +6097,10 @@ flowchart TB
 - [SQL Server プロバイダーの関数マッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/functions)
 - [SQL Server プロバイダーの全文検索 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/full-text-search)
 - [SQL Server プロバイダーのその他の考慮事項 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/misc)
+- [SQL Server プロバイダーの値生成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/value-generation)
+- [SQLite プロバイダーの制限 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sqlite/limitations)
+- [SQLite プロバイダーの関数マッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sqlite/functions)
+- [SQLite プロバイダーの値生成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sqlite/value-generation)
 - [EF Core 7.0 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-7.0/breaking-changes)
 - [効率的な更新 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/performance/efficient-updating)
 - [エンティティのプロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/entity-properties)
