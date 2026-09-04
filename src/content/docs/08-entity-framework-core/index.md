@@ -19,10 +19,12 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [パッケージの追加とツールの準備](#パッケージの追加とツールの準備)
 2. [モデル定義と DbContext 設計](#2-モデル定義と-dbcontext-設計)
    - [エンティティクラスの定義](#エンティティクラスの定義)
+   - [パラメーター付きコンストラクターへのバインド](#パラメーター付きコンストラクターへのバインド)
    - [DbContext の定義](#dbcontext-の定義)
    - [DI への登録と接続文字列](#di-への登録と接続文字列)
    - [DbContext のライフタイムとスレッド安全性](#dbcontext-のライフタイムとスレッド安全性)
    - [規約・データ注釈・Fluent API](#規約データ注釈fluent-api)
+   - [同じ DbContext 型から複数のモデルを作る](#同じ-dbcontext-型から複数のモデルを作る)
    - [IEntityTypeConfiguration による構成の分割](#ientitytypeconfiguration-による構成の分割)
    - [リレーションシップの定義](#リレーションシップの定義)
    - [値の変換・所有型・複合型](#値の変換所有型複合型)
@@ -32,6 +34,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [キーなしエンティティ型でビューや集計結果を読む](#キーなしエンティティ型でビューや集計結果を読む)
    - [シャドウプロパティとバッキングフィールド](#シャドウプロパティとバッキングフィールド)
    - [シーケンスによる採番](#シーケンスによる採番)
+   - [空間データ](#空間データ)
    - [計算列](#計算列)
    - [コマンドのタイムアウト](#コマンドのタイムアウト)
    - [一括構成規約前の構成](#一括構成規約前の構成)
@@ -72,6 +75,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [接続の回復性とトランザクションの併用](#接続の回復性とトランザクションの併用)
    - [デッドロックへの対処](#デッドロックへの対処)
    - [変更追跡イベントで状態の変化を捕まえる](#変更追跡イベントで状態の変化を捕まえる)
+   - [診断リスナーでプロセス全体のイベントを観測する](#診断リスナーでプロセス全体のイベントを観測する)
    - [インターセプターによる横断的な処理](#インターセプターによる横断的な処理)
 6. [パフォーマンス最適化](#6-パフォーマンス最適化)
    - [まず計測する](#まず計測する)
@@ -368,6 +372,50 @@ public class Contributor
 >
 > パスは **`.editorconfig` を置いた場所からの相対パス** で解釈されます。`Models` がプロジェクト直下にあるとき、`[**/Models/*.cs]` と書くと**マッチせず抑制されません**（実測で確認）。意図したファイルに効いているかどうかは、ビルドして警告が消えることで必ず確かめてください。
 
+### パラメーター付きコンストラクターへのバインド
+
+EF Core は、エンティティを作るときに **パラメーター付きコンストラクターを呼ぶ**ことができます。公式ドキュメントによると、マップされたプロパティと名前・型が一致するパラメーターを持つコンストラクターが見つかれば、既定の引数なしコンストラクターの代わりにそちらが呼ばれます。
+
+```csharp
+public class Book
+{
+    public Book(int id, string title)
+    {
+        Id = id;
+        Title = title;
+    }
+
+    public int Id { get; private set; }
+    public string Title { get; private set; }
+    public string Note { get; set; } = "";
+    public string Computed => Title + "!";   // セッターがないのでマップされない
+}
+```
+
+実測すると、データベースから読み込んだときに `(int id, string title)` が呼ばれ、コンストラクターで受け取らない `Note` はその後に設定されました。**`private set` でも設定できます。**
+
+公式ドキュメントが挙げている注意点のうち、実務で効いてくるのは次の点です。
+
+- すべてのプロパティにコンストラクターパラメーターが必要なわけではない。受け取らなかったプロパティは通常どおり後から設定される
+- パラメーターの型と名前はプロパティと一致する必要がある。ただしプロパティがパスカルケース、パラメーターがキャメルケースという違いは許される
+- **ナビゲーションプロパティはコンストラクターで設定できない**
+- コンストラクターのアクセシビリティは何でもよい。ただし遅延読み込みプロキシを使う場合は、派生プロキシクラスからアクセスできる必要がある（通常は `public` か `protected`）
+- **セッターを持たないプロパティは規約でマップされない。** 上の `Computed` は実測でも列が作られませんでした。読み取り専用にしたい場合は `private set` を使ってください
+- 自動生成のキー値を使う場合、キープロパティは読み書き可能である必要がある
+
+> [!WARNING]
+> どのパラメーターもマップされたプロパティに結び付けられない場合、モデル構築の時点で失敗します。実際にエンティティのプロパティと無関係なパラメーターだけを持つコンストラクターを書いたところ、次の例外になりました。
+>
+> ```text
+> No suitable constructor was found for the type 'WeirdBlog'. The following constructors had parameters
+> that could not be bound to properties of the type:
+>     Cannot bind 'somethingElse' in 'WeirdBlog(Guid somethingElse)'
+> Note that only mapped properties can be bound to constructor parameters. Navigations to related
+> entities, including references to owned types, cannot be bound.
+> ```
+>
+> なお公式ドキュメントは「現時点でコンストラクターのバインドはすべて規約による。使用するコンストラクターを明示的に構成する機能は将来のリリースで予定されている」と述べています。複数のコンストラクターを持つ型では、どれが選ばれるかをコードで指定できません。
+
 ### DbContext の定義
 
 `DbContext` は、エンティティのセット（`DbSet<T>`）を公開し、クエリと保存の起点となるクラスです。
@@ -644,6 +692,28 @@ public class ReportGenerator(IDbContextFactory<BloggingContext> contextFactory)
 > [!NOTE]
 > **Spring Boot** の `EntityManager` は `@PersistenceContext` によって注入されますが、そのスコープはリクエスト単位ではなく **トランザクションスコープ** です（Jakarta Persistence の仕様が「特に指定しなければトランザクションスコープの永続化コンテキストが使われる」と定めています）。EF Core の `DbContext` は明示的に Scoped として登録され、`SaveChangesAsync` の呼び出しが保存の契機になる点が異なります。**Django** の ORM は 1 つのスレッドが 1 つの接続を保持する形で暗黙的に接続を管理しますが、EF Core はインスタンスの寿命を DI コンテナーが管理します。
 
+#### 並行操作は検出されて例外になる
+
+公式ドキュメントは「EF Core は同じ `DbContext` インスタンス上で複数の並行操作が実行されることをサポートしない。これには非同期クエリの並列実行と、複数スレッドからの明示的な同時利用の両方が含まれる」と明記しています。**非同期呼び出しは必ずすぐに `await` するか、並列実行する操作には別々の `DbContext` インスタンスを使ってください。**
+
+同じインスタンスに対して `SaveChangesAsync` を `await` せずに 2 つ同時に走らせたところ、実測でも例外になりました。
+
+```csharp
+// これは動かない
+await Task.WhenAll(context.SaveChangesAsync(), context.SaveChangesAsync());
+```
+
+```text
+System.InvalidOperationException: A second operation was started on this context instance before a
+previous operation completed. This is usually caused by different threads concurrently using the same
+instance of DbContext.
+```
+
+> [!WARNING]
+> 公式ドキュメントは「**並行アクセスが検出されなかった場合、未定義の動作、アプリケーションのクラッシュ、データの破損につながる可能性がある**」と警告しています。上の例外が出るのは EF Core が検出できたケースであり、検出できないケースもあるという意味です。例外が出ないことを「安全である証拠」と考えないでください。
+>
+> ASP.NET Core では、1 つのクライアント要求を実行するスレッドが常に 1 つで、要求ごとに別の DI スコープ（したがって別の `DbContext` インスタンス）が割り当てられるため、ほとんどのアプリケーションではこの問題から守られています。危険になるのは、1 つの要求の中で複数のクエリを `Task.WhenAll` で並列に走らせるような書き方をしたときです。
+
 #### サーバー側 Blazor での DbContext
 
 サーバー側の Blazor は、リクエストごとではなく**ユーザーの接続（サーキット）単位で状態を保持する**アプリケーションフレームワークです。そのため Scoped の `DbContext` は、そのサーキット内の**複数のコンポーネントで共有**されます。`DbContext` はスレッドセーフではなく同時利用を想定していないため、公式ドキュメントは既存のライフタイムがいずれも適さないと説明しています。
@@ -739,6 +809,46 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 
 > [!TIP]
 > データ注釈は検証（`System.ComponentModel.DataAnnotations`）とマッピングの両方で使われる属性が混在しており、意味が重なって分かりにくくなることがあります。永続化に関する構成は Fluent API に寄せ、エンティティクラスをドメインモデルとして保つ設計が扱いやすくなります。
+
+### 同じ DbContext 型から複数のモデルを作る
+
+`OnModelCreating` の中でコンテキストのプロパティを見て、モデルの構築内容を切り替えたくなることがあります。ところが公式ドキュメントが説明しているとおり、**EF はモデルを一度だけ構築し、性能のために結果をキャッシュします。** そのため、素直に書いても切り替わりません。
+
+実際に、同じ DbContext 型でプロパティだけを変えた 2 つのインスタンスを作って比べたところ、**2 つ目も 1 つ目と同じモデルになりました。**
+
+```text
+ファクトリーなし UseIntProperty=true  → IntValue あり
+ファクトリーなし UseIntProperty=false → IntValue あり（切り替わっていない）
+```
+
+モデルのキャッシュキーは `IModelCacheKeyFactory` サービスが生成します。既定の実装はコンテキストの型だけをキーにするため、同じ型からは 1 つのモデルしか作られません。切り替えたい場合は、モデルに影響する変数をすべて含んだキーを返す実装に差し替えます。
+
+```csharp
+public class DynamicModelCacheKeyFactory : IModelCacheKeyFactory
+{
+    public object Create(DbContext context, bool designTime)
+        => context is DynamicContext dynamicContext
+            ? (context.GetType(), dynamicContext.UseIntProperty, designTime)
+            : (object)context.GetType();
+}
+```
+
+```csharp
+protected override void OnConfiguring(DbContextOptionsBuilder options)
+    => options.ReplaceService<IModelCacheKeyFactory, DynamicModelCacheKeyFactory>();
+```
+
+差し替えた後に同じ検証を行うと、意図どおり別々のモデルになりました。
+
+```text
+UseIntProperty=true  → Value なし / IntValue: Int32
+UseIntProperty=false → Value: String / IntValue なし
+```
+
+> [!TIP]
+> 公式ドキュメントは、設計時のモデルキャッシュも扱えるよう `designTime` を受け取るオーバーロードも実装するよう案内しています。上の例のようにキーへ `designTime` を含めてください。
+>
+> この仕組みは、マルチテナントでテナントごとにスキーマが違う場合などに使えます。一方で、**検証コードで「構成を変えて 2 パターン試したのに 2 つ目が効かない」という現象の原因もこれです。** 単に挙動を比べたいだけなら、DbContext の型自体を分けるほうが簡単です。
 
 ### IEntityTypeConfiguration による構成の分割
 
@@ -930,6 +1040,44 @@ await context.SaveChangesAsync();
 | `SetNull` | 子の外部キーを NULL にする（外部キーが NULL 許容である必要がある） |
 | `NoAction` | データベースに制約の判断を委ねる |
 
+#### 自己参照の多対多は「対称」にならない
+
+同じエンティティ型を多対多の両端に使うこともできます。公式ドキュメントが「自己参照 (self-referencing) リレーションシップ」と呼んでいる構成です。
+
+```csharp
+public class Person
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public List<Person> Friends { get; } = new();
+    public List<Person> FriendOf { get; } = new();
+}
+
+modelBuilder.Entity<Person>().HasMany(p => p.Friends).WithMany(p => p.FriendOf);
+```
+
+実測すると、`PersonPerson` という結合テーブルが作られ、2 つの外部キーがどちらも `People` を指しました。
+
+```sql
+CREATE TABLE [PersonPerson] (
+    [FriendOfId] int NOT NULL,
+    [FriendsId] int NOT NULL,
+    CONSTRAINT [PK_PersonPerson] PRIMARY KEY ([FriendOfId], [FriendsId]),
+    CONSTRAINT [FK_PersonPerson_People_FriendOfId] FOREIGN KEY ([FriendOfId]) REFERENCES [People] ([Id]) ON DELETE CASCADE,
+    CONSTRAINT [FK_PersonPerson_People_FriendsId] FOREIGN KEY ([FriendsId]) REFERENCES [People] ([Id])
+);
+```
+
+> [!WARNING]
+> **「A と B は友達」のような対称な関係を、1 つのナビゲーションで表現することはできません。** 公式ドキュメントは「残念ながらこれは簡単にはマップできない。同じナビゲーションをリレーションシップの両端に使うことはできず、単方向の多対多としてマップするのが精一杯」と明言しています。
+>
+> 実測でも `a.Friends.Add(b)` としただけでは、`A.Friends = 1 / A.FriendOf = 0`、`B.Friends = 0 / B.FriendOf = 1` となり、`B` から見た `Friends` は空のままでした。公式が示しているとおり、双方向にしたい場合は両方のコレクションに手で追加する必要があります。
+>
+> ```csharp
+> a.Friends.Add(b);
+> b.Friends.Add(a);
+> ```
+
 #### カスケード削除は「子を読み込んでいるか」で主体が変わる
 
 `OnDelete` を明示しなかった場合の既定値は、外部キーが NULL 許容かどうかで決まります。実測で確認した既定値は次のとおりです。
@@ -955,6 +1103,34 @@ await context.SaveChangesAsync();
 
 > [!TIP]
 > 削除の主体がデータベース側になるかどうかは、パフォーマンスにも例外の種類にも影響します。子を読み込んでいれば EF Core が不整合を検知して `InvalidOperationException` を投げますが、読み込んでいない場合はデータベースが制約違反を返し、`DbUpdateException` にラップされます。
+
+#### カスケード削除のタイミングを制御する
+
+追跡済みエンティティに対してカスケードの動作がいつ行われるかは、`ChangeTracker.CascadeDeleteTiming` と `ChangeTracker.DeleteOrphansTiming` で制御できます。指定できる値は公式 API リファレンスによると次の 3 つです。
+
+| 値 | 意味 |
+| --- | --- |
+| `Immediate` | 主体・親エンティティが変更されたらすぐに、依存・子エンティティへカスケードの動作を行う |
+| `OnSaveChanges` | `SaveChanges` の一部としてカスケードの動作を行う |
+| `Never` | 自動的にはカスケードの動作を行わず、明示的な呼び出しで発生させる |
+
+実測した既定値はどちらも `Immediate` で、`Remove` を呼んだ直後に子が `Deleted` になりました。
+
+```text
+既定 (Immediate):     Remove 直後の子の状態 = Deleted, Deleted
+OnSaveChanges:        Remove 直後の子の状態 = Unchanged, Unchanged
+Never:                Remove 直後の子の状態 = Unchanged
+```
+
+> [!WARNING]
+> `Never` にすると、必須リレーションシップの子を残したまま保存しようとして次の例外になりました。カスケードを止めるのではなく「タイミングをずらす」だけの目的であれば `OnSaveChanges` を使ってください。
+>
+> ```text
+> The association between entity types 'Parent' and 'Child' has been severed, but the relationship is
+> either marked as required or is implicitly required because the foreign key is not nullable.
+> ```
+>
+> `OnSaveChanges` が役に立つのは、「子を一時的に切り離して別の親に付け替える」といった操作を `SaveChanges` までの間に行いたい場合です。`Immediate` のままだと、切り離した瞬間に子が削除対象になってしまいます。
 
 #### SQL Server では循環するカスケードを作れない
 
@@ -1528,6 +1704,40 @@ modelBuilder.Entity<Product>()
 > [!WARNING]
 > **`HasField` を省略すると、この例では列そのものが作られません。** 公式ドキュメントは規約で `_price` のようなフィールドが発見されると説明していますが、その前提として「**getter と setter を持つ public プロパティ**が規約でモデルに含まれる」という規約があります。上の `Price` は getter しか持たないため、そもそもモデルに含まれず、実測でも `Products` テーブルには `Id` 列しか生成されませんでした。読み取り専用プロパティを永続化したい場合は、`HasField` で明示的に構成してください。
 
+#### プロパティとフィールドのどちらを使うかを指定する
+
+`HasField` を構成すると、公式ドキュメントによれば「EF は常にバッキングフィールドを読み書きし、プロパティを使うことはない」のが既定の動作です。この動作は `UsePropertyAccessMode` で変更できます。
+
+```csharp
+modelBuilder.Entity<Product>()
+    .Property(p => p.Price)
+    .HasField("_price")
+    .UsePropertyAccessMode(PropertyAccessMode.Field);
+```
+
+指定できる値の一覧は `PropertyAccessMode` 列挙型を参照してください。たとえば「マテリアライズ（データベースから復元）するときだけフィールドに書き込み、それ以外はプロパティを使う」といった構成が可能です。
+
+#### フィールドのみのプロパティ
+
+CLR プロパティを一切持たず、フィールドだけでデータを保持する「フィールドのみのプロパティ」も定義できます。公式ドキュメントは、エンティティがプロパティではなくメソッドで値を出し入れする場合や、主キーのようにドメインモデルへ一切公開したくない場合の用途を挙げています。
+
+```csharp
+modelBuilder.Entity<Article>().Property("_validatedUrl");
+```
+
+これは変更追跡側にデータを持つシャドウプロパティとは異なり、**エンティティ側のフィールドにデータを持ちます。** LINQ から参照するには `EF.Property` を使います。実測したクエリは次のとおりです。
+
+```csharp
+var sorted = db.Articles.OrderBy(x => EF.Property<string>(x, "_validatedUrl"));
+```
+
+```sql
+SELECT [a].[Id], [a].[Url], [a].[_validatedUrl] FROM [Articles] AS [a] ORDER BY [a].[_validatedUrl]
+```
+
+> [!NOTE]
+> 公式ドキュメントによると、`Property("名前")` に指定した名前は **CLR プロパティ → フィールド** の順で探され、どちらも見つからない場合はシャドウプロパティとして構成されます。名前を打ち間違えても例外にならず、意図せずシャドウプロパティが増えるだけなので注意してください。
+
 ### シーケンスによる採番
 
 `IDENTITY` はテーブルごとに独立した採番です。**複数のテーブルで連番を共有したい**場合は **シーケンス (Sequence)** を使います。公式ドキュメントは「シーケンスは特定のテーブルに結び付いておらず、複数のテーブルが同じシーケンスから値を引くように構成できる」と説明しています。
@@ -1572,6 +1782,52 @@ CREATE TABLE [Orders] (
 
 > [!WARNING]
 > `NEXT VALUE FOR` は SQL Server の構文です。公式ドキュメントも「シーケンスから値を生成する SQL はデータベース固有であり、上の例は SQL Server では動くが他のデータベースでは失敗する」と明記しています。PostgreSQL では `nextval('...')` のように書き換える必要があり、SQLite にはシーケンス自体がありません。
+
+### 空間データ
+
+位置や図形を扱う **空間データ (spatial data)** は、EF Core では **NetTopologySuite (NTS)** ライブラリを介してマップします。プロバイダーごとに対応するパッケージが用意されており、SQL Server では `Microsoft.EntityFrameworkCore.SqlServer.NetTopologySuite` を追加します。
+
+```bash
+dotnet add package Microsoft.EntityFrameworkCore.SqlServer.NetTopologySuite
+```
+
+```csharp
+options.UseSqlServer(connectionString, o => o.UseNetTopologySuite());
+```
+
+モデルでは `NetTopologySuite.Geometries` 名前空間の型を使います。
+
+```csharp
+public class Shop
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public Point? Location { get; set; }
+}
+```
+
+実測した DDL では、SQL Server の `geography` 型の列が作られました。
+
+```sql
+[Location] geography NULL,
+```
+
+距離での並べ替えは、そのまま LINQ で書けます。実測したクエリは `STDistance` に変換されました。
+
+```csharp
+var origin = new Point(139.7454, 35.6586) { SRID = 4326 };
+var q = db.Shops
+    .OrderBy(s => s.Location!.Distance(origin))
+    .Select(s => new { s.Name, D = s.Location!.Distance(origin) });
+```
+
+```sql
+SELECT [s].[Name], [s].[Location].STDistance(@origin) AS [D]
+FROM [Shops] AS [s]
+ORDER BY [s].[Location].STDistance(@origin)
+```
+
+東京タワー付近を基準に東京駅と大阪駅を並べたところ、それぞれ約 3,186 m と約 401,307 m という結果になりました。距離の計算がデータベース側で行われるため、全件を取得してからアプリケーションで計算する必要がありません。
 
 ### 計算列
 
@@ -3821,6 +4077,49 @@ context.SaveChangesFailed += (s, e) =>
 > [!WARNING]
 > 公式ドキュメントは、イベントについて「インターセプターより単純で、登録の自由度が高い。ただし **同期専用なのでブロッキングしない非同期 I/O を実行できない**」と説明しています。イベントハンドラーの中でデータベースアクセスや HTTP 呼び出しを行いたい場合はインターセプターを使ってください。
 
+### 診断リスナーでプロセス全体のイベントを観測する
+
+前節のイベントは `DbContext` インスタンスごとの登録でした。**プロセス内で発生するすべての EF Core イベント**を観測したい場合は、`DiagnosticListener` を使います。公式ドキュメントによると、これは .NET 全体で共通の仕組みで、稼働中のアプリケーションから診断情報を取得するためのものです。
+
+購読は 2 段階です。まず `DiagnosticListener` そのものの観測者を作り、EF Core のリスナー（名前は `Microsoft.EntityFrameworkCore`、`DbLoggerCategory.Name` から取得できます）を見つけたら、そのリスナーを購読します。
+
+```csharp
+public class DiagnosticObserver : IObserver<DiagnosticListener>
+{
+    public void OnCompleted() { }
+    public void OnError(Exception error) { }
+
+    public void OnNext(DiagnosticListener value)
+    {
+        if (value.Name == DbLoggerCategory.Name)   // "Microsoft.EntityFrameworkCore"
+        {
+            value.Subscribe(new KeyValueObserver());
+        }
+    }
+}
+```
+
+```csharp
+DiagnosticListener.AllListeners.Subscribe(new DiagnosticObserver());
+```
+
+`Count()` を 1 回実行しただけで 19 種類のイベント名を受信しました。実測で観測できたものの一部を挙げます。
+
+```text
+Microsoft.EntityFrameworkCore.Infrastructure.ContextInitialized
+Microsoft.EntityFrameworkCore.Query.QueryCompilationStarting
+Microsoft.EntityFrameworkCore.Query.QueryExecutionPlanned
+Microsoft.EntityFrameworkCore.Database.Connection.ConnectionCreating
+Microsoft.EntityFrameworkCore.Database.Connection.ConnectionCreated
+Microsoft.EntityFrameworkCore.Database.Connection.ConnectionOpening
+```
+
+> [!IMPORTANT]
+> 公式ドキュメントは診断リスナーの使いどころについて、2 つの注意を明記しています。
+>
+> - **単一の `DbContext` インスタンスからイベントを取得する用途には向かない。** その場合はインターセプターを使う（同じイベントにコンテキストごとの登録でアクセスできる）
+> - **ログ記録のために設計されたものではない。** ログには簡易ログか `Microsoft.Extensions.Logging` を使う
+
 ### インターセプターによる横断的な処理
 
 作成日時の自動設定、監査ログ、クエリへのヒント付与のような **すべての操作に共通する処理** は、個々のリポジトリーやサービスに書くと漏れが生じます。EF Core は **インターセプター (Interceptor)** を提供しており、低レベルの操作に割り込んで処理を追加したり、操作そのものを抑制・変更したりできます。
@@ -5198,7 +5497,6 @@ flowchart TB
 - [値の変換 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/value-conversions)
 - [値の比較子 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/value-comparers)
 - [シャドウプロパティとインジケータープロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/shadow-properties)
-- [バッキングフィールド | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/backing-field)
 - [シーケンス | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/sequences)
 - [外部キーと主キー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/foreign-and-principal-keys)
 - [グローバルクエリフィルター | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/filters)
@@ -5222,6 +5520,11 @@ flowchart TB
 - [高度なテーブルマッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/table-splitting)
 - [キーなしエンティティ型 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/keyless-entity-types)
 - [EF Core の .NET イベント | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/events)
+- [エンティティ型のコンストラクター | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/constructors)
+- [同じ DbContext 型で複数のモデルを切り替える | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/dynamic-model)
+- [空間データ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/spatial)
+- [バッキングフィールド | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/backing-field)
+- [EF Core での診断リスナーの使用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/diagnostic-listeners)
 - [カスケード削除 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/cascade-delete)
 - [ID 解決 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/identity-resolution)
 - [外部キーとナビゲーションの変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/relationship-changes)
