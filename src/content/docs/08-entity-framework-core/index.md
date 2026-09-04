@@ -252,6 +252,23 @@ dotnet ef dbcontext scaffold "Server=(localdb)\mssqllocaldb;Database=Blogging;Tr
 >     --output-dir Models --no-onconfiguring
 > ```
 
+#### 生成されるナビゲーション名は EF Core 8 で変わった
+
+既存のデータベースから生成されるナビゲーションの名前は、EF Core 8 で変わりました。以前は**複合外部キーの列名に共通の接頭辞があると、そこから名前を作る**ことがあり、`S` や `Student_`、ひどいときは `_` だけという名前が生成されていました。
+
+現在はこの規則が廃止されています。実際に、複合主キーを持つ `Students` を `Sup_Id1` / `Sup_Id2` という列で参照する `Enrollments` を作ってスキャフォールディングしたところ、生成されたナビゲーション名は接頭辞の `Sup` ではなく、参照先の型名に基づく `Student` でした（実測）。
+
+```csharp
+// Enrollment.cs
+public virtual Student Student { get; set; } = null!;
+
+// Student.cs
+public virtual ICollection<Enrollment> Enrollments { get; set; } = new List<Enrollment>();
+```
+
+> [!WARNING]
+> EF Core 7 以前で生成したコードを持つプロジェクトで再スキャフォールディングすると、**ナビゲーション名が変わってコードが壊れることがあります**。生成後の差分を必ず確認してください。名前を細かく制御したい場合、公式ドキュメントは T4 テンプレートによるカスタマイズを案内しています。
+
 ### パッケージの追加とツールの準備
 
 Web API プロジェクトに SQL Server プロバイダーを追加します。
@@ -633,6 +650,39 @@ Trust Server Certificate=True;Application Name="EFCore/10.0.11 (macOS 26.6.2 Arm
   }
 }
 ```
+
+#### 構成を後から足す（ConfigureDbContext）
+
+`AddDbContext` は「プロバイダーと接続文字列を決める」呼び出しです。これに対して、**ログや診断だけを後から足したい**ことがあります。テストで `EnableSensitiveDataLogging` を付けたい、共通ライブラリでインターセプターを差したい、といった場面です。
+
+`AddDbContext` をもう一度呼ぶと、前述のとおり後の呼び出しが勝ってプロバイダーの構成ごと置き換わってしまいます。EF Core 9 以降は、このために **`ConfigureDbContext`** が用意されています。
+
+```csharp
+// ライブラリやテスト側：診断の設定だけを足す
+services.ConfigureDbContext<BloggingContext>(options =>
+    options.LogTo(Console.WriteLine)
+           .EnableSensitiveDataLogging());
+
+// アプリケーション側：プロバイダーと接続文字列を決める
+services.AddDbContext<BloggingContext>(options =>
+    options.UseSqlServer(connectionString));
+```
+
+実際にこの順番で登録して解決した `DbContext` でクエリを実行したところ、プロバイダーは SQL Server のまま、`LogTo` も `EnableSensitiveDataLogging` も有効でした（実測）。
+
+```text
+プロバイダー: Microsoft.EntityFrameworkCore.SqlServer
+Executed DbCommand (36ms) [Parameters=[@name='test' (Size = 4000)], ...]
+```
+
+`@name='test'` と実際の値が出力されているのが `EnableSensitiveDataLogging` の効果です。無効なら `@name='?'` と伏せられます。
+
+公式ドキュメントによれば、`ConfigureDbContext` と `AddDbContext` は**呼び出した順に適用され、競合する設定は後の呼び出しが勝ちます**。競合しない設定（ログ、インターセプターなど）はすべて合成されます。呼ぶ順番は前後どちらでも構いません。
+
+> [!NOTE]
+> 公式ドキュメントは `ConfigureDbContext` を「再利用可能なライブラリやコンポーネント向けの中級者向け機能」と位置づけています。アプリケーション本体では通常の `AddDbContext` で十分です。
+>
+> また、**`ConfigureDbContext` で別のプロバイダーを構成しても、前のプロバイダーの構成は消えません。** プロバイダーを完全に差し替えたい場合は、登録そのものを削除して追加し直す必要があります。
 
 #### AddDbContext を 2 回呼ぶと後の設定が勝つ
 
@@ -3529,6 +3579,36 @@ modelBuilder.Entity<Customer>()
     .UseCollation("SQL_Latin1_General_CP1_CS_AS");
 ```
 
+#### null に対する ToString() は空文字になる
+
+クエリの中で `ToString()` を使うと、EF Core はそれをデータベース側の文字列変換に翻訳します。このとき**値が `null` だったらどうなるか**は、EF Core 9 で統一されました。以前はデータ型や書き方によって `null` を返したり `"True"` を返したりとばらばらでしたが、**現在はどの場合も空文字列を返します**。
+
+```csharp
+var q = db.Things.Select(x => new { F = x.Flag.ToString(), N = x.Num.ToString() });
+```
+
+`bool?` と `int?` に `null` を入れた行を含めて実行すると、次の SQL に翻訳され、結果は空文字列になりました（実測）。
+
+```sql
+SELECT CASE [t].[Flag]
+    WHEN CAST(0 AS bit) THEN N'False'
+    WHEN CAST(1 AS bit) THEN N'True'
+    ELSE N'' END AS [F],
+    COALESCE(CONVERT(varchar(11), [t].[Num]), '') AS [N]
+FROM [Things] AS [t]
+```
+
+```text
+Flag='' (null? False)  Num='' (null? False)
+Flag='True'            Num='5'
+```
+
+**返ってくるのは `null` ではなく空文字列**である点に注意してください。`== null` での判定は成立しません。以前の動作に戻したい場合は、公式ドキュメントが示すとおりクエリを書き換えます。
+
+```csharp
+db.Things.Select(x => x.Flag == null ? null : x.Flag.ToString());
+```
+
 #### 文字列の主キーは大文字小文字を区別せずに比較される
 
 照合順序の話にはもう 1 つ落とし穴があります。EF Core 8 以降、SQL Server / Azure SQL プロバイダーでは、**文字列の主キーや外部キーの値を .NET 側でも大文字小文字を区別せずに比較します**。データベース側の既定の照合順序に合わせるための変更です。
@@ -4122,7 +4202,9 @@ context.ChangeTracker.TrackGraph(graph, node =>
 
 #### チェンジトラッカーの中身を見る
 
-思ったとおりの状態になっているかは、`ChangeTracker.DebugView` で確認できます。`ShortView` は各エンティティの状態とキー値だけを、`LongView` はプロパティの値と元の値まで表示します。
+思ったとおりの状態になっているかは、`ChangeTracker.DebugView` で確認できます。公式ドキュメントの説明どおり、**`ShortView` は追跡中のエンティティ・その状態・キー値だけ**を、**`LongView` はさらにすべてのプロパティ値とナビゲーションの状態まで**表示します。
+
+`Blog` を 1 件読み込んで `Name` を書き換えた状態で、両方を出力して比べました（実測）。
 
 ```csharp
 context.ChangeTracker.DetectChanges();
@@ -4131,12 +4213,55 @@ Console.WriteLine(context.ChangeTracker.DebugView.ShortView);
 
 ```text
 Blog {Id: 1} Modified
-    Id: 1 PK
-    Name: '書き換え後' Originally '書き換え前'
+Post {Id: 1} Unchanged FK {BlogId: 1}
 ```
+
+```csharp
+Console.WriteLine(context.ChangeTracker.DebugView.LongView);
+```
+
+```text
+Blog {Id: 1} Modified
+    Id: 1 PK
+    Name: '書き換え後' Modified Originally '元の名前'
+  Posts: [{Id: 1}]
+Post {Id: 1} Unchanged
+    Id: 1 PK
+    BlogId: 1 FK
+    Title: '投稿1'
+  Blog: {Id: 1}
+```
+
+**「どのプロパティが変わったのか」を知りたいときは `LongView`** です。`ShortView` は件数が多いときに全体を俯瞰する用途に向いています。
 
 > [!NOTE]
 > 公式のサンプルと同じく、**表示する前に `DetectChanges()` を明示的に呼んでください。** `DebugView` を読むだけでは変更検出が走らないため、プロパティを書き換えた直後に表示すると、値は新しいのに状態が `Unchanged` のままという食い違いが起きます。前述した `SaveChanges` や `ChangeTracker.Entries()` を経由していれば、変更検出は自動的に済んでいます。
+
+#### 保存前のキーには一時値が入る
+
+`Add` した直後のエンティティは、まだデータベースに行がないため主キーの値が決まっていません。このとき EF Core は **一時値 (temporary value)** を割り当てます。`DebugView` を見ると、実際の値とはかけ離れた大きな負の数が表示されます（実測）。
+
+```text
+Blog {Id: -2147482647} Added
+Post {Id: -2147482647} Added FK {BlogId: -2147482647}
+```
+
+一方、エンティティのプロパティ自体は `0` のままです。一時値は変更追跡の内部にだけ保持され、エンティティには書き戻されません。
+
+```csharp
+db.Add(blog);
+Console.WriteLine(blog.Id);                                        // 0
+Console.WriteLine(db.Entry(blog).Property(x => x.Id).IsTemporary); // True
+
+await db.SaveChangesAsync();
+Console.WriteLine(blog.Id);                                        // 1
+Console.WriteLine(db.Entry(blog).Property(x => x.Id).IsTemporary); // False
+```
+
+子の外部キー (`Post.BlogId`) にも同じ一時値が伝播しています。**保存前の親子関係は、この一時値によって結ばれています。** `SaveChanges` が親を挿入して本物のキーを受け取ると、EF Core は子の外部キーを実際の値に置き換えてから子を挿入します。
+
+> [!WARNING]
+> `SaveChanges` の前に主キーの値を読んで、それをログや外部システムに渡してはいけません。エンティティのプロパティは `0` のままですし、`DebugView` に見える負の数も保存後には存在しない値です。**キーが必要なら `SaveChanges` の後に読んでください。**
 
 ### SaveChanges の既定のトランザクション動作
 
@@ -5418,6 +5543,40 @@ that can be evaluated client-side and does not contain any reference to database
 
 `EF.Parameter` でも同じ例外になることを確認しました。コンパイル済みクエリはクエリの形を一度だけ確定させる仕組みなので、呼び出しごとに SQL の形が変わりうるこれらの指定とは両立しません。片方を諦める必要があります。
 
+#### 値変換に使うメソッドを private にしてはいけない
+
+コンパイル済みモデルには、値変換 (value converter) と組み合わせたときの落とし穴があります。EF Core 9 以降、生成されるコードは**変換メソッドそのものを直接参照します**。そのメソッドが `private` だと、生成されたコードがコンパイルできません。
+
+```csharp
+public sealed class BooleanToCharConverter()
+    : ValueConverter<bool, char>(v => ConvertToChar(v), v => ConvertToBoolean(v))
+{
+    public static readonly BooleanToCharConverter Default = new();
+
+    private static char ConvertToChar(bool value) => value ? 'Y' : 'N';    // private だと失敗する
+    private static bool ConvertToBoolean(char value) => value == 'Y';
+}
+```
+
+このモデルで `dotnet ef dbcontext optimize` を実行すると、コマンド自体は成功します。**失敗するのは、その後のビルドです**（実測）。
+
+```text
+CompiledModels/FlaggedEntityType.cs(64,124): error CS0122:
+'BooleanToCharConverter.ConvertToChar(bool)' はアクセスできない保護レベルになっています
+```
+
+生成されたコードを覗くと、確かにメソッドが直接呼ばれています。
+
+```csharp
+string (bool v) => string.Format(CultureInfo.InvariantCulture, "{0}",
+    ((object)(BooleanToCharConverter.ConvertToChar(v)))),
+```
+
+公式ドキュメントによれば、これは **NativeAOT に対応するために必要だった変更**です。対処は単純で、変換メソッドを `public` か `internal` にします。実測でも `internal` に変えるだけでビルドが通りました。
+
+> [!WARNING]
+> この失敗は**コンパイル済みモデルを生成したときだけ**起きます。通常のモデルでは `private` のままでも動くため、パフォーマンス改善のために後から `dotnet ef dbcontext optimize` を導入した段階で初めて表面化します。
+
 ### コンパイル済みモデル
 
 エンティティ数が数百に及ぶ大規模なモデルでは、起動時のモデル構築に時間がかかります。**コンパイル済みモデル** はモデル構築をビルド時に済ませ、起動時間を短縮します。
@@ -6212,6 +6371,31 @@ public sealed class SqliteContextFactory : IDisposable
 
 > [!NOTE]
 > `decimal` の扱いは EF Core 10 で改善されました。以前は大小比較と並べ替えがクライアント評価を必要としましたが、EF Core 10 は `ef_compare()` という独自関数と `EF_DECIMAL` という独自の照合順序を接続に登録し、データベース側で処理します。ただし `TEXT` 格納であることは変わらないため、SQL Server の `decimal(18, 2)` と厳密に同じ丸めになるとは限りません。
+
+#### Unhex は null を返すことがある
+
+SQLite プロバイダーには `EF.Functions.Unhex()` があり、16 進数表記の文字列をバイト配列に変換します。SQLite の `unhex` 関数に翻訳されますが、**入力が正しい 16 進数でなければ `NULL` が返ります**。
+
+```csharp
+var q = db.Hexes.Select(x => EF.Functions.Unhex(x.S));
+// SELECT unhex("h"."S") FROM "Hexes" AS "h"
+```
+
+`48656C6C6F`（`Hello`）と、16 進数ではない文字列の 2 行で実行すると、後者は `null` になりました（実測）。
+
+```text
+結果: Hello
+結果: null
+```
+
+EF Core 9 以降、`Unhex()` の戻り値は `byte[]?` として宣言されています（実測でも Null 許容と確認）。以前は `byte[]` と宣言されていて、実際には `null` が返るのに注釈が食い違っていました。
+
+```csharp
+// 正しい 16 進数だと確信できる場合
+var data = await db.Hexes.Select(b => EF.Functions.Unhex(b.S)!).ToListAsync();
+
+// そうでない場合は null チェックを入れる
+```
 
 #### 先行書き込みログ (WAL) が有効かを確認する
 
