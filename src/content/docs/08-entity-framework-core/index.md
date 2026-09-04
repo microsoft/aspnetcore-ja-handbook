@@ -34,7 +34,10 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [キーなしエンティティ型でビューや集計結果を読む](#キーなしエンティティ型でビューや集計結果を読む)
    - [シャドウプロパティとバッキングフィールド](#シャドウプロパティとバッキングフィールド)
    - [シーケンスによる採番](#シーケンスによる採番)
+   - [監査履歴を自動で残す（テンポラルテーブル）](#監査履歴を自動で残すテンポラルテーブル)
    - [空間データ](#空間データ)
+   - [hierarchyid で階層構造を扱う](#hierarchyid-で階層構造を扱う)
+   - [SQL Server 固有の列オプション](#sql-server-固有の列オプション)
    - [計算列](#計算列)
    - [コマンドのタイムアウト](#コマンドのタイムアウト)
    - [一括構成規約前の構成](#一括構成規約前の構成)
@@ -61,6 +64,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [LeftJoin / RightJoin 演算子](#leftjoin--rightjoin-演算子)
    - [生の SQL を使う](#生の-sql-を使う)
    - [ユーザー定義関数とビューをマッピングする](#ユーザー定義関数とビューをマッピングする)
+   - [SQL Server 固有の関数を LINQ から呼ぶ](#sql-server-固有の関数を-linq-から呼ぶ)
 5. [更新／変更操作とトランザクション](#5-更新変更操作とトランザクション)
    - [追加・更新・削除の基本](#追加更新削除の基本)
    - [切断されたエンティティのグラフを保存する](#切断されたエンティティのグラフを保存する)
@@ -85,6 +89,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [コレクションのパラメーター化と IN 句の翻訳](#コレクションのパラメーター化と-in-句の翻訳)
    - [コンパイル済みクエリ](#コンパイル済みクエリ)
    - [コンパイル済みモデル](#コンパイル済みモデル)
+   - [NativeAOT と事前コンパイル済みクエリ](#nativeaot-と事前コンパイル済みクエリ)
    - [変更検出のコストを理解する](#変更検出のコストを理解する)
    - [バッファリングとストリーミング](#バッファリングとストリーミング)
    - [非同期 API を使う](#非同期-api-を使う)
@@ -1510,6 +1515,44 @@ The INSERT statement conflicted with the FOREIGN KEY constraint "FK_Orders_Users
 >
 > なお、代替キーは明示的に構成しなくても導入されることがあります。一意インデックスだけを定義したプロパティを `HasPrincipalKey` の対象に指定したところ、EF Core が代替キーを自動的に追加し、`AK_Users_Email` 制約と `IX_Users_Email` 一意インデックスの両方が生成されました。
 
+#### 代替キーを結合テーブルの参照先にする
+
+多対多の結合テーブルの外部キーは、既定では両側の主キーを参照します。これを代替キーに向けることもできます。`UsingEntity` に右側 (`r`) と左側 (`l`) の 2 つのラムダを渡し、それぞれで `HasPrincipalKey` を指定します。
+
+```csharp
+modelBuilder.Entity<Post>()
+    .HasMany(e => e.Tags)
+    .WithMany(e => e.Posts)
+    .UsingEntity(
+        r => r.HasOne(typeof(Tag)).WithMany().HasPrincipalKey(nameof(Tag.AlternateKey)),
+        l => l.HasOne(typeof(Post)).WithMany().HasPrincipalKey(nameof(Post.AlternateKey)));
+```
+
+SQL Server 2022 に対して生成された DDL は次のとおりです（実測）。`HasAlternateKey` を書いていないのに `AK_Posts_AlternateKey` が作られている点に注目してください。前述のとおり `HasPrincipalKey` が代替キーを自動で導入します。
+
+```sql
+CREATE TABLE [PostTag] (
+    [PostsAlternateKey] int NOT NULL,
+    [TagsAlternateKey] int NOT NULL,
+    CONSTRAINT [PK_PostTag] PRIMARY KEY ([PostsAlternateKey], [TagsAlternateKey]),
+    CONSTRAINT [FK_PostTag_Posts_PostsAlternateKey] FOREIGN KEY ([PostsAlternateKey]) REFERENCES [Posts] ([AlternateKey]) ON DELETE CASCADE,
+    CONSTRAINT [FK_PostTag_Tag_TagsAlternateKey] FOREIGN KEY ([TagsAlternateKey]) REFERENCES [Tag] ([AlternateKey]) ON DELETE CASCADE
+);
+```
+
+結合テーブルの列名も主キー由来の `PostsId` ではなく `PostsAlternateKey` になります。`Include` で読み込むと、結合も代替キーで行われます（実測）。
+
+```sql
+LEFT JOIN (
+    SELECT [p0].[PostsAlternateKey], [p0].[TagsAlternateKey], [t].[Id], [t].[AlternateKey]
+    FROM [PostTag] AS [p0]
+    INNER JOIN [Tag] AS [t] ON [p0].[TagsAlternateKey] = [t].[AlternateKey]
+) AS [s] ON [p].[AlternateKey] = [s].[PostsAlternateKey]
+```
+
+> [!WARNING]
+> `UsingEntity` には引数を 1 つだけ取るオーバーロードもありますが、そちらで `HasForeignKey` と `HasPrincipalKey` を同時に指定すると、**規約による主キー参照の外部キーが残ったまま、代替キー参照の列が追加で作られます**。実測では `PostTag` に `PostsId` と `PostsAlternateKey` の両方が生成され、後者は常に `NULL` のままでした。代替キーを使うときは公式サンプルどおり 2 引数のオーバーロードを使い、`HasPrincipalKey` だけを指定してください。
+
 ### 1 つのテーブルを複数のエンティティで共有する
 
 大きな列を含むテーブルを扱うとき、「一覧では軽い列だけ読みたい」という要求があります。EF Core は 2 つのエンティティ型を同じテーブルにマップできます。これを **テーブル分割 (table splitting)** と呼びます。
@@ -1783,6 +1826,127 @@ CREATE TABLE [Orders] (
 > [!WARNING]
 > `NEXT VALUE FOR` は SQL Server の構文です。公式ドキュメントも「シーケンスから値を生成する SQL はデータベース固有であり、上の例は SQL Server では動くが他のデータベースでは失敗する」と明記しています。PostgreSQL では `nextval('...')` のように書き換える必要があり、SQLite にはシーケンス自体がありません。
 
+### 監査履歴を自動で残す（テンポラルテーブル）
+
+SQL Server の **テンポラルテーブル (temporal table)** は、テーブルに加えられたすべての変更を自動的に履歴テーブルへ退避する機能です。更新前の行や削除された行が残るため、監査や誤操作からの復元に使えます。EF Core は SQL Server プロバイダーでこれを直接サポートしています。
+
+```csharp
+modelBuilder
+    .Entity<Employee>()
+    .ToTable("Employees", b => b.IsTemporal());
+```
+
+これだけで、生成される DDL は通常のテーブルとはまったく別物になります（実測）。
+
+```sql
+DECLARE @historyTableSchema nvarchar(max) = QUOTENAME(SCHEMA_NAME())
+EXEC(N'CREATE TABLE [Employees] (
+    [Id] uniqueidentifier NOT NULL,
+    [Name] nvarchar(max) NOT NULL,
+    [Position] nvarchar(max) NOT NULL,
+    [Salary] decimal(10,2) NOT NULL,
+    [PeriodEnd] datetime2 GENERATED ALWAYS AS ROW END HIDDEN NOT NULL,
+    [PeriodStart] datetime2 GENERATED ALWAYS AS ROW START HIDDEN NOT NULL,
+    CONSTRAINT [PK_Employees] PRIMARY KEY ([Id]),
+    PERIOD FOR SYSTEM_TIME([PeriodStart], [PeriodEnd])
+) WITH (SYSTEM_VERSIONING = ON (HISTORY_TABLE = ' + @historyTableSchema + N'.[EmployeesHistory]))');
+```
+
+`PeriodStart` と `PeriodEnd` という 2 つの期間列と、`EmployeesHistory` という履歴テーブルが自動で作られます。期間列と履歴テーブルの名前は `HasPeriodStart` / `HasPeriodEnd` / `UseHistoryTable` で変更できます。
+
+```csharp
+modelBuilder
+    .Entity<Employee>()
+    .ToTable(
+        "Employees",
+        b => b.IsTemporal(
+            b =>
+            {
+                b.HasPeriodStart("ValidFrom");
+                b.HasPeriodEnd("ValidTo");
+                b.UseHistoryTable("EmployeeHistoricalData");
+            }));
+```
+
+> [!IMPORTANT]
+> 期間列に入るのは **SQL Server が生成した UTC 時刻** です。公式ドキュメントも「テンポラルテーブルに関わるすべての操作で UTC を使う」と明記しています。後述するクエリ演算子に渡す時刻も UTC で指定してください。
+
+#### 履歴を読む 5 つの演算子
+
+EF Core は履歴を含めて読むための専用の演算子を用意しています。
+
+| 演算子 | 生成される T-SQL | 意味 |
+| --- | --- | --- |
+| `TemporalAsOf(t)` | `FOR SYSTEM_TIME AS OF 't'` | その時刻に有効だった行 |
+| `TemporalAll()` | `FOR SYSTEM_TIME ALL` | 履歴に存在するすべての行 |
+| `TemporalFromTo(a, b)` | `FOR SYSTEM_TIME FROM 'a' TO 'b'` | 2 つの時刻の間に有効だった行 |
+| `TemporalBetween(a, b)` | `FOR SYSTEM_TIME BETWEEN 'a' AND 'b'` | `FromTo` と同じだが上限で有効になった行も含む |
+| `TemporalContainedIn(a, b)` | `FOR SYSTEM_TIME CONTAINED IN ('a', 'b')` | 2 つの時刻の**内側で**有効になり、かつ有効でなくなった行 |
+
+行を 1 件追加し、役職と給与を更新し、最後に削除する、という操作を行ったあとで確認すると次のようになりました（実測）。**現在のテーブルは 0 件なのに、`TemporalAll` は 2 件返します。**
+
+```text
+現在のテーブル件数: 0
+TemporalAll 件数: 2
+    開発/500000.00   2026-09-04 08:50:14.592 〜 2026-09-04 08:50:17.069
+    リード/700000.00 2026-09-04 08:50:17.069 〜 2026-09-04 08:50:19.502
+```
+
+期間列は既定でシャドウプロパティにマップされるため、値を取り出すには `EF.Property` を使って射影します。
+
+```csharp
+var history = await db.Employees
+    .TemporalAll()
+    .OrderBy(x => EF.Property<DateTime>(x, "PeriodStart"))
+    .Select(x => new
+    {
+        x.Position,
+        From = EF.Property<DateTime>(x, "PeriodStart"),
+        To = EF.Property<DateTime>(x, "PeriodEnd")
+    })
+    .ToListAsync();
+```
+
+> [!WARNING]
+> **テンポラル演算子を使ったクエリは既定で追跡なし (no-tracking) です。** 実測でも `TemporalAsOf` の結果は `Detached` でした。そのため `db.Entry(entity).Property<DateTime>("PeriodStart")` のようにエンティティのエントリー経由で期間列を読もうとしても値は取れず、`0001-01-01` が返ります。期間列は必ず上のように射影で取り出してください。
+
+同じ時点を指定する `TemporalFromTo` と `TemporalBetween`、`TemporalContainedIn` は境界の扱いが違うため、実測でも結果件数が分かれました。
+
+```text
+FromTo 件数=2  Between 件数=2  ContainedIn 件数=0
+```
+
+#### 削除された行を復元する
+
+テンポラル演算子の結果は追跡されていないので、そのまま `Add` すれば現在のテーブルへ入れ直せます。
+
+```csharp
+var employee = await db.Employees
+    .TemporalAsOf(timeStamp)
+    .SingleAsync(e => e.Name == "佐藤");
+
+db.Add(employee);
+await db.SaveChangesAsync();
+```
+
+実測では削除済みだった行が復元され、現在のテーブルが 1 件に戻り、`TemporalAll` は 3 件になりました。
+
+> [!WARNING]
+> 主キーが `IDENTITY` 列の場合、この復元は `Cannot insert explicit value for identity column in table 'Employees' when IDENTITY_INSERT is set to OFF.` で失敗します。復元を運用として想定するなら、公式サンプルと同じく **主キーをアプリケーション側で生成する型（`Guid` など）にしておく**必要があります。
+
+#### 履歴は書き換えられない
+
+履歴テーブルを直接 `UPDATE` しようとすると、SQL Server 自身が拒否します（実測）。
+
+```text
+Cannot update rows in a temporal history table 'V46T3.dbo.EmployeesHistory'.
+```
+
+監査ログをアプリケーション側のテーブルで自前実装すると、そのテーブルも普通のテーブルなので書き換えられてしまいます。テンポラルテーブルはこの点がデータベースエンジンによって保証されます。
+
+> [!NOTE]
+> 通常のクエリ（テンポラル演算子を使わないクエリ）は `FOR SYSTEM_TIME` を付けないため、履歴は一切見えません。テンポラルテーブルにしても既存のコードの動作は変わりません。
+
 ### 空間データ
 
 位置や図形を扱う **空間データ (spatial data)** は、EF Core では **NetTopologySuite (NTS)** ライブラリを介してマップします。プロバイダーごとに対応するパッケージが用意されており、SQL Server では `Microsoft.EntityFrameworkCore.SqlServer.NetTopologySuite` を追加します。
@@ -1828,6 +1992,130 @@ ORDER BY [s].[Location].STDistance(@origin)
 ```
 
 東京タワー付近を基準に東京駅と大阪駅を並べたところ、それぞれ約 3,186 m と約 401,307 m という結果になりました。距離の計算がデータベース側で行われるため、全件を取得してからアプリケーションで計算する必要がありません。
+
+### hierarchyid で階層構造を扱う
+
+組織図やカテゴリーツリーのような階層構造は、親を指す外部キーで表現するのが一般的ですが、「ある部署の配下すべて」を取るには再帰クエリが要ります。SQL Server の `hierarchyid` 型を使うと、階層内の位置そのものを 1 つの列に格納でき、配下の判定を単純な述語で書けます。
+
+EF Core から使うには専用のパッケージを追加します。
+
+```bash
+dotnet add package Microsoft.EntityFrameworkCore.SqlServer.HierarchyId
+```
+
+`UseSqlServer` のオプションで `UseHierarchyId` を呼び、プロパティの型に `HierarchyId` を使います。
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+
+public class Node
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public HierarchyId Path { get; set; } = null!;
+}
+
+// OnConfiguring / DI 登録側
+options.UseSqlServer(connectionString, x => x.UseHierarchyId());
+```
+
+列は `hierarchyid` 型にマップされます（実測で `sys.types` を確認）。
+
+```sql
+CREATE TABLE [Nodes] (
+    [Id] int NOT NULL IDENTITY,
+    [Name] nvarchar(max) NOT NULL,
+    [Path] hierarchyid NOT NULL,
+    CONSTRAINT [PK_Nodes] PRIMARY KEY ([Id])
+);
+```
+
+値は `HierarchyId.Parse` で作ります。`/` がルート、`/1/` がその 1 番目の子、`/1/1/` がさらにその子、という表記です。
+
+```csharp
+db.AddRange(
+    new Node { Name = "全社",   Path = HierarchyId.Parse("/") },
+    new Node { Name = "開発部", Path = HierarchyId.Parse("/1/") },
+    new Node { Name = "第一課", Path = HierarchyId.Parse("/1/1/") },
+    new Node { Name = "営業部", Path = HierarchyId.Parse("/2/") });
+```
+
+`IsDescendantOf` や `GetLevel` はそのまま T-SQL のメソッド呼び出しに翻訳されます（実測）。
+
+```csharp
+var devPath = HierarchyId.Parse("/1/");
+var under = await db.Nodes.Where(n => n.Path.IsDescendantOf(devPath)).ToListAsync();
+```
+
+```sql
+DECLARE @devPath hierarchyid = hierarchyid::Parse('/1/');
+
+SELECT [n].[Id], [n].[Name], [n].[Path]
+FROM [Nodes] AS [n]
+WHERE [n].[Path].IsDescendantOf(@devPath) = CAST(1 AS bit)
+```
+
+結果は「開発部, 第一課」でした。**`IsDescendantOf` は自分自身も配下として含みます。** `GetLevel()` は深さを返し、実測では 全社=0 / 開発部=1 / 第一課=2 / 営業部=1 となりました。
+
+> [!NOTE]
+> `HierarchyId` 型は `Microsoft.EntityFrameworkCore.SqlServer.Abstractions` パッケージで定義されており、こちらは他のパッケージへの参照を持ちません。エンティティを定義するプロジェクトだけが `Abstractions` を参照し、実際にクエリを実行するプロジェクトが `HierarchyId` パッケージを参照する、という分け方ができます。
+
+### SQL Server 固有の列オプション
+
+#### スパース列
+
+**スパース列 (sparse column)** は、`NULL` の格納を最適化する代わりに、`NULL` でない値の取得コストが上がる列です。TPH 継承のように「一部の型にしか存在しない列」がテーブルの大半で `NULL` になるケースで効きます。
+
+```csharp
+modelBuilder.Entity<SpecialPost>()
+    .Property(x => x.Extra)
+    .IsSparse();
+```
+
+#### UTF-8 の照合順序
+
+SQL Server 2019 以降は `char` / `varchar` 列に UTF-8 の照合順序を指定でき、Unicode を `nvarchar` より小さく格納できる場合があります。EF Core からは、列の型を `varchar` にしたうえで `_UTF8` で終わる照合順序を指定し、あわせて `IsUnicode()` を呼びます。
+
+```csharp
+modelBuilder.Entity<SpecialPost>()
+    .Property(b => b.Name)
+    .HasColumnType("varchar(max)")
+    .UseCollation("LATIN1_GENERAL_100_CI_AS_SC_UTF8")
+    .IsUnicode();
+```
+
+この 2 つを組み合わせると、次の DDL が生成されました（実測）。
+
+```sql
+CREATE TABLE [Posts] (
+    [Id] int NOT NULL IDENTITY,
+    [Name] varchar(max) COLLATE LATIN1_GENERAL_100_CI_AS_SC_UTF8 NOT NULL,
+    [Extra] nvarchar(max) SPARSE NULL,
+    CONSTRAINT [PK_Posts] PRIMARY KEY ([Id])
+);
+```
+
+作成後に `sys.columns` を確認すると、`Extra` は `is_sparse=True`、`Name` は `varchar` 型で照合順序が `Latin1_General_100_CI_AS_SC_UTF8` になっていました。`varchar` 列に日本語を保存して読み戻す往復も実測で成功しています。
+
+#### メモリ最適化テーブル
+
+テーブル全体をメモリに常駐させる **メモリ最適化テーブル (memory-optimized table)** も、モデル側から指定できます。
+
+```csharp
+modelBuilder.Entity<MemItem>().ToTable(t => t.IsMemoryOptimized());
+```
+
+生成される DDL は、メモリ最適化データ用のファイルグループを用意する長いスクリプトに続いて、次のテーブル定義になります（実測）。主キーが自動的に **非クラスター化** になる点に注意してください。
+
+```sql
+CREATE TABLE [Items] (
+    [Id] int NOT NULL IDENTITY,
+    [Name] nvarchar(max) NOT NULL,
+    CONSTRAINT [PK_Items] PRIMARY KEY NONCLUSTERED ([Id])
+) WITH (MEMORY_OPTIMIZED = ON);
+```
+
+ファイルグループを追加するスクリプトは `SERVERPROPERTY('IsXTPSupported') = 1` で保護されているため、メモリ最適化に対応していないエディションでは何も実行されません。
 
 ### 計算列
 
@@ -3294,6 +3582,37 @@ var counts = await context.BlogPostCounts
 
 ---
 
+### SQL Server 固有の関数を LINQ から呼ぶ
+
+`EF.Functions` には、プロバイダーごとの固有関数を LINQ から呼ぶための拡張メソッドが用意されています。SQL Server では日付差分や型判定などが翻訳されます。
+
+```csharp
+var q = db.Events.Where(e => EF.Functions.DateDiffDay(e.Start, e.End) > 10);
+```
+
+```sql
+SELECT [e].[Id], [e].[End], [e].[Start], [e].[Title]
+FROM [Evs] AS [e]
+WHERE DATEDIFF(day, [e].[Start], [e].[End]) > 10
+```
+
+`DateDiffDay` のほかに `DateDiffMonth` や `DateDiffYear` など単位ごとのメソッドがあり、いずれも `DATEDIFF` の第 1 引数が変わるだけです。実測では 2026-01-01 から 2026-03-15 までが `DateDiffMonth` で `2` になりました（**日数ではなく境界をまたいだ回数**で数えます）。
+
+`IsDate` は `ISDATE` に翻訳されます。
+
+```sql
+WHERE CAST(ISDATE([e].[Title]) AS bit) = CAST(1 AS bit)
+```
+
+> [!WARNING]
+> `EF.Functions.Contains` と `EF.Functions.FreeText` は文字列の部分一致ではなく、**SQL Server の全文検索** に翻訳されます。対象の列に全文検索インデックスがないと、実行時に次の例外になります（実測）。
+>
+> ```text
+> Cannot use a CONTAINS or FREETEXT predicate on table or indexed view 'Evs' because it is not full-text indexed.
+> ```
+>
+> 部分一致がしたいだけなら `EF.Functions.Like` または `string.Contains` を使ってください。公式ドキュメントも、全文検索を使う前に全文検索カタログと全文検索インデックスを作成する必要があると明記しています。
+
 ## 5. 更新／変更操作とトランザクション
 
 ### 追加・更新・削除の基本
@@ -4647,6 +4966,102 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 >
 > つまり「生成はできたが一部の機能が無視される」のではなく、**生成そのものが失敗します**。前述したグローバルクエリフィルターを使っている場合は、コンパイル済みモデルを併用できない点に注意してください。
 
+### NativeAOT と事前コンパイル済みクエリ
+
+.NET の **NativeAOT** は、アプリケーションを事前 (ahead-of-time) にネイティブコードへコンパイルして発行する仕組みです。起動が速く、自己完結した小さなバイナリになります。EF Core もこれに対応するための仕組みを持っていますが、**現時点では実験的機能です。**
+
+> [!WARNING]
+> 公式ドキュメントは「NativeAOT とクエリの事前コンパイルはきわめて実験的な機能であり、まだ本番運用に適していない」「将来のバージョンでリリースされる最終的な機能に向けた基盤とみなすべき」と明記しています。**本番環境の EF Core アプリケーションを NativeAOT で発行することは推奨されていません。**
+
+仕組みは **クエリの事前コンパイル (query precompilation)** です。ソースコードを静的に解析して EF Core の LINQ クエリを見つけ、C# の **インターセプター (interceptor)** を生成します。生成されたインターセプターには、そのクエリの最終的な SQL がリテラルとして埋め込まれます。実測で生成されたコードを確認すると、確かに SQL がそのまま入っていました。
+
+```csharp
+new RelationalCommand(
+    materializerLiftableConstantContext.CommandBuilderDependencies,
+    "SELECT \"b\".\"Id\", \"b\".\"Name\"\nFROM \"Blogs\" AS \"b\"\nWHERE \"b\".\"Name\" <> 'foo'\nORDER BY \"b\".\"Id\"",
+    ...)
+```
+
+有効にするにはプロジェクトファイルに 2 つのプロパティと 1 つのパッケージが要ります。
+
+```xml
+<PropertyGroup>
+  <PublishAot>true</PublishAot>
+  <InterceptorsNamespaces>$(InterceptorsNamespaces);Microsoft.EntityFrameworkCore.GeneratedInterceptors</InterceptorsNamespaces>
+</PropertyGroup>
+
+<ItemGroup>
+  <PackageReference Include="Microsoft.EntityFrameworkCore.Tasks" Version="10.0.11">
+    <PrivateAssets>all</PrivateAssets>
+    <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+  </PackageReference>
+</ItemGroup>
+```
+
+`Microsoft.EntityFrameworkCore.Tasks` は MSBuild タスクを提供するパッケージで、`PublishAot` が `true` なら **発行時に自動でコンパイル済みモデルと事前コンパイル済みクエリを生成します**。実測でも `dotnet publish` のログに `Optimizing DbContext...` が出力されました。生成のタイミングは MSBuild プロパティで制御できます。
+
+| MSBuild プロパティ | 意味 |
+| --- | --- |
+| `EFScaffoldModelStage` | コンパイル済みモデルを生成する段階。`publish` / `build` / `none`。既定は `publish` |
+| `EFPrecompileQueriesStage` | 事前コンパイル済みクエリを生成する段階。同上 |
+| `DbContextName` | 対象の `DbContext`。省略するとプロジェクト内のすべてが対象 |
+| `EFTargetNamespace` | 生成されるクラスの名前空間。省略時は `$(RootNamespace)` |
+| `EFOutputDir` | 生成ファイルの出力先。省略時は `$(IntermediateOutputPath)` |
+
+> [!NOTE]
+> このパッケージは推移的な参照にはなりません。**生成されたコードと一緒にコンパイルする必要があるプロジェクトすべてに個別に参照を追加する**必要があります。
+
+発行せずに生成結果だけを確認したい場合は CLI から実行できます。
+
+```bash
+dotnet ef dbcontext optimize --precompile-queries --nativeaot
+```
+
+実測では `CompiledModels/` 配下にコンパイル済みモデルが、`Generated/Program.EFInterceptors.AppDb.cs` にインターセプターが生成されました。
+
+#### 最大の制約は「動的クエリが書けない」こと
+
+事前コンパイルは静的解析なので、条件によって演算子を組み立てるクエリは扱えません。
+
+```csharp
+// 事前コンパイルできない
+IQueryable<Blog> q = db.Blogs.OrderBy(b => b.Id);
+if (applyFilter) q = q.Where(b => b.Name != "foo");
+return await q.ToListAsync();
+```
+
+このコードのまま `dotnet ef dbcontext optimize --precompile-queries` を実行すると、次のエラーで失敗します（実測）。
+
+```text
+Query precompilation failed with errors:
+QueryPrecompilationError { SyntaxNode = q.ToListAsync(),
+  Exception = System.InvalidOperationException: Dynamic LINQ queries are not supported when precompiling queries. }
+```
+
+公式が案内する対処は、動的な組み立てを **複数の静的なクエリに分解する** ことです。
+
+```csharp
+IAsyncEnumerable<Blog> GetBlogs(BlogContext context, bool applyFilter)
+    => applyFilter
+        ? context.Blogs.OrderBy(b => b.Id).Where(b => b.Name != "foo").AsAsyncEnumerable()
+        : context.Blogs.OrderBy(b => b.Id).AsAsyncEnumerable();
+```
+
+このほかに、クエリ式構文（`from x in ...` の書き方）が未対応であること、生成されるコードが大きく生成に時間がかかること、キャプチャした状態を使う値変換器が未対応であることが公式に制約として挙げられています。
+
+> [!WARNING]
+> 実測では、`EnsureCreated()` を含むコードを NativeAOT で発行すると `IL3050` の警告が出ました。マイグレーション操作は設計時モデルの構築を必要とするため NativeAOT ではサポートされておらず、マイグレーションバンドルなど別の手段で適用する必要があります。**現時点の NativeAOT 対応は多数の警告を伴うことが公式にも明記されており、発行が通らない場面もあります。** 実験目的にとどめてください。
+
+#### NativeAOT なしで事前コンパイルだけ使う
+
+NativeAOT の制約が厳しくても、事前コンパイル済みクエリだけを使って起動時間を短縮することはできます。
+
+```bash
+dotnet ef dbcontext optimize --precompile-queries
+```
+
+こちらであれば通常の（NativeAOT でない）アプリケーションとして発行できるため、動的クエリを含むアプリケーションでも、事前コンパイルできるクエリの分だけ起動コストを減らせます。
+
 ### 変更検出のコストを理解する
 
 EF Core の既定は **スナップショット変更追跡 (snapshot change tracking)** です。エンティティを追跡し始めるときに全プロパティの値を内部に複製しておき、保存時にその複製と現在値を比較して変更を洗い出します。この比較を行うのが `ChangeTracker.DetectChanges` で、次のメソッドは結果を正しくするために自動的に呼び出します。
@@ -5489,6 +5904,12 @@ flowchart TB
 - [継承 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/inheritance)
 - [生成されるプロパティ値 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/generated-properties)
 - [SQL Server プロバイダーのインデックス | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/indexes)
+- [SQL Server / Azure SQL のテンポラルテーブル | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/temporal-tables)
+- [SQL Server プロバイダー固有の列機能 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/columns)
+- [SQL Server の HierarchyId | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/hierarchyid)
+- [SQL Server のメモリ最適化テーブルのサポート | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/memory-optimized-tables)
+- [SQL Server プロバイダーの関数マッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/functions)
+- [SQL Server プロバイダーの全文検索 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/full-text-search)
 - [SQL Server プロバイダーのその他の考慮事項 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/misc)
 - [EF Core 7.0 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-7.0/breaking-changes)
 - [効率的な更新 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/performance/efficient-updating)
@@ -5544,6 +5965,8 @@ flowchart TB
 - [パフォーマンスの概要 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/performance/)
 - [効率的なクエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/performance/efficient-querying)
 - [高度なパフォーマンストピック | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/performance/advanced-performance-topics)
+- [NativeAOT のサポートと事前コンパイル済みクエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/performance/nativeaot-and-precompiled-queries)
+- [EF Core の MSBuild 統合 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/cli/msbuild)
 - [接続の回復性 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-resiliency)
 - [クエリタグ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/tags)
 - [Microsoft.Extensions.Logging による EF Core のログ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/extensions-logging)
