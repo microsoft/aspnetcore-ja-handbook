@@ -76,6 +76,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [コレクションのパラメーター化と IN 句の翻訳](#コレクションのパラメーター化と-in-句の翻訳)
    - [コンパイル済みクエリ](#コンパイル済みクエリ)
    - [コンパイル済みモデル](#コンパイル済みモデル)
+   - [変更検出のコストを理解する](#変更検出のコストを理解する)
    - [バッファリングとストリーミング](#バッファリングとストリーミング)
    - [非同期 API を使う](#非同期-api-を使う)
    - [ログとセキュリティ](#ログとセキュリティ)
@@ -3849,6 +3850,70 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 >
 > つまり「生成はできたが一部の機能が無視される」のではなく、**生成そのものが失敗します**。前述したグローバルクエリフィルターを使っている場合は、コンパイル済みモデルを併用できない点に注意してください。
 
+### 変更検出のコストを理解する
+
+EF Core の既定は **スナップショット変更追跡 (snapshot change tracking)** です。エンティティを追跡し始めるときに全プロパティの値を内部に複製しておき、保存時にその複製と現在値を比較して変更を洗い出します。この比較を行うのが `ChangeTracker.DetectChanges` で、次のメソッドは結果を正しくするために自動的に呼び出します。
+
+- `SaveChanges` / `SaveChangesAsync`
+- `ChangeTracker.Entries()` / `ChangeTracker.Entries<TEntity>()`
+- `ChangeTracker.HasChanges()`
+- `ChangeTracker.CascadeChanges()`
+- `DbSet<TEntity>.Local`
+
+この自動呼び出しは `ChangeTracker.AutoDetectChangesEnabled` で無効にできますが、**安易に触ってはいけません。**
+
+> [!WARNING]
+> `AutoDetectChangesEnabled = false` のままプロパティを書き換えても、EF Core はその変更に気づきません。**例外は出ず、保存されないまま処理が成功します。** 10,000 件を追跡して 1 件だけ書き換え、無効のまま `SaveChangesAsync` を呼んだところ、影響行数は **0** でした。
+>
+> さらに、状態を問い合わせる API も誤った答えを返します。
+>
+> ```csharp
+> context.ChangeTracker.AutoDetectChangesEnabled = false;
+> blog.Name = "更新後";
+>
+> context.Entry(blog).State;            // Unchanged（実際は変更済み）
+> context.ChangeTracker.HasChanges();   // False（実際は変更あり）
+>
+> context.ChangeTracker.DetectChanges();
+> context.Entry(blog).State;            // Modified
+> await context.SaveChangesAsync();     // ここで初めて 1 行が保存される
+> ```
+>
+> 無効にする場合は、`try` / `finally` で必ず元に戻し、その区間でプロパティを書き換えないことを保証してください。
+
+> [!TIP]
+> 公式ドキュメントは「性能を出すために自動変更検出を無効にしなければならない、と決めつけないでください」と述べています。実際に測ると、**10,000 件を追跡した状態で `DetectChanges()` にかかった時間は 6 ミリ秒**でした（SQL Server 2022 / Release ビルド / プロパティ 3 個のエンティティ）。数千件規模でボトルネックになることはまずありません。プロファイリングで変更検出が問題だと判明した場合にのみ検討してください。
+
+エンティティ数が本当に多く、変更検出そのものを避けたい場合は、**変更追跡プロキシ (change-tracking proxies)** という選択肢があります。`Microsoft.EntityFrameworkCore.Proxies` パッケージを追加して `UseChangeTrackingProxies()` を呼ぶと、EF Core が `INotifyPropertyChanged` / `INotifyPropertyChanging` を実装する派生型を動的に生成し、プロパティが変わった瞬間に通知が飛ぶためスナップショットが不要になります。実測でも、`AutoDetectChangesEnabled = false` のままプロパティを書き換えて状態が `Modified` になることを確認しました。
+
+ただし制約が多く、既定の選択肢にはなりません。
+
+> [!WARNING]
+> 変更追跡プロキシを使うと、EF Core は **常にプロキシのインスタンスを追跡しなければなりません。** 元の型のインスタンスは通知を出さないため、変更が失われます。そのため新しいエンティティは `new` ではなく `CreateProxy` で作る必要があります。
+>
+> ```csharp
+> // new で作ったインスタンスを Add すると実行時例外
+> var blog = context.CreateProxy<Blog>(b => { b.Name = "新しいブログ"; });
+> context.Blogs.Add(blog);
+> ```
+>
+> ```text
+> InvalidOperationException: The entity type 'Blog' is configured to use the
+> 'ChangingAndChangedNotifications' change tracking strategy, but does not implement
+> the required 'INotifyPropertyChanging' interface.
+> ```
+>
+> 加えて、エンティティ型は継承可能である必要があります。1 つでも条件を満たさないと、モデルの構築時点で失敗します。
+>
+> ```text
+> InvalidOperationException: Property 'Blog.Id' is not virtual. 'UseChangeTrackingProxies'
+> requires all entity types to be public, unsealed, have virtual properties, and have a
+> public or protected constructor. 'UseLazyLoadingProxies' requires only the navigation
+> properties be virtual.
+> ```
+>
+> 最後の一文のとおり、**遅延読み込みプロキシはナビゲーションプロパティだけが `virtual` であればよく**、変更追跡プロキシのほうが要求が厳しい点に注意してください。
+
 ### バッファリングとストリーミング
 
 `ToListAsync` は結果をすべてメモリに読み込みます（バッファリング）。大量の行を順次処理するだけなら、`await foreach` によるストリーミングでメモリ使用量を抑えられます。
@@ -4651,6 +4716,7 @@ flowchart TB
 
 - [データのクエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/)
 - [追跡クエリと非追跡クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/tracking)
+- [変更の検出と通知 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/change-detection)
 - [関連データの読み込み | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/related-data/)
 - [単一クエリと分割クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/single-split-queries)
 - [ページネーション | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/pagination)
