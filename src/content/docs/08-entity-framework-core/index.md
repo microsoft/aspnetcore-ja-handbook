@@ -29,6 +29,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [継承のマッピング](#継承のマッピング)
    - [代替キーと一意インデックス](#代替キーと一意インデックス)
    - [1 つのテーブルを複数のエンティティで共有する](#1-つのテーブルを複数のエンティティで共有する)
+   - [キーなしエンティティ型でビューや集計結果を読む](#キーなしエンティティ型でビューや集計結果を読む)
    - [シャドウプロパティとバッキングフィールド](#シャドウプロパティとバッキングフィールド)
    - [シーケンスによる採番](#シーケンスによる採番)
    - [計算列](#計算列)
@@ -70,6 +71,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [分離レベルによる同時実行制御](#分離レベルによる同時実行制御)
    - [接続の回復性とトランザクションの併用](#接続の回復性とトランザクションの併用)
    - [デッドロックへの対処](#デッドロックへの対処)
+   - [変更追跡イベントで状態の変化を捕まえる](#変更追跡イベントで状態の変化を捕まえる)
    - [インターセプターによる横断的な処理](#インターセプターによる横断的な処理)
 6. [パフォーマンス最適化](#6-パフォーマンス最適化)
    - [まず計測する](#まず計測する)
@@ -1394,6 +1396,55 @@ INNER JOIN [CustomerAddresses] AS [c0] ON [c].[Id] = [c0].[Id]
 
 > [!NOTE]
 > 公式ドキュメントはエンティティ分割の制限として、**継承階層にある型では使えないこと**と、**主テーブルの行に対して分割先テーブルの行が必ず存在しなければならないこと**（分割された部分は省略できない）を挙げています。`INNER JOIN` になるのはこのためです。
+
+### キーなしエンティティ型でビューや集計結果を読む
+
+主キーを持たないデータ、たとえばデータベースビューや集計結果を読むための仕組みが **キーなしエンティティ型 (keyless entity type)** です。`HasNoKey()` または `[Keyless]` 属性で構成します。
+
+```csharp
+public class BlogPostCount
+{
+    public string Name { get; set; } = "";
+    public int PostCount { get; set; }
+}
+
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+    => modelBuilder.Entity<BlogPostCount>()
+        .HasNoKey()
+        .ToView("View_BlogPostCounts");
+```
+
+`DbSet<BlogPostCount>` を定義すれば、通常のエンティティと同じように LINQ で問い合わせられます。実測したクエリと結果は次のとおりです。
+
+```sql
+SELECT [v].[Name], [v].[PostCount] FROM [View_BlogPostCounts] AS [v]
+```
+
+このとき **クエリ後の追跡エントリー数は 0 でした。** 公式ドキュメントの「`DbContext` で変更が追跡されることはなく、したがってデータベースに挿入・更新・削除されることもない」という記述どおりの動作です。試しに `Add` して保存しようとすると、次の例外になりました。
+
+```text
+Unable to track an instance of type 'BlogPostCount' because it does not have a primary key.
+Only entity types with a primary key may be tracked.
+```
+
+> [!NOTE]
+> `ToTable` と `ToView` の違いは、EF Core から見て **読み取り専用として扱うかどうか** です。公式ドキュメントによると、`ToView` で指定したデータベースオブジェクトは読み取り専用のクエリソースとして扱われ、更新・挿入・削除の対象になりません。実際のデータベースオブジェクトがビューである必要はなく、主キーを持たないテーブルを読み取り専用として扱う用途にも使えます。
+
+公式ドキュメントが挙げている主な用途は次の 4 つです。
+
+- 生 SQL クエリの戻り値の型として使う
+- 主キーを持たないデータベースビューにマップする
+- 主キーが定義されていないテーブルにマップする
+- モデル内で定義したクエリにマップする
+
+> [!WARNING]
+> キーなしエンティティ型には、通常のエンティティ型にはない制限があります。公式ドキュメントが挙げているもののうち、実務で引っかかりやすいのは次の点です。
+>
+> - **規約によって検出されることがない。** 必ず `HasNoKey()` か `[Keyless]` で明示的に構成する必要があります
+> - **通常のエンティティ型からキーなしエンティティ型へのナビゲーションプロパティを持てない。** 実際に書いてみると、モデル構築の時点で `Unable to determine the relationship represented by navigation 'NavBlog.Counts' of type 'BlogPostCount'.` という例外になりました
+> - リレーションシップの主体側になれない
+> - 継承階層は作れるが、TPH としてしかマップできない
+> - テーブル分割・エンティティ分割は使えない
 
 ### シャドウプロパティとバッキングフィールド
 
@@ -3703,6 +3754,73 @@ await strategy.ExecuteAsync(async () =>
 >
 > `SqlException` は `Microsoft.Data.SqlClient` 名前空間にあります。
 
+### 変更追跡イベントで状態の変化を捕まえる
+
+インターセプターより手軽に「エンティティが追跡されたとき」「状態が変わったとき」に処理を挟みたい場合は、`DbContext` が公開している .NET イベントを使います。EF Core が発行するイベントは次の 5 つです。
+
+| イベント | 発行されるタイミング |
+| --- | --- |
+| `DbContext.SavingChanges` | `SaveChanges` / `SaveChangesAsync` の開始時 |
+| `DbContext.SavedChanges` | `SaveChanges` / `SaveChangesAsync` の成功時 |
+| `DbContext.SaveChangesFailed` | `SaveChanges` / `SaveChangesAsync` の失敗時 |
+| `ChangeTracker.Tracked` | エンティティがコンテキストに追跡されたとき |
+| `ChangeTracker.StateChanged` | 追跡済みエンティティの状態が変わったとき |
+
+イベントは `DbContext` インスタンスごとに登録します。プロセス内のすべての `DbContext` で同じ情報を取りたい場合は診断リスナーを使ってください。
+
+```csharp
+public class BlogsContext : DbContext
+{
+    public BlogsContext()
+    {
+        ChangeTracker.Tracked += (s, e) =>
+            Console.WriteLine($"Tracked: {e.Entry.Entity.GetType().Name} 状態={e.Entry.State} クエリ由来={e.FromQuery}");
+        ChangeTracker.StateChanged += (s, e) =>
+            Console.WriteLine($"StateChanged: {e.Entry.Entity.GetType().Name} {e.OldState} -> {e.NewState}");
+    }
+}
+```
+
+`EntityTrackedEventArgs.FromQuery` は、公式 API リファレンスによると「エンティティがデータベースクエリの一部として追跡されている場合は `true`」を返します。実測すると、`Add` による追跡では `False`、クエリ結果の追跡では `True` になりました。
+
+```text
+-- 新規追加 --
+Tracked: Blog 状態=Added クエリ由来=False
+Tracked: Post 状態=Added クエリ由来=False
+StateChanged: Blog Added -> Unchanged      ← SaveChanges の成功後に発行される
+StateChanged: Post Added -> Unchanged
+
+-- 読み込みと変更 --
+Tracked: Blog 状態=Unchanged クエリ由来=True
+Tracked: Post 状態=Unchanged クエリ由来=True
+StateChanged: Post Unchanged -> Deleted
+StateChanged: Blog Unchanged -> Modified
+Tracked: Post 状態=Added クエリ由来=False   ← 追加した子は StateChanged ではなく Tracked
+StateChanged: Blog Modified -> Unchanged
+StateChanged: Post Deleted -> Detached      ← 削除されたエンティティは追跡から外れる
+```
+
+> [!IMPORTANT]
+> **`Tracked` と `StateChanged` の両方を登録しないと、変化を取りこぼします。** 公式ドキュメントが説明しているとおり、新しいエンティティが最初に追跡されるときは `Tracked` が発行され、`StateChanged` は **すでに追跡されている** エンティティの状態が変わったときにしか発行されません。上の実測でも、新規追加した `Post` は `Tracked` でしか観測できていません。
+>
+> 削除されたエンティティが保存後に `Deleted -> Detached` になる点にも注意してください。データベースから消えた行はもう追跡する必要がないためです。
+
+保存そのものを捕まえる 3 つのイベントは次のように使います。
+
+```csharp
+context.SavingChanges += (s, e) =>
+    Console.WriteLine($"保存開始: AcceptAllChangesOnSuccess = {e.AcceptAllChangesOnSuccess}");
+context.SavedChanges += (s, e) =>
+    Console.WriteLine($"保存成功: 保存されたエンティティ数 = {e.EntitiesSavedCount}");
+context.SaveChangesFailed += (s, e) =>
+    Console.WriteLine($"保存失敗: {e.Exception.GetType().Name}");
+```
+
+`AcceptAllChangesOnSuccess` は公式 API リファレンスによると「`SaveChanges` または `SaveChangesAsync` に渡された値」、`EntitiesSavedCount` は「保存されたエンティティの数」です。実測では、成功時に `SavingChanges` → `SavedChanges`、失敗時に `SavingChanges` → `SaveChangesFailed` の順で発行され、`SaveChangesFailed` が発行されたケースでは `SavedChanges` は発行されませんでした。
+
+> [!WARNING]
+> 公式ドキュメントは、イベントについて「インターセプターより単純で、登録の自由度が高い。ただし **同期専用なのでブロッキングしない非同期 I/O を実行できない**」と説明しています。イベントハンドラーの中でデータベースアクセスや HTTP 呼び出しを行いたい場合はインターセプターを使ってください。
+
 ### インターセプターによる横断的な処理
 
 作成日時の自動設定、監査ログ、クエリへのヒント付与のような **すべての操作に共通する処理** は、個々のリポジトリーやサービスに書くと漏れが生じます。EF Core は **インターセプター (Interceptor)** を提供しており、低レベルの操作に割り込んで処理を追加したり、操作そのものを抑制・変更したりできます。
@@ -5102,6 +5220,8 @@ flowchart TB
 - [多対多のリレーションシップ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/many-to-many)
 - [キー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/keys)
 - [高度なテーブルマッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/table-splitting)
+- [キーなしエンティティ型 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/keyless-entity-types)
+- [EF Core の .NET イベント | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/events)
 - [カスケード削除 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/cascade-delete)
 - [ID 解決 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/identity-resolution)
 - [外部キーとナビゲーションの変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/relationship-changes)
@@ -5111,7 +5231,6 @@ flowchart TB
 - [ページネーション | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/pagination)
 - [SQL クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/sql-queries)
 - [ユーザー定義関数のマッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/user-defined-function-mapping)
-- [キーレス エンティティ型 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/keyless-entity-types)
 - [データの保存 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/)
 - [トランザクションの使用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/transactions)
 - [同時実行の競合の処理 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/concurrency)
