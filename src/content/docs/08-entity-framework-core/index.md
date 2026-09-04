@@ -830,6 +830,47 @@ modelBuilder.Entity<Post>()
 | `SetNull` | 子の外部キーを NULL にする（外部キーが NULL 許容である必要がある） |
 | `NoAction` | データベースに制約の判断を委ねる |
 
+#### カスケード削除は「子を読み込んでいるか」で主体が変わる
+
+`OnDelete` を明示しなかった場合の既定値は、外部キーが NULL 許容かどうかで決まります。実測で確認した既定値は次のとおりです。
+
+| リレーションシップ | 外部キー | 既定の `DeleteBehavior` |
+| --- | --- | --- |
+| 必須 | `int` | `Cascade` |
+| 任意 | `int?` | `ClientSetNull` |
+
+そして、**同じ設定でも子エンティティを `DbContext` に読み込んでいるかどうかで削除の主体が変わります。** 必須リレーションシップで親 1 件・子 2 件を削除したときの実測結果です。
+
+| 操作 | `SaveChangesAsync` の戻り値 | 削除の主体 |
+| --- | --- | --- |
+| `Include` して親を `Remove` | 3 | EF Core（子を `Deleted` にして削除） |
+| `Include` せずに親を `Remove` | 1 | データベース（`ON DELETE CASCADE`） |
+
+`Include` した場合は、`Remove` を呼んだ時点で子の状態が `Deleted` に変わることを確認しました。EF Core が子の削除まで受け持つため、戻り値が 3 になります。読み込んでいない場合は EF Core は親の `DELETE` しか発行せず、データベース側の外部キー制約が子を削除します。
+
+> [!WARNING]
+> **必須リレーションシップでは、親を削除しなくても子がコレクションから外れただけで削除されます。** 実測では `blog.Posts.Remove(post)` を呼んだだけで、その `Post` の状態が `Deleted` になりました。外部キーが `int` である以上、親のいない子は存在できないためです。これを **孤児の削除 (delete orphans)** と呼びます。
+>
+> 任意リレーションシップ（`int?`）では挙動が変わり、親を削除しても子は `Modified` になって**外部キーが `null` に更新されるだけ**でした。実測でも 2 件の `Post` が残り、`BlogId` は両方とも `null` になりました。
+
+> [!TIP]
+> 削除の主体がデータベース側になるかどうかは、パフォーマンスにも例外の種類にも影響します。子を読み込んでいれば EF Core が不整合を検知して `InvalidOperationException` を投げますが、読み込んでいない場合はデータベースが制約違反を返し、`DbUpdateException` にラップされます。
+
+#### SQL Server では循環するカスケードを作れない
+
+必須リレーションシップは既定でカスケード削除になるため、3 つ以上のエンティティが輪を作ると SQL Server がテーブルを作成できません。ブログ・投稿・人物が互いに必須リレーションシップで結ばれたモデルでデータベースを作成しようとしたところ、次の例外になりました。
+
+```text
+Introducing FOREIGN KEY constraint 'FK_Posts_People_AuthorId' on table 'Posts'
+may cause cycles or multiple cascade paths. Specify ON DELETE NO ACTION or
+ON UPDATE NO ACTION, or modify other FOREIGN KEY constraints.
+```
+
+公式ドキュメントは対処として次の 2 つを挙げています。
+
+1. いずれかのリレーションシップをカスケード削除しない設定に変える（外部キーを NULL 許容にするなど）
+2. データベース側のカスケードを外したうえで、削除前に子エンティティをすべて読み込み、EF Core にカスケードを実行させる
+
 ### 値の変換・所有型・複合型
 
 列の型とプロパティの型が一致しない場合は **値の変換 (Value Conversion)** を使います。列挙型を文字列として保存する例です。
@@ -4857,6 +4898,7 @@ flowchart TB
 - [変更の検出と通知 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/change-detection)
 - [切断されたエンティティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/disconnected-entities)
 - [チェンジトラッカーのデバッグ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/debug-views)
+- [カスケード削除 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/cascade-delete)
 - [ID 解決 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/identity-resolution)
 - [外部キーとナビゲーションの変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/relationship-changes)
 - [その他の変更追跡機能 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/miscellaneous)
