@@ -57,6 +57,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [ユーザー定義関数とビューをマッピングする](#ユーザー定義関数とビューをマッピングする)
 5. [更新／変更操作とトランザクション](#5-更新変更操作とトランザクション)
    - [追加・更新・削除の基本](#追加更新削除の基本)
+   - [切断されたエンティティのグラフを保存する](#切断されたエンティティのグラフを保存する)
    - [SaveChanges の既定のトランザクション動作](#savechanges-の既定のトランザクション動作)
    - [保存のバッチ処理](#保存のバッチ処理)
    - [データベーストリガーがあるテーブルの保存](#データベーストリガーがあるテーブルの保存)
@@ -2744,6 +2745,80 @@ await context.SaveChangesAsync(cancellationToken);
 > [!TIP]
 > `Update` はすべての列を UPDATE 文に含めます。一部の列だけを更新したい場合は、いったんデータベースから読み込んで必要なプロパティだけを変更するか、`context.Entry(blog).Property(b => b.Name).IsModified = true;` のように個別に指定します。
 
+### 切断されたエンティティのグラフを保存する
+
+Web API では、親と子をまとめた JSON をクライアントから受け取り、そのグラフごと保存したい場面がよくあります。`Add` / `Attach` / `Update` はグラフを再帰的にたどり、エンティティごとに状態を決めます。
+
+自動生成キー（`int` や `Guid` の主キー）を使っている場合、**キー値が設定されていないことが「まだ挿入されていない」ことの目印**になります。EF Core はこれを利用して、切断されたグラフの中で新規と既存を自動的に区別します。実際に、`Id` を持つ子 2 件と `Id` 未設定の子 1 件を含むグラフを `Update` に渡したところ、次のようになりました。
+
+```csharp
+var graph = new Blog
+{
+    Id = 1,
+    Name = "更新後",
+    Posts =
+    {
+        new Post { Id = 1, Title = "既存 1" },
+        new Post { Id = 2, Title = "既存 2" },
+        new Post { Title = "新規（Id 未設定）" },
+    },
+};
+context.Update(graph);
+```
+
+```text
+Blog {Id: 1} Modified
+Post {Id: -2147482644} Added FK {BlogId: 1}
+Post {Id: 1} Modified FK {BlogId: 1}
+Post {Id: 2} Modified FK {BlogId: 1}
+```
+
+`Id` が未設定だった 1 件だけが `Added` になり、**一時キー値**（負の値）が割り当てられています。この値は `SaveChanges` までの間だけ使われ、保存後にデータベースが採番した実際の値へ置き換わります。`Attach` を使うと、既存のエンティティは `Modified` ではなく `Unchanged` になります（新規の判定は同じです）。
+
+> [!WARNING]
+> **グラフから子を取り除いても、その子は削除されません。** 子 3 件のうち 1 件だけを含むグラフを `Update` して保存しても、実測ではテーブルの件数は 3 件のままでした。届かなかったエンティティは、そもそも追跡対象にならないためです。
+>
+> 公式ドキュメントも「削除は扱いが難しい。エンティティが存在しないことが削除を意味することが多いためだ」と述べ、次の 2 つを挙げています。
+>
+> - **論理削除 (soft delete)** にして、削除を更新として扱う（グローバルクエリフィルターと組み合わせる）
+> - データベースを読み込んでグラフの差分を取り、消えている子に `Remove` を呼ぶ
+>
+> エンティティを削除するには `Deleted` 状態で追跡されている必要があります。「送られてこなかった」という情報だけで EF Core が削除を判断することはありません。
+
+状態の決め方を自分で制御したい場合は `ChangeTracker.TrackGraph` を使います。グラフ内の各エンティティを追跡する直前にコールバックが呼ばれるため、DTO に持たせたフラグなどで判定できます。
+
+```csharp
+context.ChangeTracker.TrackGraph(graph, node =>
+{
+    var entry = node.Entry;
+    var id = (int)entry.Property("Id").CurrentValue!;
+
+    entry.State = id switch
+    {
+        0 => EntityState.Added,
+        _ => EntityState.Modified,
+    };
+});
+```
+
+#### チェンジトラッカーの中身を見る
+
+思ったとおりの状態になっているかは、`ChangeTracker.DebugView` で確認できます。`ShortView` は各エンティティの状態とキー値だけを、`LongView` はプロパティの値と元の値まで表示します。
+
+```csharp
+context.ChangeTracker.DetectChanges();
+Console.WriteLine(context.ChangeTracker.DebugView.ShortView);
+```
+
+```text
+Blog {Id: 1} Modified
+    Id: 1 PK
+    Name: '書き換え後' Originally '書き換え前'
+```
+
+> [!NOTE]
+> 公式のサンプルと同じく、**表示する前に `DetectChanges()` を明示的に呼んでください。** `DebugView` を読むだけでは変更検出が走らないため、プロパティを書き換えた直後に表示すると、値は新しいのに状態が `Unchanged` のままという食い違いが起きます。前述した `SaveChanges` や `ChangeTracker.Entries()` を経由していれば、変更検出は自動的に済んでいます。
+
 ### SaveChanges の既定のトランザクション動作
 
 `SaveChangesAsync` の 1 回の呼び出しは、**1 つのトランザクション** で実行されます。複数のエンティティを変更していても、すべて成功するか、すべてロールバックされるかのどちらかです。
@@ -4717,6 +4792,8 @@ flowchart TB
 - [データのクエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/)
 - [追跡クエリと非追跡クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/tracking)
 - [変更の検出と通知 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/change-detection)
+- [切断されたエンティティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/disconnected-entities)
+- [チェンジトラッカーのデバッグ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/debug-views)
 - [関連データの読み込み | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/related-data/)
 - [単一クエリと分割クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/single-split-queries)
 - [ページネーション | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/pagination)
