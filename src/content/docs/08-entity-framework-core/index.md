@@ -54,6 +54,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [ページング](#ページング)
    - [LeftJoin / RightJoin 演算子](#leftjoin--rightjoin-演算子)
    - [生の SQL を使う](#生の-sql-を使う)
+   - [ユーザー定義関数とビューをマッピングする](#ユーザー定義関数とビューをマッピングする)
 5. [更新／変更操作とトランザクション](#5-更新変更操作とトランザクション)
    - [追加・更新・削除の基本](#追加更新削除の基本)
    - [SaveChanges の既定のトランザクション動作](#savechanges-の既定のトランザクション動作)
@@ -2384,6 +2385,106 @@ var blogs = await context.Blogs
     .ToListAsync(cancellationToken);
 ```
 
+### ユーザー定義関数とビューをマッピングする
+
+EF Core の公式パフォーマンスガイダンスは、EF が生成しない最適な SQL を使いたい場合の手段を **3 つ**挙げています。1 つ目が前節の `FromSql` で、残りの 2 つが**ユーザー定義関数 (User-Defined Function: UDF)** と**データベースビュー**です。`FromSql` は「その 1 か所でしか使わない SQL」に向く一方、複数のクエリから再利用したいロジックは関数やビューにするほうが管理しやすくなります。
+
+#### スカラー関数
+
+戻り値が単一の値である**スカラー関数**は、シグネチャだけを合わせた CLR メソッドを定義し、`HasDbFunction` でマッピングします。メソッドの本体は呼び出されないため、例外を投げておいて構いません。
+
+```csharp
+public class BloggingContext : DbContext
+{
+    public int PostCountForBlog(int blogId) => throw new NotSupportedException();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.HasDbFunction(
+            typeof(BloggingContext).GetMethod(nameof(PostCountForBlog), [typeof(int)])!);
+    }
+}
+```
+
+```csharp
+var names = await context.Blogs
+    .Where(b => context.PostCountForBlog(b.Id) > 1)
+    .Select(b => b.Name)
+    .ToListAsync(cancellationToken);
+```
+
+SQL Server 2022 に対して生成された SQL は次のとおりで、関数呼び出しがそのまま `WHERE` 句に埋め込まれました（実測）。
+
+```sql
+SELECT [b].[Name]
+FROM [Blogs] AS [b]
+WHERE [dbo].[PostCountForBlog]([b].[Id]) > 1
+```
+
+#### テーブル値関数 (TVF)
+
+行の集合を返す**テーブル値関数 (Table-Valued Function: TVF)** は、`IQueryable<T>` を返す CLR メソッドとしてマッピングします。本体には `FromExpression` を書きます。
+
+```csharp
+public IQueryable<Post> PopularPosts(int likeThreshold)
+    => FromExpression(() => PopularPosts(likeThreshold));
+
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.HasDbFunction(
+        typeof(BloggingContext).GetMethod(nameof(PopularPosts), [typeof(int)])!);
+}
+```
+
+`DbSet` と同じように扱えるため、**LINQ を合成できる**のが利点です。実測では、TVF に `Where` を続けた次のクエリが 1 本の SQL に変換されました。
+
+```csharp
+var titles = await context.PopularPosts(5)
+    .Where(p => p.Title.StartsWith("a"))
+    .Select(p => p.Title)
+    .ToListAsync(cancellationToken);
+```
+
+```sql
+SELECT [p].[Title]
+FROM [dbo].[PopularPosts](@likeThreshold) AS [p]
+WHERE [p].[Title] LIKE N'a%'
+```
+
+> [!NOTE]
+> 公式ドキュメントは「クエリ可能な関数はテーブル値関数にマッピングしなければならない」と明記しています。また `HasTranslation` はスカラー関数専用で、テーブル値関数には使えません。
+
+#### ビューとキーレスエンティティ型
+
+パラメーターが不要なら、ビューをマッピングする方法もあります。公式ドキュメントは「関数と違い、**ビューはパラメーターを受け取れない**」とその違いを説明しています。ビューには主キーがないことが多いため、**キーレスエンティティ型 (keyless entity type)** として定義します。
+
+```csharp
+[Keyless]
+public class BlogPostCount
+{
+    public string BlogName { get; set; } = "";
+    public int PostCount { get; set; }
+}
+
+modelBuilder.Entity<BlogPostCount>()
+    .HasNoKey()
+    .ToView("View_BlogPostCounts");
+```
+
+```csharp
+var counts = await context.BlogPostCounts
+    .OrderBy(v => v.BlogName)
+    .ToListAsync(cancellationToken);
+```
+
+キーレスエンティティ型は公式ドキュメントで「**DbContext で変更追跡されることが決してなく、したがって挿入・更新・削除もされない**」と定義されています。実際に上のクエリを実行した直後に `ChangeTracker.Entries()` を数えたところ **0** でした（実測）。`AsNoTracking()` を付け忘れる心配がありません。
+
+> [!WARNING]
+> **`ToView` でマッピングしたビューは、EF Core が作ってくれません。** `ToView` を呼ぶとそのエンティティ型は「テーブルにマップされていない」と扱われるため、マイグレーションの対象から外れます。実際に `GenerateCreateScript()` の出力を確認したところ、`CREATE TABLE` は 2 つ生成されましたが、ビューの DDL は含まれていませんでした（実測）。公式のサンプルも `ExecuteSqlRawAsync` でビューを作成しています。マイグレーションで管理するなら `migrationBuilder.Sql(...)` に `CREATE VIEW` を自分で書いてください。
+
+> [!TIP]
+> EF Core から見た `ToView` の対象は「読み取り専用のクエリソース」であり、公式ドキュメントによれば**実際にデータベースビューである必要はありません**。読み取り専用として扱いたい通常のテーブルを指定することもできます。
+
 ---
 
 ## 5. 更新／変更操作とトランザクション
@@ -4361,6 +4462,8 @@ flowchart TB
 - [単一クエリと分割クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/single-split-queries)
 - [ページネーション | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/pagination)
 - [SQL クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/sql-queries)
+- [ユーザー定義関数のマッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/user-defined-function-mapping)
+- [キーレス エンティティ型 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/keyless-entity-types)
 - [データの保存 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/)
 - [トランザクションの使用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/transactions)
 - [同時実行の競合の処理 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/concurrency)
