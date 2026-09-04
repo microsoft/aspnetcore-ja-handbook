@@ -1630,6 +1630,19 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 ```
 
 > [!WARNING]
+> 既定値を設定した列には、**その型の CLR 既定値（`int` の `0`、`bool` の `false` など）を明示的に保存できません。** EF Core は「プロパティに値が設定されたかどうか」を CLR 既定値との比較で判定するため、`0` を代入することと何も代入しないことを区別できないからです。
+>
+> `Count` に `HasDefaultValue(-1)` を設定して 3 行を挿入したところ、次のようになりました。
+>
+> | 設定した内容 | 保存された値 |
+> | --- | --- |
+> | 何も設定しない | `-1` |
+> | **`Count = 0` を明示** | **`-1`** |
+> | `Count = 5` を明示 | `5` |
+>
+> 意図した `0` が黙って `-1` に化けます。この列に CLR 既定値を保存する必要がある場合は、プロパティを `int?` のような **null 許容型**にするか、バッキングフィールドを null 許容にしてください。null は CLR 既定値と区別できるため、`0` を明示的に保存できます。
+
+> [!WARNING]
 > 公式ドキュメントは「**既存のマイグレーションがある状態で `UseNamedDefaultConstraints()` を有効にすると、次に追加するマイグレーションでモデル内のすべての既定値制約がリネームされる**」と注意しています。稼働中のデータベースに対して有効化する場合は、生成されたマイグレーションの差分を必ず確認してください。
 
 ### 本番環境への適用戦略
@@ -1970,6 +1983,56 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 
 > [!NOTE]
 > **Hibernate** の「デタッチ状態」や、`@Transactional(readOnly = true)` による読み取り専用セッションが近い考え方です。**Django** の `.values()` / `.only()`、**Prisma** の `select` も、必要なデータだけを取り出してオーバーヘッドを減らすという意味で目的が共通します。
+
+#### 追跡済みインスタンスがクエリ結果を上書きする
+
+追跡クエリでは、EF Core は同じキー値のエンティティを 1 つのインスタンスとしてしか追跡しません。これを **ID 解決 (identity resolution)** と呼びます。すでに追跡中のインスタンスがある場合、新しいインスタンスを作る代わりに既存のものが返されます。
+
+ここに重要な副作用があります。**同じ `DbContext` で同じ行を読み直しても、データベース側の変更は結果に反映されません。**
+
+```csharp
+var first = await context.Blogs.FirstAsync();   // "元の名前"
+
+// この間に別のセッションが Blogs を更新したとする
+
+var second = await context.Blogs.FirstAsync();  // "元の名前" のまま
+ReferenceEquals(first, second);                 // true
+```
+
+実測でも、別の接続から `UPDATE` を実行したあとに同じ `DbContext` で読み直すと古い値が返り、新しい `DbContext` では更新後の値が返りました。`ChangeTracker.Clear()` を呼んだ場合も更新後の値になります。
+
+公式ドキュメントはこれを「`DbContext` を作業単位ごとに新しく作るべき十分な理由」として挙げています。1 つのインスタンスを長く使い回すと、意図せず古いデータを読み続けることになります。
+
+> [!WARNING]
+> 同じキー値を持つ別々のインスタンスを追跡させようとすると例外になります。クライアントから受け取った JSON を展開したときに同じエンティティが複数箇所に現れる場合などに起きます。
+>
+> ```text
+> InvalidOperationException: The instance of entity type 'Blog' cannot be tracked because
+> another instance with the same key value for {'Id'} is already being tracked. When
+> attaching existing entities, ensure that only one entity instance with a given key value
+> is attached.
+> ```
+>
+> グラフを追跡させる前に、重複するインスタンスを 1 つにまとめておいてください。
+
+#### リレーションシップ修正
+
+EF Core は、外部キーの値とナビゲーションプロパティを常に一致させます。これを **リレーションシップ修正 (relationship fixup)** と呼び、追跡中のエンティティに対して自動的に働きます。
+
+そのため、`Include` を書いていなくてもナビゲーションが埋まることがあります。
+
+```csharp
+var blog = await context.Blogs.FirstAsync();
+blog.Posts.Count;                    // 0
+
+await context.Posts.ToListAsync();   // 別のクエリで Post を読む
+blog.Posts.Count;                    // 2 に増えている
+```
+
+修正は双方向に働きます。実測では、`post.BlogId` を別の値に書き換えると `post.Blog` と両方のブログの `Posts` コレクションが追従し、逆に `post.Blog` に別のブログを代入すると `post.BlogId` が追従しました。
+
+> [!TIP]
+> この挙動は、テストで「`Include` を書き忘れているのに動いてしまう」原因になります。同じ `DbContext` でたまたま関連エンティティを読んでいるだけで、本番の経路では `null` になることがあります。関連データが必要な箇所では `Include` を明示してください。非追跡クエリではリレーションシップ修正が働かないため、`AsNoTracking()` を付けて確認するのも有効です。
 
 ### 関連データの読み込み
 
@@ -4794,6 +4857,9 @@ flowchart TB
 - [変更の検出と通知 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/change-detection)
 - [切断されたエンティティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/disconnected-entities)
 - [チェンジトラッカーのデバッグ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/debug-views)
+- [ID 解決 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/identity-resolution)
+- [外部キーとナビゲーションの変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/relationship-changes)
+- [その他の変更追跡機能 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/miscellaneous)
 - [関連データの読み込み | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/related-data/)
 - [単一クエリと分割クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/single-split-queries)
 - [ページネーション | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/pagination)
