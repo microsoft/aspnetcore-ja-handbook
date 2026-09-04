@@ -20,6 +20,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
 2. [モデル定義と DbContext 設計](#2-モデル定義と-dbcontext-設計)
    - [エンティティクラスの定義](#エンティティクラスの定義)
    - [パラメーター付きコンストラクターへのバインド](#パラメーター付きコンストラクターへのバインド)
+   - [Null 許容参照型がスキーマを決める](#null-許容参照型がスキーマを決める)
    - [DbContext の定義](#dbcontext-の定義)
    - [DI への登録と接続文字列](#di-への登録と接続文字列)
    - [DbContext のライフタイムとスレッド安全性](#dbcontext-のライフタイムとスレッド安全性)
@@ -63,6 +64,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [投影 (Projection) による最適化](#投影-projection-による最適化)
    - [ページング](#ページング)
    - [LeftJoin / RightJoin 演算子](#leftjoin--rightjoin-演算子)
+   - [大文字小文字の区別は照合順序が決める](#大文字小文字の区別は照合順序が決める)
    - [生の SQL を使う](#生の-sql-を使う)
    - [ユーザー定義関数とビューをマッピングする](#ユーザー定義関数とビューをマッピングする)
    - [SQL Server 固有の関数を LINQ から呼ぶ](#sql-server-固有の関数を-linq-から呼ぶ)
@@ -424,6 +426,51 @@ public class Book
 >
 > なお公式ドキュメントは「現時点でコンストラクターのバインドはすべて規約による。使用するコンストラクターを明示的に構成する機能は将来のリリースで予定されている」と述べています。複数のコンストラクターを持つ型では、どれが選ばれるかをコードで指定できません。
 
+### Null 許容参照型がスキーマを決める
+
+C# の **Null 許容参照型 (nullable reference types: NRT)** は、新規プロジェクトのテンプレートでは既定で有効です。EF Core はこの注釈を読んで、列を `NOT NULL` にするか `NULL` にするかを決めます。**同じプロパティ宣言でも、NRT の有効・無効で生成されるスキーマが変わります。**
+
+```csharp
+public class Customer
+{
+    public int Id { get; set; }
+    public required string Name { get; set; }   // 非 null
+    public string? Nickname { get; set; }       // null 許容
+}
+```
+
+```sql
+-- NRT が有効な場合（実測）
+"Name"     TEXT NOT NULL,
+"Nickname" TEXT NULL
+
+-- NRT が無効な場合、同じ宣言でも
+"Name"     TEXT NULL,
+"Nickname" TEXT NULL
+```
+
+> [!WARNING]
+> **既存のプロジェクトで NRT を後から有効にするときは注意してください。** それまで「省略可能」として扱われていた参照型のプロパティが一斉に「必須」になり、列を `NOT NULL` に変更するマイグレーションが生成されます。既存データに `NULL` が入っていれば、そのマイグレーションは本番で失敗します。有効化はモデル全体を見直す作業だと考え、生成されたマイグレーションを必ず目で確認してください。
+
+NRT を有効にすると、初期化されていない非 null プロパティに対してコンパイラーが `CS8618` を出します。C# 11 以降なら `required` 修飾子が最も素直な解決策です。コンストラクターで初期化する方法もありますが、ナビゲーションプロパティには使えません。
+
+ナビゲーションプロパティを null 許容にするかどうかは、公式が次の指針を示しています。
+
+| 状況 | 推奨 |
+| --- | --- |
+| 読み込まずにナビゲーションへアクセスするのはプログラマーの誤りだと考える | 非 null にする（`= null!;` で初期化） |
+| `null` かどうかで「読み込み済みか」を判定したい | null 許容にする |
+| コレクションナビゲーション | **常に非 null。** 関連が無いことは空のコレクションで表す |
+
+> [!NOTE]
+> 省略可能なリレーションシップをたどるクエリでは、実際には `null` 参照例外が起きないのにコンパイラーが警告を出すことがあります。EF Core は SQL に変換して実行するため、関連エンティティが存在しなければナビゲーションを単に無視します。コンパイラーはそれを知らないので、null 免除演算子で黙らせる必要があります。
+>
+> ```csharp
+> var orders = await context.Orders
+>     .Where(o => o.OptionalInfo!.SomeProperty == "foo")
+>     .ToListAsync(cancellationToken);
+> ```
+
 ### DbContext の定義
 
 `DbContext` は、エンティティのセット（`DbSet<T>`）を公開し、クエリと保存の起点となるクラスです。
@@ -516,6 +563,27 @@ public class BlogsController(BloggingContext context) : ControllerBase
 
 > [!TIP]
 > 上記は C# 12 の **プライマリコンストラクター** を使った書き方です。フィールドへの代入を書かずに `context` をメソッド内で参照できます。詳細は [第6章：プライマリコンストラクターによる注入（C# 12）](../06-dependency-injection/index.md#プライマリコンストラクターによる注入c-12) を参照してください。
+
+#### 接続の暗号化は既定で有効
+
+SQL Server プロバイダーが使う `Microsoft.Data.SqlClient` は、バージョン 4.0（EF Core 7）から **`Encrypt` の既定値が `True` に変わりました。** 暗号化が必須になるということは、**サーバー証明書の検証も必須になる**ということです。開発用のコンテナーや自己署名証明書のサーバーに、それまで動いていた接続文字列で接続すると失敗します。
+
+```text
+SqlException: サーバーとの接続を正常に確立しましたが、ログイン前のハンドシェイク中に
+エラーが発生しました。(provider: TCP プロバイダー, error: 35 - 内部の例外が発生しました)
+  → AuthenticationException: 証明書のチェーン検証に失敗しました。
+    エラー: 'The certificate was not trusted., [Status: UntrustedRoot]
+```
+
+SQL Server 2022 のコンテナーに対して実測したところ、次の 2 つはどちらも接続に成功しました。
+
+| 追加する設定 | 意味 |
+| --- | --- |
+| `TrustServerCertificate=True` | 暗号化はするが、証明書の検証を省略する |
+| `Encrypt=False` | 暗号化そのものを行わない |
+
+> [!WARNING]
+> **どちらも本番環境で使ってはいけません。** `TrustServerCertificate=True` は中間者攻撃を防げず、`Encrypt=False` は通信内容が平文で流れます。本番では、サーバーに信頼された証明書を配置してどちらの設定も付けないのが正しい構成です。開発環境だけの回避策として使い、接続文字列を環境ごとに分けてください。
 
 #### EF Core 10 は接続文字列に Application Name を追加する
 
@@ -2481,6 +2549,21 @@ dotnet ef database update
 > dotnet ef database update --framework net10.0
 > ```
 
+#### 複数のフレームワークを対象にしているプロジェクト
+
+`TargetFrameworks` で複数のフレームワークを対象にしているプロジェクトでは、**EF Core 10 からどのフレームワークを使うかの指定が必須になりました。**
+
+```text
+The project targets multiple frameworks.
+Use the --framework option to specify which target framework to use.
+```
+
+```bash
+dotnet ef migrations add Init --framework net10.0
+```
+
+以前は EF Core が候補の中から 1 つを選んでいましたが、選ばれるフレームワークが意図と違うと分かりにくい失敗をするため、明示が求められるようになりました。ライブラリープロジェクトで複数フレームワークを対象にしている場合は、CI のスクリプトにも `--framework` を追加してください。
+
 ### 生成されたマイグレーションを読む
 
 生成されるマイグレーションは通常の C# コードです。内容を確認し、必要なら手を入れられます。
@@ -3275,6 +3358,53 @@ var results = await context.Students
 ```
 
 従来は `SelectMany` と `GroupJoin`、`DefaultIfEmpty` を組み合わせる必要がありましたが、意図が明確に表現できるようになりました。
+
+### 大文字小文字の区別は照合順序が決める
+
+C# の `==` は大文字小文字を区別しますが、**SQL に翻訳された後は、データベースの照合順序 (collation) が区別するかどうかを決めます。** SQL Server の既定の照合順序は大文字小文字を区別しないため、次のクエリは `John` と `JOHN` の両方に一致しました。
+
+```csharp
+var count = await context.Customers.Where(c => c.Name == "john").CountAsync(cancellationToken);
+// SQL: WHERE [c].[Name] = N'john'  →  実測で 2 件（John と JOHN）
+```
+
+EF Core は `==` を単に SQL の `=` に翻訳するだけで、大文字小文字の扱いを揃えようとはしません。これは意図的な設計です。そのため、`StringComparison` を受け取るオーバーロードは**翻訳できず例外になります。**
+
+```csharp
+// InvalidOperationException: The LINQ expression ... could not be translated.
+context.Customers.Where(c => c.Name.Equals("john", StringComparison.OrdinalIgnoreCase))
+```
+
+クエリ単位で照合順序を指定したい場合は `EF.Functions.Collate` を使います。
+
+```csharp
+var exact = await context.Customers
+    .Where(c => EF.Functions.Collate(c.Name, "SQL_Latin1_General_CP1_CS_AS") == "John")
+    .CountAsync(cancellationToken);
+// SQL: WHERE [c].[Name] COLLATE SQL_Latin1_General_CP1_CS_AS = N'John'  →  実測で 1 件
+```
+
+#### 照合順序を上書きするとインデックスが効かなくなる
+
+これが最大の落とし穴です。インデックスは列の照合順序を引き継ぐため、**クエリで違う照合順序を指定すると照合順序が一致せず、インデックスが使えなくなります。** `Name` 列に非クラスター化インデックスを張った 2,001 行のテーブルで、SQL Server 2022 の実行プランを比較しました。
+
+| クエリ | 実行プラン |
+| --- | --- |
+| `WHERE [Name] = N'John'` | `Index Seek(OBJECT:(...[IX_Customers_Name]))` |
+| `WHERE [Name] COLLATE SQL_Latin1_General_CP1_CS_AS = N'John'` | `Clustered Index Scan(OBJECT:(...[PK_Customers]))` |
+| `WHERE LOWER([Name]) = N'john'` | `Clustered Index Scan(OBJECT:(...[PK_Customers]))` |
+
+インデックスシークが**全件走査に落ちています。** `ToLower()` や `ToUpper()` で大文字小文字を吸収する書き方も同じ結果になります。行数が増えるほど差は開きます。
+
+> [!WARNING]
+> 大文字小文字の区別を変えたいなら、**クエリではなく列またはデータベースの照合順序として定義してください。** そうすればすべてのクエリが暗黙にその照合順序を使い、インデックスの恩恵も受けられます。公式も「大量のデータを扱う性能上重要なクエリでは、必ず実行プランを確認し、適切なインデックスが使われているか確かめること」と警告しています。
+
+```csharp
+// 列の照合順序として定義する（この列に対するすべてのクエリに適用される）
+modelBuilder.Entity<Customer>()
+    .Property(c => c.Name)
+    .UseCollation("SQL_Latin1_General_CP1_CS_AS");
+```
 
 ### 生の SQL を使う
 
@@ -5065,6 +5195,22 @@ public class BlogQueries
 > [!NOTE]
 > 2 つ目の制限は **ラムダの中に書くパラメーター式の形** に対するものであり、「パラメーターの型がコレクションであってはいけない」という意味ではありません。実際に `EF.CompileAsyncQuery((BloggingContext context, int[] ids) => context.Blogs.Where(b => ids.Contains(b.Id)))` を定義して `new[] { 1, 3 }` を渡したところ、SQL Server 2022・SQLite のどちらでも該当する 2 件が正しく返りました（EF Core 10.0.11、実測で確認）。一方、`(BloggingContext context, Filter f) => context.Blogs.Where(b => b.Name == f.Name)` のようにパラメーターのメンバーへアクセスする式を書くと、実行時に `InvalidOperationException`（`The LINQ expression ... could not be translated.`）になります。値は変数としてそのまま渡し、ラムダの中に `obj.Property` や `obj.GetValue()` のような式を書かない、と理解してください。
 
+#### コンパイル済みクエリの中では `EF.Constant` と `EF.Parameter` が使えない
+
+[コレクションのパラメーター化と IN 句の翻訳](#コレクションのパラメーター化と-in-句の翻訳)で紹介した `EF.Constant` と `EF.Parameter` は、**コンパイル済みクエリの中では使えません。** EF Core 9 の破壊的変更です。
+
+```csharp
+var query = EF.CompileAsyncQuery(
+    (AppDbContext context, int[] ids) => context.Customers.Where(c => EF.Constant(ids).Contains(c.Id)));
+```
+
+```text
+InvalidOperationException: The 'EF.Constant<T>' method may only be used with an argument
+that can be evaluated client-side and does not contain any reference to database-side entities.
+```
+
+`EF.Parameter` でも同じ例外になることを確認しました。コンパイル済みクエリはクエリの形を一度だけ確定させる仕組みなので、呼び出しごとに SQL の形が変わりうるこれらの指定とは両立しません。片方を諦める必要があります。
+
 ### コンパイル済みモデル
 
 エンティティ数が数百に及ぶ大規模なモデルでは、起動時のモデル構築に時間がかかります。**コンパイル済みモデル** はモデル構築をビルド時に済ませ、起動時間を短縮します。
@@ -5860,6 +6006,23 @@ public sealed class SqliteContextFactory : IDisposable
 > [!NOTE]
 > `decimal` の扱いは EF Core 10 で改善されました。以前は大小比較と並べ替えがクライアント評価を必要としましたが、EF Core 10 は `ef_compare()` という独自関数と `EF_DECIMAL` という独自の照合順序を接続に登録し、データベース側で処理します。ただし `TEXT` 格納であることは変わらないため、SQL Server の `decimal(18, 2)` と厳密に同じ丸めになるとは限りません。
 
+#### 先行書き込みログ (WAL) が有効かを確認する
+
+EF Core 7 以降、SQLite プロバイダーは `RETURNING` 句を使って保存します。この方式は効率的ですが、**テーブルがロックされているときに自動で再試行しません。** 先行書き込みログ (write-ahead logging: WAL) が無効なデータベースを Web アプリケーションのような多スレッド環境で使うと、ロック関連のエラーに遭遇しやすくなります。
+
+`journal_mode` を実測すると、経路によって既定値が違いました。
+
+| 作成方法 | `PRAGMA journal_mode` |
+| --- | --- |
+| EF Core が作成したデータベース | `wal` |
+| `SqliteConnection` で直接作成したデータベース | `delete` |
+
+公式も「EF によって作成されたデータベースでは、既定で先行書き込みログが有効になる」と説明しています。危険なのは**既存のファイルを引き継ぐ場合**です。EF Core 以外の手段で作られたデータベースファイルには WAL が設定されていない可能性があるため、確認して必要なら有効にしてください。
+
+```sql
+PRAGMA journal_mode = 'wal';
+```
+
 #### マイグレーションの制限
 
 SQLite は `ALTER TABLE` でできることが極端に少ないため、EF Core は多くの変更を**テーブルの作り直し**で実現します。`Note` 列を削除して `Rank` 列を追加するマイグレーションで、実際に生成された SQL は次のとおりでした。
@@ -6101,6 +6264,10 @@ flowchart TB
 - [SQLite プロバイダーの制限 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sqlite/limitations)
 - [SQLite プロバイダーの関数マッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sqlite/functions)
 - [SQLite プロバイダーの値生成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sqlite/value-generation)
+- [Null 許容参照型の使用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/nullable-reference-types)
+- [照合順序と大文字小文字の区別 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/collations-and-case-sensitivity)
+- [EF Core 9.0 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-9.0/breaking-changes)
+- [EF Core 8.0 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-8.0/breaking-changes)
 - [EF Core 7.0 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-7.0/breaking-changes)
 - [効率的な更新 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/performance/efficient-updating)
 - [エンティティのプロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/entity-properties)
