@@ -2290,6 +2290,27 @@ SELECT * FROM Blogs WHERE Url = @p0
 ```
 
 > [!WARNING]
+> `FromSql` でエンティティ型を返すには、次の 2 つを満たす必要があります。
+>
+> - SQL が、そのエンティティ型の**すべてのプロパティ分のデータを返す**こと
+> - 結果セットの**列名が、プロパティのマップ先の列名と一致する**こと
+>
+> どちらを外しても同じ実行時エラーになります。`Blog` が `Id` / `Name` / `Owner` を持つとき、`Owner` を落とした SQL と、`Name` に別名を付けた SQL の両方を試したところ、次のようになりました。
+>
+> ```csharp
+> // どちらも InvalidOperationException
+> await context.Blogs.FromSql($"SELECT [Id], [Name] FROM [Blogs]").ToListAsync();
+> await context.Blogs.FromSql($"SELECT [Id], [Name] AS BlogName, [Owner] FROM [Blogs]").ToListAsync();
+> ```
+>
+> ```text
+> InvalidOperationException: The required column 'Owner' was not present in the results of a 'FromSql' operation.
+> InvalidOperationException: The required column 'Name' was not present in the results of a 'FromSql' operation.
+> ```
+>
+> `SELECT *` を使っていれば普通は問題になりませんが、列を絞ったり別名を付けたりすると起きます。列を絞りたい場合は、次に説明する未マップ型を使ってください。
+
+> [!WARNING]
 > **パラメーター化は SQL インジェクションを防ぎますが、`LIKE` のワイルドカードは防ぎません。** T-SQL の仕様では `%` は「0 文字以上の任意の文字列」に一致します。上の例の `pattern` を外部入力から受け取っている場合、利用者が `%` だけを渡すと `LIKE '%'` として解釈され、**テーブルの全行が返ります**。実際に試すと、`FromSql` でも `EF.Functions.Like` でも同じく全行が返りました。
 >
 > ```csharp
@@ -2325,6 +2346,72 @@ var ids = await context.Database
 >     .Where(id => id > 100)
 >     .ToListAsync(cancellationToken);
 > ```
+
+#### 未マップ型 (DTO) を直接受け取る
+
+`SqlQuery` が扱えるのはスカラー値だけではありません。**EF Core のモデルに含まれていない任意の CLR 型**にも結果を詰められます（EF Core 8.0 で追加）。複数のテーブルを結合した結果や、列の部分集合をそのまま DTO に受け取れるため、生の SQL を書くときに `DbCommand` などの低レベルな API へ降りる必要がなくなります。
+
+```csharp
+public class PostSummary
+{
+    public string BlogName { get; set; } = "";
+    public string PostTitle { get; set; } = "";
+    public int Rating { get; set; }
+}
+```
+
+```csharp
+var summaries = await context.Database
+    .SqlQuery<PostSummary>(
+        $"""
+        SELECT b.[Name] AS BlogName, p.[Title] AS PostTitle, p.[Rating]
+        FROM [Posts] AS p INNER JOIN [Blogs] AS b ON p.[BlogId] = b.[Id]
+        """)
+    .ToListAsync(cancellationToken);
+```
+
+型はデータベースのどのテーブルとも一致している必要がありません。パラメーター付きコンストラクターや `[Column]` 属性といった、EF Core が対応するマッピング機構もそのまま使えます。結果は変更追跡されないため、実測でも `ChangeTracker.Entries()` は 0 件でした。
+
+> [!NOTE]
+> スカラーの `SqlQuery` と違い、`AS [Value]` は不要です。EF Core は指定した SQL をサブクエリとして包み、**プロパティ名と同じ名前の列**を参照するためです。そのまま LINQ を合成でき、実際に `Where` を続けたところ次の SQL が発行されました。
+>
+> ```sql
+> SELECT [p].[BlogName], [p].[PostTitle], [p].[Rating]
+> FROM (
+>     SELECT b.[Name] AS BlogName, p.[Title] AS PostTitle, p.[Rating]
+>     FROM [Posts] AS p INNER JOIN [Blogs] AS b ON p.[BlogId] = b.[Id]
+> ) AS [p]
+> WHERE [p].[Rating] >= 5
+> ```
+
+> [!WARNING]
+> 未マップ型には **キーが定義されず、他の型へのリレーションシップも持てません。** ナビゲーションに見えるプロパティ（他のエンティティ型やそのコレクション）を含めると、実行時に次の例外になります。
+>
+> ```text
+> InvalidOperationException: The property 'BadDto.Posts' of type 'List<Post>' appears to be
+> a navigation to another entity type. Navigations are not supported when using 'SqlQuery".
+> Either include this type in the model and use 'FromSql' for the query, or ignore this
+> property using the '[NotMapped]' attribute.
+> ```
+>
+> リレーションシップが必要な型はモデルにマップして `FromSql` を使うか、そのプロパティに `[NotMapped]` を付けてください。
+>
+> また、**型のプロパティに対応する列が結果セットに無い場合も実行時エラー**です。上の SQL から `PostTitle` の列だけを削って試したところ `The required column 'PostTitle' was not present in the results of a 'FromSql' operation.` になりました。逆に、結果セットに余分な列がある分には問題なく、余った列は無視されます。
+
+ここまでの例は、生の SQL を書かずに LINQ の `Select` だけでも同じ結果が得られます。SQL を書く必要が本当にあるのかは、先に検討してください。
+
+```csharp
+// 上と同じ結果を LINQ だけで得る
+var summaries = await context.Posts
+    .Select(p => new PostSummary
+    {
+        BlogName = p.Blog!.Name,
+        PostTitle = p.Title,
+        Rating = p.Rating,
+    })
+    .Where(x => x.Rating >= 5)
+    .ToListAsync(cancellationToken);
+```
 
 更新系の SQL は `ExecuteSqlAsync` です。
 
