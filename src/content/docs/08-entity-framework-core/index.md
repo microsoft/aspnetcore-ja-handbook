@@ -2375,6 +2375,48 @@ var safeBlogs = await context.Blogs
     .ToListAsync(cancellationToken);
 ```
 
+#### 列名は動的にできない
+
+パラメーターにできるのは**値だけ**です。公式ドキュメントは「データベースは列名（やスキーマのその他の部分）のパラメーター化を許可しない」と明記しています。次のように列名を補間しても意図どおりには動きません。
+
+```csharp
+var columnName = "Owner";
+var columnValue = "johndoe";
+
+// 動かない
+var blogs = await context.Blogs
+    .FromSql($"SELECT * FROM [Blogs] WHERE {columnName} = {columnValue}")
+    .ToListAsync(cancellationToken);
+```
+
+> [!WARNING]
+> **このコードは例外になりません。静かに間違った結果を返します。** SQL Server 2022 に対して実測したところ、生成された SQL は次のようになりました。
+>
+> ```sql
+> DECLARE p0 nvarchar(4000) = N'Owner';
+> DECLARE p1 nvarchar(4000) = N'johndoe';
+>
+> SELECT * FROM [Blogs] WHERE @p0 = @p1
+> ```
+>
+> 列名まで文字列パラメーターになった結果、条件は `'Owner' = 'johndoe'` という**文字列同士の比較**になり、常に偽です。実際に該当データがあるにもかかわらず、返ってきた件数は **0 件**でした。例外が出ないぶん、テストデータでもたまたま 0 件だと気づけない、たちの悪い不具合になります。
+
+どうしても列名を動的に組み立てる必要がある場合は、公式ドキュメントが示すとおり `FromSqlRaw` を使い、**列名は文字列補間で埋め込み、値は `DbParameter` として渡します。**
+
+```csharp
+var columnName = "Owner";
+var columnValue = new SqlParameter("columnValue", "johndoe");
+
+var blogs = await context.Blogs
+    .FromSqlRaw($"SELECT * FROM [Blogs] WHERE {columnName} = @columnValue", columnValue)
+    .ToListAsync(cancellationToken);
+```
+
+この形なら正しく 1 件が返りました（実測）。ただし前述のとおり `FromSqlRaw` に補間文字列を渡すため **`EF1002` の警告が出ます**。列名が安全な出所であることを確認したうえで、その箇所だけ警告を抑制してください。
+
+> [!IMPORTANT]
+> 公式ドキュメントは、実装方法の前に**そもそも動的に組み立てるべきかを考えるよう**促しています。列名をユーザーから受け取ると、**インデックスのない列を選ばれてクエリが極端に遅くなりデータベースに過負荷をかける**おそれや、**公開したくないデータを含む列を選ばれる**おそれがあります。本当に動的でなければならない場面を除き、**2 つの列名に対しては 2 つのクエリを書くほうがよい**というのが公式の助言です。
+
 `FromSql` の結果には LINQ を続けて適用できるため、共通部分だけ SQL で書き、絞り込みや並べ替えは LINQ に任せるといった使い分けが可能です。
 
 ```csharp
