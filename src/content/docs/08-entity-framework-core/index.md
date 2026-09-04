@@ -2385,6 +2385,70 @@ var blogs = await context.Blogs
     .ToListAsync(cancellationToken);
 ```
 
+#### 合成できる SQL には条件がある
+
+ただし LINQ を続けられるのは、**渡した SQL が合成可能 (composable) な場合だけ**です。EF Core は与えられた SQL を**サブクエリとして扱う**ため、サブクエリに置けない構文が含まれていると失敗します。公式ドキュメントは合成できない例として次を挙げています。
+
+| 書き方 | SQL Server 2022 での実測結果 |
+| --- | --- |
+| `SELECT * FROM [Blogs] WHERE ...` | 成功 |
+| 末尾にセミコロンを付ける | `SqlException: Incorrect syntax near ';'.` |
+| `TOP` や `OFFSET` を伴わない `ORDER BY` を含める | `SqlException: The ORDER BY clause is invalid in views, inline functions, derived tables, subqueries, and common table expressions, unless TOP, OFFSET or FOR XML is also specified.` |
+
+このほか、SQL Server ではクエリレベルのヒント（`OPTION (HASH JOIN)` など）を末尾に付けた SQL も合成できません。**合成する予定の SQL は `SELECT` で始まり、末尾のセミコロンを付けないのが基本**だと覚えておいてください。
+
+#### ストアドプロシージャを実行する
+
+`FromSql` はストアドプロシージャの実行にも使えます。
+
+```csharp
+var blogs = await context.Blogs
+    .FromSql($"EXECUTE dbo.GetPopularBlogs {minRating}")
+    .ToListAsync(cancellationToken);
+```
+
+補間した値は通常の `FromSql` と同じように `DbParameter` に変換されるため、SQL インジェクションの心配はありません。省略可能なパラメーターがあるストアドプロシージャでは、`SqlParameter` を使って**名前付きパラメーター**の記法も書けます（実測で動作を確認しました）。
+
+```csharp
+var p = new SqlParameter("p", 5);
+
+var blogs = await context.Blogs
+    .FromSql($"EXECUTE dbo.GetPopularBlogs @minRating={p}")
+    .ToListAsync(cancellationToken);
+```
+
+> [!WARNING]
+> **SQL Server はストアドプロシージャの呼び出しに対する合成を許可しません。** つまり、前項の `Where` や `OrderBy` を続けることができません。実測では、`Where` を続けた時点で次の例外になりました。
+>
+> ```text
+> InvalidOperationException: 'FromSql' or 'SqlQuery' was called with non-composable SQL
+> and with a query composing over it. Consider calling 'AsEnumerable' after the method
+> to perform the composition on the client side.
+> ```
+>
+> 公式ドキュメントの指示どおり、`FromSql` の**直後に `AsEnumerable()` または `AsAsyncEnumerable()` を挟む**と、EF Core が合成を試みなくなり正しく動作します。ただしメッセージにあるとおり、その後の絞り込みは**クライアント側での処理**になります。データベースから返る行数が多いと無駄が大きいので、絞り込み条件はストアドプロシージャの引数として渡すほうが適切です。
+>
+> ```csharp
+> var blogs = context.Blogs
+>     .FromSql($"EXECUTE dbo.GetPopularBlogs {minRating}")
+>     .AsEnumerable()
+>     .Where(b => b.Name.Contains("dotnet"))
+>     .ToList();
+> ```
+
+> [!NOTE]
+> 公式ドキュメントは「渡すパラメーターはストアドプロシージャの定義と**厳密に一致していなければならない**」と注意しています。順序を間違えたり抜かしたりしないよう気をつけるか、上記の名前付きパラメーター記法を使ってください。型と、サイズ・精度・スケールなどの属性も対応させる必要があります。
+
+結果セットを返さないストアドプロシージャは `ExecuteSql` で呼び出します。実測では、3 行を更新するストアドプロシージャの戻り値が影響行数の `3` になりました。
+
+```csharp
+var affected = await context.Database
+    .ExecuteSqlAsync($"EXECUTE dbo.BumpRatings {delta}", cancellationToken);
+```
+
+> [!TIP]
+> `FromSql` の結果は、通常の LINQ クエリと**まったく同じ変更追跡の規則**に従います。エンティティ型を返すクエリなら既定で追跡されるため、読み取り専用なら `AsNoTracking()` を付けてください。実測でも、ストアドプロシージャから 2 件取得した直後の `ChangeTracker.Entries()` は 2 でした。
+
 ### ユーザー定義関数とビューをマッピングする
 
 EF Core の公式パフォーマンスガイダンスは、EF が生成しない最適な SQL を使いたい場合の手段を **3 つ**挙げています。1 つ目が前節の `FromSql` で、残りの 2 つが**ユーザー定義関数 (User-Defined Function: UDF)** と**データベースビュー**です。`FromSql` は「その 1 か所でしか使わない SQL」に向く一方、複数のクエリから再利用したいロジックは関数やビューにするほうが管理しやすくなります。
