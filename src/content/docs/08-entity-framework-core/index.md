@@ -821,6 +821,102 @@ modelBuilder.Entity<Post>()
     .UsingEntity(join => join.ToTable("PostTags"));
 ```
 
+このとき生成される結合テーブルの列名は、**ナビゲーションプロパティの名前**から作られます。実測した DDL は次のとおりでした。
+
+```sql
+CREATE TABLE [PostTag] (
+    [PostsId] int NOT NULL,
+    [TagsId] int NOT NULL,
+    CONSTRAINT [PK_PostTag] PRIMARY KEY ([PostsId], [TagsId]),
+    CONSTRAINT [FK_PostTag_Posts_PostsId] FOREIGN KEY ([PostsId]) REFERENCES [Posts] ([Id]) ON DELETE CASCADE,
+    CONSTRAINT [FK_PostTag_Tag_TagsId] FOREIGN KEY ([TagsId]) REFERENCES [Tag] ([Id]) ON DELETE CASCADE
+);
+```
+
+`Post.Tags` / `Tag.Posts` という複数形のナビゲーション名から `PostsId` / `TagsId` になっている点に注意してください。この結合エンティティには対応する CLR 型がなく、**共有型エンティティ (shared-type entity type)** として扱われます。
+
+#### 結合テーブルに情報を持たせる
+
+「いつタグ付けしたか」のような、関連そのものに紐づく情報を結合テーブルに持たせたい場合は、結合エンティティ用のクラスを定義して `UsingEntity<T>` に渡します。この追加情報を **ペイロード (payload)** と呼びます。
+
+```csharp
+public class PostTag
+{
+    public int PostId { get; set; }
+    public int TagId { get; set; }
+    public DateTime TaggedOn { get; set; }   // ペイロード
+    public string Note { get; set; } = "";   // ペイロード
+}
+
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Post>()
+        .HasMany(p => p.Tags)
+        .WithMany(t => t.Posts)
+        .UsingEntity<PostTag>(
+            j => j.Property(e => e.TaggedOn).HasDefaultValueSql("GETUTCDATE()"));
+}
+```
+
+クラスを定義すると、外部キーの列名が**エンティティ型の名前**から作られるようになります。
+
+```sql
+CREATE TABLE [PostTag] (
+    [PostId] int NOT NULL,
+    [TagId] int NOT NULL,
+    [TaggedOn] datetime2 NOT NULL DEFAULT (GETUTCDATE()),
+    [Note] nvarchar(max) NOT NULL,
+    CONSTRAINT [PK_PostTag] PRIMARY KEY ([PostId], [TagId]),
+    ...
+);
+```
+
+> [!WARNING]
+> 結合エンティティのプロパティ名が外部キーの規約に合っていないと、EF Core は **その名前のシャドウプロパティ (shadow property) を別に作り、自分が定義したプロパティはただのデータ列になります。** 型名 `Article` に対して `PostId` というプロパティを定義したところ、`ArticlesId` というシャドウの外部キー列が追加で生成され、`PostId` は外部キーではない列として残りました。この状態で保存しようとすると次の例外になります。
+>
+> ```text
+> InvalidOperationException: The value of 'ArticleTag.ArticlesId' is unknown when attempting
+> to save changes. This is because the property is also part of a foreign key for which
+> the principal entity in the relationship is not known.
+> ```
+>
+> 意図しないシャドウプロパティの生成は、`ConfigureWarnings` で例外に変えて検知できます。
+>
+> ```csharp
+> protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+>     => optionsBuilder.ConfigureWarnings(b => b.Throw(CoreEventId.ShadowPropertyCreated));
+> ```
+>
+> 実測では、モデルを構築した時点で次のメッセージとともに例外が投げられました。
+>
+> ```text
+> The property 'ArticleTag.ArticlesId' was created in shadow state because there are
+> no eligible CLR members with a matching name.
+> ```
+
+#### スキップナビゲーションとペイロードの関係
+
+`Post.Tags` のように、結合エンティティを飛び越えて相手側を直接指すナビゲーションを **スキップナビゲーション (skip navigation)** と呼びます。結合エンティティへのナビゲーション（`Post.PostTags`）は、スキップナビゲーションと**併存できます**。実測でも、`Include(x => x.Tags)` と `Include(x => x.PostTags)` の両方が同じクエリで機能しました。
+
+ここに実務上の落とし穴があります。**スキップナビゲーションで関連付けたとき、EF Core が作る結合エンティティのペイロードには値が入りません。**
+
+```csharp
+post.Tags.Add(tag);
+await context.SaveChangesAsync();
+```
+
+実測では、この操作で結合行が 1 行挿入され、`GETUTCDATE()` を既定値に設定した `TaggedOn` にはデータベース側で値が入りましたが、既定値を設定していない `Note` は空文字のままでした。公式ドキュメントも「ペイロードのプロパティは自動生成される値と組み合わせて使うのが最も一般的」としています。
+
+生成値にできないペイロードを設定するには、結合エンティティを自分で追加してください。
+
+```csharp
+context.Add(new PostTag { PostId = post.Id, TagId = tag.Id, Note = "手動で設定" });
+await context.SaveChangesAsync();
+```
+
+> [!TIP]
+> スキップナビゲーションから相手を外す操作（`post.Tags.Remove(tag)`）では、**結合エンティティだけが `Deleted` になり、`Tag` 本体は残ります。** 実測でも結合行が 1 件減り、`Tag` は 2 件のまま残りました。一方で `Tag` 本体を削除すると、結合テーブルの外部キーが既定でカスケード削除に設定されているため、関連する結合行もデータベース側で削除されます。
+
 削除時の動作は `OnDelete` で指定します。
 
 | `DeleteBehavior` | 動作 |
@@ -4898,6 +4994,7 @@ flowchart TB
 - [変更の検出と通知 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/change-detection)
 - [切断されたエンティティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/disconnected-entities)
 - [チェンジトラッカーのデバッグ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/debug-views)
+- [多対多のリレーションシップ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/many-to-many)
 - [カスケード削除 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/cascade-delete)
 - [ID 解決 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/identity-resolution)
 - [外部キーとナビゲーションの変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/relationship-changes)
