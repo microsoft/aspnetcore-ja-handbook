@@ -414,14 +414,32 @@ await context.SaveChangesAsync();
 > [!TIP]
 > スキップナビゲーションから相手を外す操作（`post.Tags.Remove(tag)`）では、**結合エンティティだけが `Deleted` になり、`Tag` 本体は残ります。** 実測でも結合行が 1 件減り、`Tag` は 2 件のまま残りました。一方で `Tag` 本体を削除すると、結合テーブルの外部キーが既定でカスケード削除に設定されているため、関連する結合行もデータベース側で削除されます。
 
-削除時の動作は `OnDelete` で指定します。
+削除時の動作は `OnDelete` で指定します。`DeleteBehavior` は **EF Core が追跡中の子に対して行うこと**と、**データベースに作られる外部キー制約**の 2 つを同時に決めます。
 
-| `DeleteBehavior` | 動作 |
-| --- | --- |
-| `Cascade` | 親を削除すると子も削除される |
-| `Restrict` | 子が存在する場合、親の削除を拒否する |
-| `SetNull` | 子の外部キーを NULL にする（外部キーが NULL 許容である必要がある） |
-| `NoAction` | データベースに制約の判断を委ねる |
+| `DeleteBehavior` | EF Core が追跡中の子にすること | SQL Server に作られる制約 |
+| --- | --- | --- |
+| `Cascade` | 子も削除する | `ON DELETE CASCADE` |
+| `Restrict` | 何もしない（外部キーを null にする） | `ON DELETE NO ACTION` |
+| `NoAction` | 何もしない | 指定なし（データベース既定） |
+| `SetNull` | 子の外部キーを NULL にする | `ON DELETE SET NULL` |
+| `ClientSetNull` | 子の外部キーを NULL にする | 指定なし（データベース既定） |
+| `ClientCascade` | 子も削除する | 指定なし（データベース既定） |
+| `ClientNoAction` | 何もしない（データベースに任せる） | 指定なし（データベース既定） |
+
+`Client` で始まる 3 つはデータベース側には何も設定せず、EF Core の追跡だけに作用します。上の表の制約は SQL Server 2022 向けに `GenerateCreateScript()` で実測したものです。`SetNull` は外部キー列が null 非許容だとデータベース作成時に失敗します。
+
+> [!NOTE]
+> **SQL Server は `ON DELETE RESTRICT` をサポートしていません。** そのため `Restrict` を指定しても `ON DELETE NO ACTION` が使われます。公式ドキュメントにもこの旨が明記されており、実測でも `NO ACTION` になりました。多くのデータベースで `NO ACTION` と `RESTRICT` は同じか非常に近い動作をします（違いがあるとすれば制約を検査する**タイミング**です）。
+
+> [!WARNING]
+> **同じ設定でも、子を読み込んでいるかどうかで結果が変わります。** null 許容の外部キーに `DeleteBehavior.Restrict` を指定して SQL Server 2022 で実測した結果は次のとおりでした。
+>
+> | 親を削除するときの状態 | 結果 |
+> | --- | --- |
+> | `Include` で子を読み込んでいる | 成功。EF Core が子の外部キーを NULL に更新する（Post 2 件が残り、どちらも `BlogId` は NULL） |
+> | 子を読み込んでいない | `DbUpdateException`。EF Core は子の存在を知らないため、データベースの制約違反になる |
+>
+> 「開発中は動いていたのに本番で失敗する」の典型的な原因になります。削除の動作を設計するときは、子を読み込むかどうかまで含めて決めてください。
 
 #### 自己参照の多対多は「対称」にならない
 
