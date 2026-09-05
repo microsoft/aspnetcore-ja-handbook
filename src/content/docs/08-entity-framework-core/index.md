@@ -92,7 +92,28 @@ flowchart LR
 
 #### まずは動くコードを見る
 
-細かい説明はこのあとの節で行いますが、先に「EF Core を使うとどう書けるのか」を見ておきます。ブログと投稿という 1 対多の関係を例にします。
+細かい説明はこのあとの節で行いますが、先に「EF Core を使うとどう書けるのか」を見ておきます。次のような 2 つのテーブルがあるものとして、これを EF Core で操作します。
+
+```mermaid
+erDiagram
+    Blogs ||--o{ Posts : "1 対多"
+
+    Blogs {
+        int Id PK "IDENTITY"
+        nvarchar Name "NOT NULL"
+        int Rating "NOT NULL"
+    }
+
+    Posts {
+        int Id PK "IDENTITY"
+        nvarchar Title "NOT NULL"
+        datetimeoffset PublishedAt "NOT NULL"
+        int BlogId FK "NOT NULL"
+    }
+```
+
+1 つのブログ (`Blogs`) が複数の投稿 (`Posts`) を持ち、投稿は必ずどれか 1 つのブログに属します。`Posts.BlogId` が `Blogs.Id` を参照する外部キーです。
+
 
 **1. テーブルに対応するクラスと `DbContext` を用意する**
 
