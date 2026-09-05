@@ -92,7 +92,7 @@ flowchart LR
 
 #### まずは動くコードを見る
 
-細かい説明はこのあとの節で行いますが、先に「EF Core を使うとどう書けるのか」を見ておきます。次のような 2 つのテーブルがあるものとして、これを EF Core で操作します。
+細かい説明はこのあとの節で行いますが、先に「EF Core を使うとどう書けるのか」を見ておきます。ここでは SQL Server に次の 2 つのテーブルがあるものとして、これを EF Core で操作します。
 
 ```mermaid
 erDiagram
@@ -164,8 +164,13 @@ Console.WriteLine(blog.Posts[0].Id);  // 1
 `Blog` と `Post` の 2 つの INSERT が発行され、外部キーも自動的に設定されます（実測）。
 
 ```sql
-INSERT INTO "Blogs" ("Name", "Rating") VALUES (@p0, @p1) RETURNING "Id";
-INSERT INTO "Posts" ("BlogId", "PublishedAt", "Title") VALUES (@p2, @p3, @p4) RETURNING "Id";
+INSERT INTO [Blogs] ([Name], [Rating])
+OUTPUT INSERTED.[Id]
+VALUES (@p0, @p1);
+
+INSERT INTO [Posts] ([BlogId], [PublishedAt], [Title])
+OUTPUT INSERTED.[Id]
+VALUES (@p2, @p3, @p4);
 ```
 
 **3. 問い合わせる (SELECT)**
@@ -183,13 +188,13 @@ var blogs = await context.Blogs
 これが次の SQL に変換されます（実測）。`Posts.Count` が副問い合わせになっている点に注目してください。件数を数えるためだけに投稿を全件読み込むことはしません。
 
 ```sql
-SELECT "b"."Name", (
+SELECT [b].[Name], (
     SELECT COUNT(*)
-    FROM "Posts" AS "p"
-    WHERE "b"."Id" = "p"."BlogId") AS "PostCount"
-FROM "Blogs" AS "b"
-WHERE "b"."Rating" >= 3
-ORDER BY "b"."Name"
+    FROM [Posts] AS [p]
+    WHERE [b].[Id] = [p].[BlogId]) AS [PostCount]
+FROM [Blogs] AS [b]
+WHERE [b].[Rating] >= 3
+ORDER BY [b].[Name]
 ```
 
 **4. 更新する (UPDATE)**
@@ -205,7 +210,9 @@ await context.SaveChangesAsync();
 変更した列だけが UPDATE 文に含まれます（実測）。`Name` は書き換えていないため対象外です。
 
 ```sql
-UPDATE "Blogs" SET "Rating" = @p0 WHERE "Id" = @p1 RETURNING 1;
+UPDATE [Blogs] SET [Rating] = @p0
+OUTPUT 1
+WHERE [Id] = @p1;
 ```
 
 > [!NOTE]
