@@ -16,7 +16,7 @@
 | 第 6 章 | [依存性注入 (DI)](src/content/docs/06-dependency-injection/index.md) | <ol><li>DI の基本概念（Interface と具象クラス）</li><li>サービスの登録スコープ（Transient / Scoped / Singleton）</li><li>ファクトリ登録、条件付き登録、手動スコープ</li><li>サービス層設計パターン</li><li>参考ドキュメント</li></ol> |
 | 第 7 章（前編） | [ファイル受信と検証](src/content/docs/07-1-file-upload-and-validation/index.md) | <ol><li>ファイル受信の仕組み</li><li>アップロードファイルの検証</li><li>参考ドキュメント</li></ol> |
 | 第 7 章（後編） | [Azure Blob Storage への保存](src/content/docs/07-2-azure-blob-storage/index.md) | <ol><li>Azure Blob Storage への保存</li><li>Blob Storage クライアントの DI 設計とアプリケーションへの組み込み</li><li>参考ドキュメント</li></ol> |
-| 第 8 章 | データベースアクセスと ORM（Entity Framework Core）（予定） | <ol><li>概要と設計方針</li><li>モデル定義と DbContext 設計</li><li>マイグレーションとスキーマ管理</li><li>クエリ操作と LINQ</li><li>更新／変更操作とトランザクション</li><li>パフォーマンス最適化</li><li>読み取り専用レプリカ (Read-Only Replica) の扱い</li><li>テスト戦略とアーキテクチャ例</li></ol> |
+| 第 8 章 | [データベースアクセスと ORM（Entity Framework Core）](src/content/docs/08-entity-framework-core/index.md) | <ol><li>概要と設計方針</li><li>DbContext と ASP.NET Core への組み込み</li><li>マイグレーションとスキーマ管理</li><li>クエリの基本</li><li>保存とトランザクションの基本</li><li>テストとアーキテクチャ</li><li>参考ドキュメント</li></ol> |
 | 第 9 章 | 認証と認可（予定） | <ol><li>ASP.NET Core Identity 入門</li><li>外部ログイン（OAuth / OpenID Connect）</li><li>JWT 認証 (Bearer トークン) の導入</li><li>ポリシーベース認可 / ロールベース認可</li><li>認証・認可ミドルウェア設定</li></ol> |
 | 第 10 章 | テスト入門（予定） | <ol><li>単体テスト (xUnit / NUnit)</li><li>モックライブラリ活用 (Moq 等)</li><li>DI を活かしたテスト設計</li><li>Web アプリケーション統合テスト (WebApplicationFactory など)</li><li>外部 API 呼び出し部分のモック化</li></ol> |
 | 第 11 章 | デプロイと運用（予定） | <ol><li>オンプレミス/Azure への展開（他社クラウドは言及のみ）</li><li>Docker コンテナ化 / Kubernetes 組み込み</li><li>環境変数・シークレット・Key Vault (Azure) の利用</li><li>ロギング・メトリクス収集 / モニタリング</li><li>障害対応・自動再起動 / フォールトトレランス</li><li>バージョンアップ・マイグレーション戦略</li></ol> |
@@ -28,6 +28,11 @@
 | 第 17 章 | パフォーマンス最適化 / スケーラビリティ（予定） | <ol><li>ボトルネックの特定 (プロファイラー / ログ / Application Insights 等)</li><li>キャッシュ活用・遅延ロード制御</li><li>DB 接続最適化 / プール設定</li><li>非同期最適化 / 中断可能処理</li><li>圧縮 / 静的ファイル最適化 / CDN 利用</li><li>スケールアウト設計 (ステートレス化, セッション戦略, 分割設計)</li></ol> |
 | 第 18 章 | ミドルウェアと HTTP リクエストパイプライン（予定） | <ol><li>ミドルウェア (Middleware) の概念</li><li>リクエストの通り道：UseRouting → UseAuthentication → UseAuthorization → UseEndpoints など</li><li>例外処理ミドルウェア / ログミドルウェアの実装例</li><li>Forwarded Headers (X-Forwarded-For, X-Forwarded-Proto 等) の扱い<ul><li>UseForwardedHeaders と ForwardedHeadersOptions の設定</li><li>信頼できるプロキシ (KnownProxies / KnownNetworks) の指定</li><li>CDN／リバースプロキシ構成におけるクライアント IP の取得戦略</li><li>ミドルウェア適用順序と認証・URL 生成への影響</li></ul></li></ol> |
 | 付録 | 付録（予定） | <ol><li>.NET CLI コマンドリファレンス</li><li>EF / LINQ クイックリファレンス</li><li>HttpClient / Polly サンプルテンプレート</li><li>よくあるエラーと対処</li><li>他言語との用語対照表</li><li>推奨開発パターン集</li></ol> |
+| 付録 EF Core 1 | [モデル定義（エンティティとリレーションシップ）](src/content/docs/appendix-efcore-01/index.md) | <ol><li>エンティティの構成</li><li>リレーションシップ</li><li>値の変換と型のマッピング</li><li>参考ドキュメント</li></ol> |
+| 付録 EF Core 2 | [モデル定義（キー・採番・SQL Server 固有）](src/content/docs/appendix-efcore-02/index.md) | <ol><li>キーとインデックス</li><li>採番と履歴</li><li>SQL Server 固有のマッピング</li><li>モデル全体にかかる構成</li><li>参考ドキュメント</li></ol> |
+| 付録 EF Core 3 | [マイグレーションの詳細とクエリ](src/content/docs/appendix-efcore-03/index.md) | <ol><li>マイグレーションの詳細</li><li>クエリの制御</li><li>SQL を直接扱う</li><li>参考ドキュメント</li></ol> |
+| 付録 EF Core 4 | [更新・トランザクション・レプリカ](src/content/docs/appendix-efcore-04/index.md) | <ol><li>保存の応用</li><li>トランザクションと同時実行制御</li><li>イベントとインターセプター</li><li>読み取り専用レプリカの扱い</li><li>参考ドキュメント</li></ol> |
+| 付録 EF Core 5 | [パフォーマンスとテスト](src/content/docs/appendix-efcore-05/index.md) | <ol><li>計測と診断</li><li>クエリとモデルの最適化</li><li>実行時のコストを下げる</li><li>データベースを使ったテスト</li><li>参考ドキュメント</li></ol> |
 
 ---
 
