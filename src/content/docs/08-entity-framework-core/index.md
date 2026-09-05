@@ -1,9 +1,9 @@
 ---
 title: "第8章：データベースアクセスと ORM (Entity Framework Core)"
-description: "ASP.NET Core から EF Core 10 を使うための基本を解説します。DbContext の DI 登録とライフタイム、マイグレーションの運用、LINQ クエリと変更追跡、保存とトランザクション、テスト戦略までを扱います。"
+description: "ASP.NET Core から EF Core 10 を使うための基本を解説します。DbContext の DI 登録とライフタイム、LINQ クエリと変更追跡、保存とトランザクション、マイグレーションの運用、テスト戦略までを扱います。"
 ---
 
-この章では、ASP.NET Core アプリケーションから Entity Framework Core (EF Core) を使ってデータベースにアクセスする方法を扱います。EF Core の基本的な考え方から、DI コンテナーへの登録、マイグレーションの運用、クエリと保存、テストまでを一通り説明します。
+この章では、ASP.NET Core アプリケーションから Entity Framework Core (EF Core) を使ってデータベースにアクセスする方法を扱います。EF Core の基本的な考え方から、DI コンテナーへの登録、クエリと保存、マイグレーションの運用、テストまでを一通り説明します。
 
 EF Core は機能が非常に多いため、この章では **ASP.NET Core から使ううえで必要になる部分**に絞っています。個々の機能の詳細は 5 本の付録に分けました。
 
@@ -32,13 +32,7 @@ EF Core は機能が非常に多いため、この章では **ASP.NET Core か�
    - [DI への登録と接続文字列](#di-への登録と接続文字列)
    - [DbContext のライフタイムとスレッド安全性](#dbcontext-のライフタイムとスレッド安全性)
    - [DbContext プーリング](#dbcontext-プーリング)
-3. [マイグレーションとスキーマ管理](#3-マイグレーションとスキーマ管理)
-   - [マイグレーションの仕組み](#マイグレーションの仕組み)
-   - [マイグレーションの作成と適用](#マイグレーションの作成と適用)
-   - [本番環境への適用戦略](#本番環境への適用戦略)
-   - [SQL スクリプトとマイグレーションバンドル](#sql-スクリプトとマイグレーションバンドル)
-   - [起動時マイグレーションの是非](#起動時マイグレーションの是非)
-4. [クエリの基本](#4-クエリの基本)
+3. [クエリの基本](#3-クエリの基本)
    - [基本的なクエリ](#基本的なクエリ)
    - [クエリはいつ実行されるか](#クエリはいつ実行されるか)
    - [変更追跡と AsNoTracking](#変更追跡と-asnotracking)
@@ -46,10 +40,16 @@ EF Core は機能が非常に多いため、この章では **ASP.NET Core か�
    - [遅延読み込みと N+1 問題](#遅延読み込みと-n1-問題)
    - [投影 (Projection) による最適化](#投影-projection-による最適化)
    - [ページング](#ページング)
-5. [保存とトランザクションの基本](#5-保存とトランザクションの基本)
+4. [保存とトランザクションの基本](#4-保存とトランザクションの基本)
    - [追加・更新・削除の基本](#追加更新削除の基本)
    - [SaveChanges の既定のトランザクション動作](#savechanges-の既定のトランザクション動作)
    - [明示的なトランザクション制御](#明示的なトランザクション制御)
+5. [マイグレーションとスキーマ管理](#5-マイグレーションとスキーマ管理)
+   - [マイグレーションの仕組み](#マイグレーションの仕組み)
+   - [マイグレーションの作成と適用](#マイグレーションの作成と適用)
+   - [本番環境への適用戦略](#本番環境への適用戦略)
+   - [SQL スクリプトとマイグレーションバンドル](#sql-スクリプトとマイグレーションバンドル)
+   - [起動時マイグレーションの是非](#起動時マイグレーションの是非)
 6. [テストとアーキテクチャ](#6-テストとアーキテクチャ)
    - [テスト戦略の選択](#テスト戦略の選択)
    - [InMemory プロバイダーが推奨されない理由](#inmemory-プロバイダーが推奨されない理由)
@@ -611,213 +611,7 @@ builder.Services.AddDbContextPool<BloggingContext>(
 > [!WARNING]
 > プールされた `DbContext` インスタンスは再利用されるため、実質的に Singleton のように扱われます。`OnConfiguring` は最初の 1 回しか呼ばれず、リクエストごとに変化する状態（テナント ID や現在のユーザーなど）をコンストラクターやフィールドに保持する設計とは相性が悪くなります。そのような場合は、`AddDbContext` を使うか、状態をリセットするフックを実装してください。
 
-## 3. マイグレーションとスキーマ管理
-
-### マイグレーションの仕組み
-
-マイグレーションは、C# のモデルとデータベーススキーマを同期させる仕組みです。
-
-```mermaid
-flowchart LR
-    M1["モデル<br>（現在の C# コード）"] --> DIFF{差分検出}
-    SNAP["モデルスナップショット<br>〈DbContext 名〉ModelSnapshot.cs"] --> DIFF
-    DIFF --> MIG["マイグレーションファイル<br>Up() / Down()"]
-    MIG --> HIST["__EFMigrationsHistory<br>適用済みマイグレーションの記録"]
-    HIST --> DB[("データベース")]
-```
-
-EF Core は、現在のモデルと直前のマイグレーションが保持する **モデルスナップショット** を比較して差分を検出し、マイグレーションのソースファイルを生成します。適用済みのマイグレーションは `__EFMigrationsHistory` テーブルに記録されるため、次回は未適用のものだけが適用されます。
-
-### マイグレーションの作成と適用
-
-最初のマイグレーションを作成します。
-
-```bash
-dotnet ef migrations add InitialCreate
-```
-
-プロジェクトに `Migrations` フォルダーが作成され、マイグレーションのソースファイルとモデルスナップショットが生成されます。これらはソース管理にコミットします。`BloggingContext` に対して実行すると、実際には次の 3 ファイルが作られます。
-
-```text
-Migrations/
-├── 20260831070300_InitialCreate.cs           マイグレーション本体（Up / Down）
-├── 20260831070300_InitialCreate.Designer.cs  そのマイグレーション時点のモデル定義
-└── BloggingContextModelSnapshot.cs           最新モデルのスナップショット
-```
-
-先頭の数字はマイグレーションを作成した日時（UTC、`yyyyMMddHHmmss`）で、これが適用順序を決めます。スナップショットのファイル名は `<DbContext のクラス名>ModelSnapshot.cs` になります。
-
-データベースに適用します。
-
-```bash
-dotnet ef database update
-```
-
-モデルを変更したら、変更内容が分かる名前でマイグレーションを追加します。
-
-```bash
-dotnet ef migrations add AddPostPublishedAt
-dotnet ef database update
-```
-
-よく使うコマンドを整理します。
-
-| コマンド | 用途 |
-| --- | --- |
-| `dotnet ef migrations add <Name>` | マイグレーションを追加する |
-| `dotnet ef migrations remove` | 未適用の最新マイグレーションを取り消す |
-| `dotnet ef migrations list` | マイグレーションの一覧と適用状況を表示する |
-| `dotnet ef database update` | 最新まで適用する |
-| `dotnet ef database update <Name>` | 指定したマイグレーションの状態まで進める／戻す |
-| `dotnet ef migrations script` | SQL スクリプトを生成する |
-| `dotnet ef migrations bundle` | マイグレーションバンドル（実行可能ファイル）を生成する |
-
-> [!WARNING]
-> すでに本番データベースへ適用したマイグレーションを `dotnet ef migrations remove` で削除してはいけません。適用済みの変更を取り消したい場合は、`dotnet ef database update <1 つ前のマイグレーション名>` でロールバックしてから削除するか、打ち消す新しいマイグレーションを追加します。
->
-> なお、`dotnet ef` が接続できるデータベースにそのマイグレーションが適用済みであれば、ツール自身が次のように削除を拒否します（SQL Server 2022 で実測）。
->
-> ```text
-> The migration '20260831053228_InitialCreate' has already been applied to the database.
-> Revert it and try again. If the migration has been applied to other databases,
-> consider reverting its changes using a new migration instead.
-> ```
->
-> **危険なのは、ツールが見ている開発用データベースには未適用でも、本番などの別のデータベースには適用済みという状況です。** この場合ツールは何の警告もなく削除できてしまい、本番側にだけ存在する変更が履歴から消えます。メッセージの後半が「他のデータベースに適用済みなら、打ち消す新しいマイグレーションを検討せよ」と述べているのはこのためです。実際に `dotnet ef database update 0` でロールバックしたあとであれば、`remove` は正常に完了します。
-
-
-> [!IMPORTANT]
-> EF Core 10 では、プロジェクトが `<TargetFramework>` ではなく **`<TargetFrameworks>`（複数形）で複数のフレームワークを対象にしている場合、`--framework` オプションの指定が必須** になりました。指定しないと `dotnet ef` は次のエラーで停止します（実測で確認済み）。
->
-> ```text
-> The project targets multiple frameworks. Use the --framework option to specify which target framework to use.
-> ```
->
-> ライブラリプロジェクトに `DbContext` を置いていて複数ターゲットにしている場合など、EF Core 9 から移行すると CI が突然失敗します。次のようにフレームワークを明示してください。
->
-> ```bash
-> dotnet ef migrations add AddPostPublishedAt --framework net10.0
-> dotnet ef database update --framework net10.0
-> ```
-
-### 本番環境への適用戦略
-
-公式ドキュメントは、用途に応じて次の 4 つの戦略を挙げています。
-
-| 戦略 | 推奨される用途 | 実行前に SQL を確認できるか | 実行時に SDK とソースが必要か |
-| --- | --- | --- | --- |
-| SQL スクリプト | DBA による承認・レビューが必要な運用 | できる | 不要 |
-| マイグレーションバンドル | 自動デプロイ | できない | 不要 |
-| EF コマンドラインツール | ローカル開発とテスト | できない | 必要 |
-| 実行時マイグレーション | 起動時マイグレーションの制約を許容できるアプリケーション | できない | 不要 |
-
-> [!IMPORTANT]
-> スキーマを変更する権限は、デプロイ専用の ID に与えます。アプリケーションが実行時に使用する ID には、通常はデータの読み書きに必要な権限だけを与えるべきです。
-
-> [!WARNING]
-> **複数のマイグレーションをまとめて適用するとき、途中で失敗しても「そこまで成功した分」はロールバックされません。** EF Core 10 では、マイグレーション全体を 1 つのトランザクションで囲む挙動（EF Core 9 で導入され、さまざまな問題を起こしたため取り消された）がなくなり、**マイグレーションごとに個別のトランザクション** で実行されます。
->
-> 実際に、正常な `M1` と、必ず失敗する SQL を含む `M2` を用意して `dotnet ef database update` を実行したところ、`M2` はエラーで停止しましたが、`M1` は適用済みのまま残りました。
->
-> ```text
-> Error Number: 8134、State: 1、Class: 16
-> Divide by zero error encountered.
-> ```
->
-> ```text
-> 20260901081302_M1
-> 20260901081308_M2 (Pending)
-> ```
->
-> つまり、失敗後のデータベースは **一部のマイグレーションだけが適用された中途半端な状態** になります。復旧するには、失敗したマイグレーションを修正して再度適用するか、`dotnet ef database update M1` のように戻したい地点を指定してロールバックします。本番環境では、この状態から確実に復旧できるよう **適用前のバックアップ** を必ず取得してください。
-
-### SQL スクリプトとマイグレーションバンドル
-
-SQL スクリプトは、DBA によるレビューやアーカイブが必要な場合に適しています。
-
-```bash
-# 空のデータベースから最新までのスクリプトを生成
-dotnet ef migrations script
-
-# 冪等 (idempotent) なスクリプトをファイルに出力
-dotnet ef migrations script --idempotent --output artifacts/migrations.sql
-
-# 特定のマイグレーション間のスクリプトを生成
-dotnet ef migrations script AddNewTables AddAuditTable
-```
-
-`--idempotent` を付けると、各マイグレーションが未適用かどうかを確認してから実行するスクリプトが生成されるため、現在の適用状況が分からないデータベースにも安全に流せます。
-
-自動デプロイには **マイグレーションバンドル** が推奨されます。公式ドキュメントによれば、バンドルは CI で生成でき、実行時に .NET SDK も EF Core ツールもアプリケーションのソースコードも不要で、**自己完結型にすれば .NET ランタイムすら不要**な単一の実行可能ファイルです。EF Core のマイグレーションロックも機能します。
-
-```bash
-# .NET ランタイムがインストール済みの環境向け
-dotnet ef migrations bundle --output efbundle
-
-# .NET ランタイムごと同梱する（Linux x64 向け）
-dotnet ef migrations bundle --self-contained --target-runtime linux-x64 --output efbundle
-```
-
-生成したバンドルは、デプロイ先で実行可能ファイルとして起動します。
-
-```bash
-# デプロイ先で実行
-./efbundle --connection "$CONNECTION_STRING"
-```
-
-> [!WARNING]
-> 対象ランタイムを指定するオプションは **`--target-runtime`（短縮形 `-r`）** です。よく似た `--runtime` というオプションも存在しますが、こちらは「ツールがビルドに使うランタイム」を指す別のオプションで、`--self-contained` と組み合わせると次のエラーで失敗することがあります（実測）。
->
-> ```text
-> error NETSDK1047: 資産ファイル 'obj/project.assets.json' に 'net10.0/linux-x64' のターゲットがありません。
-> ```
->
-> `--target-runtime` を使えば、プロジェクトに `RuntimeIdentifiers` を追加しなくても生成できます。実測では macOS 上から `--target-runtime linux-x64` でバンドルを生成し、Linux 向けの実行可能ファイル（ELF 64-bit）が出力されることを確認しました。生成したバンドルを実際に SQL Server 2022 に対して実行し、マイグレーションが適用されることも確認済みです。
-
-> [!NOTE]
-> 公式ドキュメントは、バンドルの制約として「SQL スクリプトと違い、実行される SQL を事前に確認したり、含まれるマイグレーションを一覧したりする手段が現時点ではない」と述べています。デプロイ前に SQL のレビューが必要な運用では、バンドルではなく `dotnet ef migrations script` でスクリプトを生成してください。
-
-> [!TIP]
-> EF Core 9 以降、マイグレーションの実行はデータベース全体のロックで保護されます（SQL スクリプトによる適用は除く）。これにより、複数のインスタンスが同時にマイグレーションを試みても、実行は 1 つに直列化されます。実際に SQL Server 2022 へ `dotnet ef database update` を実行すると、適用の前に次のメッセージが表示され、ロックの取得が行われていることが確認できます。
->
-> ```text
-> Acquiring an exclusive lock for migration application.
-> See https://aka.ms/efcore-docs-migrations-lock for more information if this takes too long.
-> ```
-
-### 起動時マイグレーションの是非
-
-アプリケーションの起動時にマイグレーションを適用することもできます。
-
-```csharp
-var app = builder.Build();
-
-using (var scope = app.Services.CreateScope())
-{
-    var context = scope.ServiceProvider.GetRequiredService<BloggingContext>();
-    await context.Database.MigrateAsync();
-}
-
-app.Run();
-```
-
-この方法は手軽ですが、公式ドキュメントは次のトレードオフを挙げています。
-
-- アプリケーションがスキーマ変更のための昇格された権限を必要とする
-- 生成される SQL を確認・修正する機会がない
-- 問題が起きたときのロールバックが他の戦略ほど容易ではない
-- 別のアプリケーションがデータベースにアクセスしている最中にマイグレーションが走ると、深刻な問題を引き起こす可能性がある
-
-> [!WARNING]
-> `MigrateAsync()` の前に `EnsureCreatedAsync()` を呼び出してはいけません。`EnsureCreatedAsync()` はマイグレーションを迂回してスキーマを作成するため、その後の `MigrateAsync()` が失敗します。SQL Server 2022 で実際に順番に呼び出したところ、`__EFMigrationsHistory` には何も記録されていないまま `Blogs` テーブルだけが存在する状態になり、`MigrateAsync()` は次の `SqlException` で失敗しました。
->
-> ```text
-> There is already an object named 'Blogs' in the database.
-> ```
->
-> `EnsureCreated` はテストやプロトタイプ専用と考えてください。
-
-## 4. クエリの基本
+## 3. クエリの基本
 
 ### 基本的なクエリ
 
@@ -1055,7 +849,7 @@ var page = await context.Posts
 > [!NOTE]
 > 公式ドキュメントは、ランダムアクセスが本当に必要かをよく検討するよう促したうえで、必要な場合の実装として「**次へ／前への移動はキーセット、任意のページへのジャンプはオフセット**」という併用を挙げています。
 
-## 5. 保存とトランザクションの基本
+## 4. 保存とトランザクションの基本
 
 ### 追加・更新・削除の基本
 
@@ -1171,6 +965,212 @@ await using var transaction = await context.Database
 > **さらに詳しく**
 >
 > - [付録 EF Core 4：更新・トランザクション・レプリカ](../appendix-efcore-04/index.md) — 切断されたエンティティ、一括更新・一括削除、楽観的同時実行制御、デッドロック、インターセプター、読み取り専用レプリカ
+
+## 5. マイグレーションとスキーマ管理
+
+### マイグレーションの仕組み
+
+マイグレーションは、C# のモデルとデータベーススキーマを同期させる仕組みです。
+
+```mermaid
+flowchart LR
+    M1["モデル<br>（現在の C# コード）"] --> DIFF{差分検出}
+    SNAP["モデルスナップショット<br>〈DbContext 名〉ModelSnapshot.cs"] --> DIFF
+    DIFF --> MIG["マイグレーションファイル<br>Up() / Down()"]
+    MIG --> HIST["__EFMigrationsHistory<br>適用済みマイグレーションの記録"]
+    HIST --> DB[("データベース")]
+```
+
+EF Core は、現在のモデルと直前のマイグレーションが保持する **モデルスナップショット** を比較して差分を検出し、マイグレーションのソースファイルを生成します。適用済みのマイグレーションは `__EFMigrationsHistory` テーブルに記録されるため、次回は未適用のものだけが適用されます。
+
+### マイグレーションの作成と適用
+
+最初のマイグレーションを作成します。
+
+```bash
+dotnet ef migrations add InitialCreate
+```
+
+プロジェクトに `Migrations` フォルダーが作成され、マイグレーションのソースファイルとモデルスナップショットが生成されます。これらはソース管理にコミットします。`BloggingContext` に対して実行すると、実際には次の 3 ファイルが作られます。
+
+```text
+Migrations/
+├── 20260831070300_InitialCreate.cs           マイグレーション本体（Up / Down）
+├── 20260831070300_InitialCreate.Designer.cs  そのマイグレーション時点のモデル定義
+└── BloggingContextModelSnapshot.cs           最新モデルのスナップショット
+```
+
+先頭の数字はマイグレーションを作成した日時（UTC、`yyyyMMddHHmmss`）で、これが適用順序を決めます。スナップショットのファイル名は `<DbContext のクラス名>ModelSnapshot.cs` になります。
+
+データベースに適用します。
+
+```bash
+dotnet ef database update
+```
+
+モデルを変更したら、変更内容が分かる名前でマイグレーションを追加します。
+
+```bash
+dotnet ef migrations add AddPostPublishedAt
+dotnet ef database update
+```
+
+よく使うコマンドを整理します。
+
+| コマンド | 用途 |
+| --- | --- |
+| `dotnet ef migrations add <Name>` | マイグレーションを追加する |
+| `dotnet ef migrations remove` | 未適用の最新マイグレーションを取り消す |
+| `dotnet ef migrations list` | マイグレーションの一覧と適用状況を表示する |
+| `dotnet ef database update` | 最新まで適用する |
+| `dotnet ef database update <Name>` | 指定したマイグレーションの状態まで進める／戻す |
+| `dotnet ef migrations script` | SQL スクリプトを生成する |
+| `dotnet ef migrations bundle` | マイグレーションバンドル（実行可能ファイル）を生成する |
+
+> [!WARNING]
+> すでに本番データベースへ適用したマイグレーションを `dotnet ef migrations remove` で削除してはいけません。適用済みの変更を取り消したい場合は、`dotnet ef database update <1 つ前のマイグレーション名>` でロールバックしてから削除するか、打ち消す新しいマイグレーションを追加します。
+>
+> なお、`dotnet ef` が接続できるデータベースにそのマイグレーションが適用済みであれば、ツール自身が次のように削除を拒否します（SQL Server 2022 で実測）。
+>
+> ```text
+> The migration '20260831053228_InitialCreate' has already been applied to the database.
+> Revert it and try again. If the migration has been applied to other databases,
+> consider reverting its changes using a new migration instead.
+> ```
+>
+> **危険なのは、ツールが見ている開発用データベースには未適用でも、本番などの別のデータベースには適用済みという状況です。** この場合ツールは何の警告もなく削除できてしまい、本番側にだけ存在する変更が履歴から消えます。メッセージの後半が「他のデータベースに適用済みなら、打ち消す新しいマイグレーションを検討せよ」と述べているのはこのためです。実際に `dotnet ef database update 0` でロールバックしたあとであれば、`remove` は正常に完了します。
+
+
+> [!IMPORTANT]
+> EF Core 10 では、プロジェクトが `<TargetFramework>` ではなく **`<TargetFrameworks>`（複数形）で複数のフレームワークを対象にしている場合、`--framework` オプションの指定が必須** になりました。指定しないと `dotnet ef` は次のエラーで停止します（実測で確認済み）。
+>
+> ```text
+> The project targets multiple frameworks. Use the --framework option to specify which target framework to use.
+> ```
+>
+> ライブラリプロジェクトに `DbContext` を置いていて複数ターゲットにしている場合など、EF Core 9 から移行すると CI が突然失敗します。次のようにフレームワークを明示してください。
+>
+> ```bash
+> dotnet ef migrations add AddPostPublishedAt --framework net10.0
+> dotnet ef database update --framework net10.0
+> ```
+
+### 本番環境への適用戦略
+
+公式ドキュメントは、用途に応じて次の 4 つの戦略を挙げています。
+
+| 戦略 | 推奨される用途 | 実行前に SQL を確認できるか | 実行時に SDK とソースが必要か |
+| --- | --- | --- | --- |
+| SQL スクリプト | DBA による承認・レビューが必要な運用 | できる | 不要 |
+| マイグレーションバンドル | 自動デプロイ | できない | 不要 |
+| EF コマンドラインツール | ローカル開発とテスト | できない | 必要 |
+| 実行時マイグレーション | 起動時マイグレーションの制約を許容できるアプリケーション | できない | 不要 |
+
+> [!IMPORTANT]
+> スキーマを変更する権限は、デプロイ専用の ID に与えます。アプリケーションが実行時に使用する ID には、通常はデータの読み書きに必要な権限だけを与えるべきです。
+
+> [!WARNING]
+> **複数のマイグレーションをまとめて適用するとき、途中で失敗しても「そこまで成功した分」はロールバックされません。** EF Core 10 では、マイグレーション全体を 1 つのトランザクションで囲む挙動（EF Core 9 で導入され、さまざまな問題を起こしたため取り消された）がなくなり、**マイグレーションごとに個別のトランザクション** で実行されます。
+>
+> 実際に、正常な `M1` と、必ず失敗する SQL を含む `M2` を用意して `dotnet ef database update` を実行したところ、`M2` はエラーで停止しましたが、`M1` は適用済みのまま残りました。
+>
+> ```text
+> Error Number: 8134、State: 1、Class: 16
+> Divide by zero error encountered.
+> ```
+>
+> ```text
+> 20260901081302_M1
+> 20260901081308_M2 (Pending)
+> ```
+>
+> つまり、失敗後のデータベースは **一部のマイグレーションだけが適用された中途半端な状態** になります。復旧するには、失敗したマイグレーションを修正して再度適用するか、`dotnet ef database update M1` のように戻したい地点を指定してロールバックします。本番環境では、この状態から確実に復旧できるよう **適用前のバックアップ** を必ず取得してください。
+
+### SQL スクリプトとマイグレーションバンドル
+
+SQL スクリプトは、DBA によるレビューやアーカイブが必要な場合に適しています。
+
+```bash
+# 空のデータベースから最新までのスクリプトを生成
+dotnet ef migrations script
+
+# 冪等 (idempotent) なスクリプトをファイルに出力
+dotnet ef migrations script --idempotent --output artifacts/migrations.sql
+
+# 特定のマイグレーション間のスクリプトを生成
+dotnet ef migrations script AddNewTables AddAuditTable
+```
+
+`--idempotent` を付けると、各マイグレーションが未適用かどうかを確認してから実行するスクリプトが生成されるため、現在の適用状況が分からないデータベースにも安全に流せます。
+
+自動デプロイには **マイグレーションバンドル** が推奨されます。公式ドキュメントによれば、バンドルは CI で生成でき、実行時に .NET SDK も EF Core ツールもアプリケーションのソースコードも不要で、**自己完結型にすれば .NET ランタイムすら不要**な単一の実行可能ファイルです。EF Core のマイグレーションロックも機能します。
+
+```bash
+# .NET ランタイムがインストール済みの環境向け
+dotnet ef migrations bundle --output efbundle
+
+# .NET ランタイムごと同梱する（Linux x64 向け）
+dotnet ef migrations bundle --self-contained --target-runtime linux-x64 --output efbundle
+```
+
+生成したバンドルは、デプロイ先で実行可能ファイルとして起動します。
+
+```bash
+# デプロイ先で実行
+./efbundle --connection "$CONNECTION_STRING"
+```
+
+> [!WARNING]
+> 対象ランタイムを指定するオプションは **`--target-runtime`（短縮形 `-r`）** です。よく似た `--runtime` というオプションも存在しますが、こちらは「ツールがビルドに使うランタイム」を指す別のオプションで、`--self-contained` と組み合わせると次のエラーで失敗することがあります（実測）。
+>
+> ```text
+> error NETSDK1047: 資産ファイル 'obj/project.assets.json' に 'net10.0/linux-x64' のターゲットがありません。
+> ```
+>
+> `--target-runtime` を使えば、プロジェクトに `RuntimeIdentifiers` を追加しなくても生成できます。実測では macOS 上から `--target-runtime linux-x64` でバンドルを生成し、Linux 向けの実行可能ファイル（ELF 64-bit）が出力されることを確認しました。生成したバンドルを実際に SQL Server 2022 に対して実行し、マイグレーションが適用されることも確認済みです。
+
+> [!NOTE]
+> 公式ドキュメントは、バンドルの制約として「SQL スクリプトと違い、実行される SQL を事前に確認したり、含まれるマイグレーションを一覧したりする手段が現時点ではない」と述べています。デプロイ前に SQL のレビューが必要な運用では、バンドルではなく `dotnet ef migrations script` でスクリプトを生成してください。
+
+> [!TIP]
+> EF Core 9 以降、マイグレーションの実行はデータベース全体のロックで保護されます（SQL スクリプトによる適用は除く）。これにより、複数のインスタンスが同時にマイグレーションを試みても、実行は 1 つに直列化されます。実際に SQL Server 2022 へ `dotnet ef database update` を実行すると、適用の前に次のメッセージが表示され、ロックの取得が行われていることが確認できます。
+>
+> ```text
+> Acquiring an exclusive lock for migration application.
+> See https://aka.ms/efcore-docs-migrations-lock for more information if this takes too long.
+> ```
+
+### 起動時マイグレーションの是非
+
+アプリケーションの起動時にマイグレーションを適用することもできます。
+
+```csharp
+var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var context = scope.ServiceProvider.GetRequiredService<BloggingContext>();
+    await context.Database.MigrateAsync();
+}
+
+app.Run();
+```
+
+この方法は手軽ですが、公式ドキュメントは次のトレードオフを挙げています。
+
+- アプリケーションがスキーマ変更のための昇格された権限を必要とする
+- 生成される SQL を確認・修正する機会がない
+- 問題が起きたときのロールバックが他の戦略ほど容易ではない
+- 別のアプリケーションがデータベースにアクセスしている最中にマイグレーションが走ると、深刻な問題を引き起こす可能性がある
+
+> [!WARNING]
+> `MigrateAsync()` の前に `EnsureCreatedAsync()` を呼び出してはいけません。`EnsureCreatedAsync()` はマイグレーションを迂回してスキーマを作成するため、その後の `MigrateAsync()` が失敗します。SQL Server 2022 で実際に順番に呼び出したところ、`__EFMigrationsHistory` には何も記録されていないまま `Blogs` テーブルだけが存在する状態になり、`MigrateAsync()` は次の `SqlException` で失敗しました。
+>
+> ```text
+> There is already an object named 'Blogs' in the database.
+> ```
+>
+> `EnsureCreated` はテストやプロトタイプ専用と考えてください。
 
 ## 6. テストとアーキテクチャ
 
