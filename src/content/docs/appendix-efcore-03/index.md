@@ -32,6 +32,7 @@ description: "EF Core のマイグレーションの読み方と運用、単一�
    - [複数の列で並べ替えるキーセットページング](#複数の列で並べ替えるキーセットページング)
    - [関連データを読み込まずに数える](#関連データを読み込まずに数える)
    - [null の比較は C# と SQL で意味が違う](#null-の比較は-c-と-sql-で意味が違う)
+   - [エンティティをそのまま JSON にすると循環参照で失敗する](#エンティティをそのまま-json-にすると循環参照で失敗する)
 3. [SQL を直接扱う](#3-sql-を直接扱う)
    - [生の SQL を使う](#生の-sql-を使う)
    - [ユーザー定義関数とビューをマッピングする](#ユーザー定義関数とビューをマッピングする)
@@ -752,6 +753,46 @@ options.UseSqlServer(connectionString, o => o.UseRelationalNulls(true));
 > [!TIP]
 > null 非許容の列どうしの比較がもっとも単純で高速です。可能な場合は列を null 非許容にすることを検討してください。
 
+### エンティティをそのまま JSON にすると循環参照で失敗する
+
+EF Core はナビゲーションプロパティを自動的に補完 (fix-up) するため、**オブジェクトグラフに循環ができます**。`Blog` を `Include` で読み込むと `Blog.Posts` に `Post` が入り、その `Post.Blog` が元の `Blog` を指すためです。公式ドキュメントは、この循環をシリアル化フレームワークが扱えない場合があると明記しています。
+
+実際に ASP.NET Core 10 の最小 API から、`Include` した `Blog` をそのまま `System.Text.Json` でシリアル化したところ、次の例外が発生しました。
+
+```text
+System.Text.Json.JsonException: A possible object cycle was detected. This can either be
+due to a cycle or if the object depth is larger than the maximum allowed depth of 64.
+Path: $.Posts.Blog.Posts.Blog.Posts.Blog....
+```
+
+対処は 3 つあります。1 つ目は、`ReferenceHandler.IgnoreCycles` を指定して循環部分を `null` に置き換える方法です。最小 API では `ConfigureHttpJsonOptions`、MVC やコントローラーでは `AddControllers().AddJsonOptions(...)` で設定します。
+
+```csharp
+builder.Services.ConfigureHttpJsonOptions(
+    options => options.SerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles);
+```
+
+同じデータで実測した結果は次のとおりで、循環している `blog` が `null` になります。
+
+```json
+{"id":1,"name":"A","posts":[{"id":1,"title":"P1","blogId":1,"blog":null}]}
+```
+
+2 つ目は `ReferenceHandler.Preserve` です。こちらは循環を `$id` と `$ref` の参照に置き換えます。
+
+```json
+{"$id":"1","Id":1,"Name":"A","Posts":{"$id":"2","$values":[
+  {"$id":"3","Id":1,"Title":"P1","BlogId":1,"Blog":{"$ref":"1"}}]}}
+```
+
+3 つ目は、循環の原因になっているナビゲーションプロパティに `System.Text.Json.Serialization` 名前空間の `[JsonIgnore]` を付けて、シリアル化の対象から外す方法です。
+
+> [!WARNING]
+> `ReferenceHandler.Preserve` は **JSON の形自体を変えます**。上の実測結果のとおり、配列だった `Posts` が `$id` と `$values` を持つオブジェクトになりました。クライアント側も参照形式を解釈できる必要があるため、公開 API のレスポンスに使うと互換性の問題を起こします。
+
+> [!TIP]
+> そもそも API のレスポンスにエンティティを直接使わず、DTO に投影すれば循環は発生しません。詳しくは[第8章の投影による最適化](/08-entity-framework-core/#投影-projection-による最適化)を参照してください。
+
 ## 3. SQL を直接扱う
 
 ### 生の SQL を使う
@@ -1202,6 +1243,7 @@ WHERE CAST(ISDATE([e].[Title]) AS bit) = CAST(1 AS bit)
 - [関連データの明示的読み込み | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/related-data/explicit)
 - [クエリでの null 値の比較 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/null-comparisons)
 - [NavigationEntry.IsLoaded プロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.changetracking.navigationentry.isloaded?view=efcore-10.0)
+- [関連データとシリアル化 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/related-data/serialization)
 - [照合順序と大文字小文字の区別 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/collations-and-case-sensitivity)
 - [SQL クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/sql-queries)
 - [ユーザー定義関数のマッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/user-defined-function-mapping)
