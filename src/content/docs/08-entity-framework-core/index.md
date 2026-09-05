@@ -99,12 +99,14 @@ erDiagram
     Blogs ||--o{ Posts : "1 対多"
 
     Blogs {
+        型 列名 "キーと説明"
         int Id PK "ブログ ID（自動採番）"
         nvarchar Name "ブログ名（必須）"
         int Rating "評価（必須）"
     }
 
     Posts {
+        型 列名 "キーと説明"
         int Id PK "投稿 ID（自動採番）"
         nvarchar Title "投稿のタイトル（必須）"
         datetimeoffset PublishedAt "公開日時（必須）"
