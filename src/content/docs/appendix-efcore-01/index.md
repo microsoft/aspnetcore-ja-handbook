@@ -887,6 +887,23 @@ CREATE TABLE [Docs] (
 >
 > `SqlVector<T>` は `Microsoft.Data.SqlTypes` 名前空間にあります。Azure SQL Database に対して実際に動かしたところ、`vector(3)` 型の列が作られ、`VectorDistance("cosine", ...)` が距離を返して並べ替えが機能することを確認しました。
 
+#### 日付と時刻の型は使い分ける
+
+.NET 6 で追加された `DateOnly` と `TimeOnly` は、データベースの日付型・時刻型と 1 対 1 で対応します。SQL Server 2022 と SQLite で `GenerateCreateScript()` を実行し、生成される列型を実測しました。
+
+| .NET の型 | SQL Server の列型 | SQLite の列型 |
+| --- | --- | --- |
+| `DateOnly` | `date` | `TEXT` |
+| `TimeOnly` | `time` | `TEXT` |
+| `DateTime` | `datetime2` | `TEXT` |
+| `TimeSpan` | `time` | `TEXT` |
+| `DateTimeOffset` | `datetimeoffset` | `TEXT` |
+
+`TimeSpan` も SQL Server では `time` になりますが、意味が違います。公式ドキュメントは、`DateTime` は使われない時刻成分を含むため `date` にマッピングすると混乱を招き、`TimeSpan` は「時刻」ではなく**時間の間隔**（日数を含むこともある）を表すと説明しています。日付だけ・時刻だけを扱う列には `DateOnly` / `TimeOnly` を使ってください。
+
+> [!NOTE]
+> SQLite にはこれらに対応するネイティブの型がなく、`Microsoft.Data.Sqlite` はすべて `TEXT` として格納します。テストで SQLite を使う場合、この差が原因で本番と挙動が変わることがあります（[付録 EF Core 5](../appendix-efcore-05/index.md) を参照）。
+
 ### 継承のマッピング
 
 エンティティに継承関係がある場合、EF Core は 3 つのマッピング方法を提供します。既定は **TPH (table-per-hierarchy)** で、階層全体を 1 つのテーブルに格納し、行がどの型かを示す **識別子列 (discriminator)** を暗黙的に追加します。
