@@ -99,14 +99,14 @@ erDiagram
     Blogs ||--o{ Posts : "1 対多"
 
     Blogs {
-        型 列名 "キーと説明"
+        型 列名 "制約と説明"
         int Id PK "ブログ ID（自動採番）"
         nvarchar Name "ブログ名（必須）"
         int Rating "評価（必須）"
     }
 
     Posts {
-        型 列名 "キーと説明"
+        型 列名 "制約と説明"
         int Id PK "投稿 ID（自動採番）"
         nvarchar Title "投稿のタイトル（必須）"
         datetimeoffset PublishedAt "公開日時（必須）"
@@ -114,7 +114,7 @@ erDiagram
     }
 ```
 
-1 つのブログ (`Blogs`) が複数の投稿 (`Posts`) を持ち、投稿は必ずどれか 1 つのブログに属します。`Posts.BlogId` が `Blogs.Id` を参照する外部キーです。
+1 つのブログ (`Blogs`) が複数の投稿 (`Posts`) を持ち、投稿は必ずどれか 1 つのブログに属します。図の `PK` は主キー制約 (PRIMARY KEY)、`FK` は外部キー制約 (FOREIGN KEY) を表します。`Posts.BlogId` が `Blogs.Id` を参照する外部キーです。
 
 
 **1. テーブルに対応するクラスと `DbContext` を用意する**
