@@ -189,7 +189,7 @@ var blogs = await context.Blogs
     .ToListAsync();
 ```
 
-生成される SQL は次のようになります（実測）。
+生成される SQL は次のようになります（SQLite で実測。タグの出力はプロバイダーによらず同じ形式です）。
 
 ```sql
 -- 月次レポート用の集計
@@ -207,6 +207,8 @@ var blogs = await context.Blogs
     .TagWithCallSite()
     .ToListAsync();
 ```
+
+こちらも SQLite で実測したものです。
 
 ```sql
 -- 1つ目
@@ -282,6 +284,8 @@ SQL Server のクエリストアや実行計画の分析ツールでは、この
 var city = "London";
 var blogs = await context.Blogs.Where(b => b.City == city).ToListAsync(cancellationToken);
 ```
+
+SQL Server で実測した SQL は次のとおりです。
 
 ```sql
 -- EF Core 9 まで
@@ -1321,7 +1325,7 @@ EF Core 7 以降、SQLite プロバイダーは `RETURNING` 句を使って保�
 | EF Core が作成したデータベース | `wal` |
 | `SqliteConnection` で直接作成したデータベース | `delete` |
 
-公式も「EF によって作成されたデータベースでは、既定で先行書き込みログが有効になる」と説明しています。危険なのは**既存のファイルを引き継ぐ場合**です。EF Core 以外の手段で作られたデータベースファイルには WAL が設定されていない可能性があるため、確認して必要なら有効にしてください。
+公式も「EF によって作成されたデータベースでは、既定で先行書き込みログが有効になる」と説明しています。危険なのは**既存のファイルを引き継ぐ場合**です。EF Core 以外の手段で作られたデータベースファイルには WAL が設定されていない可能性があるため、確認して必要なら有効にしてください。SQLite では次の `PRAGMA` で切り替えます。
 
 ```sql
 PRAGMA journal_mode = 'wal';

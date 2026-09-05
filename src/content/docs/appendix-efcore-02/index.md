@@ -51,7 +51,7 @@ description: "EF Core の代替キーとインデックス、シャドウプロ�
 modelBuilder.Entity<User>().HasAlternateKey(u => u.Email);
 ```
 
-実測した DDL では、`AK_` で始まる名前の一意制約が作られました。
+SQL Server で実測した DDL では、`AK_` で始まる名前の一意制約が作られました。
 
 ```sql
 [Email] nvarchar(450) NOT NULL,
@@ -67,6 +67,8 @@ modelBuilder.Entity<Order>()
     .HasForeignKey(o => o.UserEmail)
     .HasPrincipalKey(u => u.Email);
 ```
+
+SQL Server では、外部キーの参照先が主キーではなく代替キーになります。
 
 ```sql
 CONSTRAINT [FK_Orders_Users_UserEmail] FOREIGN KEY ([UserEmail]) REFERENCES [Users] ([Email]) ON DELETE CASCADE
@@ -108,7 +110,7 @@ CREATE TABLE [PostTag] (
 );
 ```
 
-結合テーブルの列名も主キー由来の `PostsId` ではなく `PostsAlternateKey` になります。`Include` で読み込むと、結合も代替キーで行われます（実測）。
+結合テーブルの列名も主キー由来の `PostsId` ではなく `PostsAlternateKey` になります。`Include` で読み込むと、結合も代替キーで行われます（SQL Server で実測）。
 
 ```sql
 LEFT JOIN (
@@ -142,7 +144,7 @@ modelBuilder.Entity<Order>()
     .HasForeignKey<DetailedOrder>(o => o.Id);
 ```
 
-テーブルは 1 つだけ作られ、それぞれのエンティティは自分がマップされた列だけを読みます。実測したクエリは次のとおりです。
+テーブルは 1 つだけ作られ、それぞれのエンティティは自分がマップされた列だけを読みます。SQL Server で実測したクエリは次のとおりです。
 
 ```sql
 -- context.Orders
@@ -173,7 +175,7 @@ modelBuilder.Entity<Customer>(b =>
 });
 ```
 
-実測では 2 つのテーブルが作られ、クエリは `INNER JOIN` になり、1 件の保存で 2 行が書き込まれました（影響行数 2）。
+SQL Server での実測では 2 つのテーブルが作られ、クエリは `INNER JOIN` になり、1 件の保存で 2 行が書き込まれました（影響行数 2）。
 
 ```sql
 SELECT TOP(@p) [c].[Id], [c0].[City], [c].[Name], [c0].[Street]
@@ -201,7 +203,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
         .ToView("View_BlogPostCounts");
 ```
 
-`DbSet<BlogPostCount>` を定義すれば、通常のエンティティと同じように LINQ で問い合わせられます。実測したクエリと結果は次のとおりです。
+`DbSet<BlogPostCount>` を定義すれば、通常のエンティティと同じように LINQ で問い合わせられます。SQL Server で実測したクエリと結果は次のとおりです。
 
 ```sql
 SELECT [v].[Name], [v].[PostCount] FROM [View_BlogPostCounts] AS [v]
@@ -246,7 +248,7 @@ modelBuilder.Entity<Blog>()
     .Property<DateTime>("LastUpdated");
 ```
 
-生成される DDL には、通常のプロパティと同じように列が現れます（実測）。
+生成される DDL には、通常のプロパティと同じように列が現れます（SQLite で実測）。
 
 ```sql
 CREATE TABLE "Blogs" (
@@ -336,7 +338,7 @@ CLR プロパティを一切持たず、フィールドだけでデータを保�
 modelBuilder.Entity<Article>().Property("_validatedUrl");
 ```
 
-これは変更追跡側にデータを持つシャドウプロパティとは異なり、**エンティティ側のフィールドにデータを持ちます。** LINQ から参照するには `EF.Property` を使います。実測したクエリは次のとおりです。
+これは変更追跡側にデータを持つシャドウプロパティとは異なり、**エンティティ側のフィールドにデータを持ちます。** LINQ から参照するには `EF.Property` を使います。SQL Server で実測したクエリは次のとおりです。
 
 ```csharp
 var sorted = db.Articles.OrderBy(x => EF.Property<string>(x, "_validatedUrl"));
@@ -691,7 +693,7 @@ public class Node
 options.UseSqlServer(connectionString, x => x.UseHierarchyId());
 ```
 
-列は `hierarchyid` 型にマップされます（実測で `sys.types` を確認）。
+列は SQL Server の `hierarchyid` 型にマップされます（実測で `sys.types` を確認）。
 
 ```sql
 CREATE TABLE [Nodes] (
@@ -712,7 +714,7 @@ db.AddRange(
     new Node { Name = "営業部", Path = HierarchyId.Parse("/2/") });
 ```
 
-`IsDescendantOf` や `GetLevel` はそのまま T-SQL のメソッド呼び出しに翻訳されます（実測）。
+`IsDescendantOf` や `GetLevel` はそのまま SQL Server の T-SQL のメソッド呼び出しに翻訳されます（実測）。
 
 ```csharp
 var devPath = HierarchyId.Parse("/1/");
@@ -777,7 +779,7 @@ CREATE TABLE [Posts] (
 modelBuilder.Entity<MemItem>().ToTable(t => t.IsMemoryOptimized());
 ```
 
-生成される DDL は、メモリ最適化データ用のファイルグループを用意する長いスクリプトに続いて、次のテーブル定義になります（実測）。主キーが自動的に **非クラスター化** になる点に注意してください。
+SQL Server で生成される DDL は、メモリ最適化データ用のファイルグループを用意する長いスクリプトに続いて、次のテーブル定義になります（実測）。主キーが自動的に **非クラスター化** になる点に注意してください。
 
 ```sql
 CREATE TABLE [Items] (

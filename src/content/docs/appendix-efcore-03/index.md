@@ -101,7 +101,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 }
 ```
 
-生成されるマイグレーションには注釈として制約名が入り、SQL では `CONSTRAINT` 句として出力されます。
+生成されるマイグレーションには注釈として制約名が入り、SQL Server 向けの DDL では `CONSTRAINT` 句として出力されます。
 
 ```sql
 CREATE TABLE [Posts] (
@@ -121,7 +121,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 }
 ```
 
-これを有効にして同じモデルからマイグレーションを生成し直すと、両方の列に名前が付きました。
+これを有効にして同じモデルからマイグレーションを生成し直すと、SQL Server 向けの DDL で両方の列に名前が付きました。
 
 ```sql
 [CreatedDate] datetime2 NOT NULL CONSTRAINT [DF_Posts_CreatedDate] DEFAULT (GETDATE()),
@@ -189,7 +189,7 @@ SQLite にはアプリケーションロックの仕組みがないため、公�
 ロックテーブルを削除したら完了した
 ```
 
-タイムアウトはありません。**ロックが解放されるまで無期限に待ち続けます**。公式ドキュメントが示す解決方法は、`__EFMigrationsLock` テーブルを削除することです。
+タイムアウトはありません。**ロックが解放されるまで無期限に待ち続けます**。公式ドキュメントが示す解決方法は、`__EFMigrationsLock` テーブルを削除することです。次は SQLite で実測したときに使った SQL です。
 
 ```sql
 DROP TABLE "__EFMigrationsLock";
@@ -510,7 +510,7 @@ modelBuilder.Entity<Customer>()
 var q = db.Things.Select(x => new { F = x.Flag.ToString(), N = x.Num.ToString() });
 ```
 
-`bool?` と `int?` に `null` を入れた行を含めて実行すると、次の SQL に翻訳され、結果は空文字列になりました（実測）。
+`bool?` と `int?` に `null` を入れた行を含めて実行すると、次の SQL に翻訳され、結果は空文字列になりました（SQL Server で実測）。
 
 ```sql
 SELECT CASE [t].[Flag]
@@ -1000,7 +1000,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 }
 ```
 
-`DbSet` と同じように扱えるため、**LINQ を合成できる**のが利点です。実測では、TVF に `Where` を続けた次のクエリが 1 本の SQL に変換されました。
+`DbSet` と同じように扱えるため、**LINQ を合成できる**のが利点です。SQL Server での実測では、TVF に `Where` を続けた次のクエリが 1 本の SQL に変換されました。
 
 ```csharp
 var titles = await context.PopularPosts(5)
@@ -1067,7 +1067,7 @@ WHERE DATEDIFF(day, [e].[Start], [e].[End]) > 10
 
 `DateDiffDay` のほかに `DateDiffMonth` や `DateDiffYear` など単位ごとのメソッドがあり、いずれも `DATEDIFF` の第 1 引数が変わるだけです。実測では 2026-01-01 から 2026-03-15 までが `DateDiffMonth` で `2` になりました（**日数ではなく境界をまたいだ回数**で数えます）。
 
-`IsDate` は `ISDATE` に翻訳されます。
+`IsDate` は SQL Server の `ISDATE` に翻訳されます。
 
 ```sql
 WHERE CAST(ISDATE([e].[Title]) AS bit) = CAST(1 AS bit)

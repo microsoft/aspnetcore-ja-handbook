@@ -161,7 +161,7 @@ Console.WriteLine(blog.Id);      // 1
 Console.WriteLine(blog.Posts[0].Id);  // 1
 ```
 
-`Blog` と `Post` の 2 つの INSERT が発行され、外部キーも自動的に設定されます（実測）。
+`Blog` と `Post` の 2 つの INSERT が発行され、外部キーも自動的に設定されます（SQL Server 2022 で実測）。
 
 ```sql
 INSERT INTO [Blogs] ([Name], [Rating])
@@ -185,7 +185,7 @@ var blogs = await context.Blogs
     .ToListAsync();
 ```
 
-これが次の SQL に変換されます（実測）。`Posts.Count` が副問い合わせになっている点に注目してください。件数を数えるためだけに投稿を全件読み込むことはしません。
+これが次の SQL に変換されます（SQL Server 2022 で実測）。`Posts.Count` が副問い合わせになっている点に注目してください。件数を数えるためだけに投稿を全件読み込むことはしません。
 
 ```sql
 SELECT [b].[Name], (
@@ -207,7 +207,7 @@ blog.Rating = 5;
 await context.SaveChangesAsync();
 ```
 
-変更した列だけが UPDATE 文に含まれます（実測）。`Name` は書き換えていないため対象外です。
+変更した列だけが UPDATE 文に含まれます（SQL Server 2022 で実測）。`Name` は書き換えていないため対象外です。
 
 ```sql
 UPDATE [Blogs] SET [Rating] = @p0

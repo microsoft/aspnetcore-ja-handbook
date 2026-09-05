@@ -279,7 +279,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 }
 ```
 
-どちらを構成しても保存は成功しました（実測）。生成される SQL は次のように変わります。
+どちらを構成しても保存は成功しました（実測）。SQL Server で生成される SQL は次のように変わります。
 
 ```sql
 -- 既定: MERGE と OUTPUT 句で複数行をまとめて挿入し、生成された Id を一度に受け取る

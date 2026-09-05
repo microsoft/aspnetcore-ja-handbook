@@ -94,7 +94,7 @@ public class Customer
 ```
 
 ```sql
--- NRT が有効な場合（実測）
+-- SQLite。NRT が有効な場合（実測）
 "Name"     TEXT NOT NULL,
 "Nickname" TEXT NULL
 
@@ -318,7 +318,7 @@ modelBuilder.Entity<Post>()
     .UsingEntity(join => join.ToTable("PostTags"));
 ```
 
-このとき生成される結合テーブルの列名は、**ナビゲーションプロパティの名前**から作られます。実測した DDL は次のとおりでした。
+このとき生成される結合テーブルの列名は、**ナビゲーションプロパティの名前**から作られます。SQL Server で実測した DDL は次のとおりでした。
 
 ```sql
 CREATE TABLE [PostTag] (
@@ -355,7 +355,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 }
 ```
 
-クラスを定義すると、外部キーの列名が**エンティティ型の名前**から作られるようになります。
+クラスを定義すると、外部キーの列名が**エンティティ型の名前**から作られるようになります。SQL Server での DDL は次のとおりです。
 
 ```sql
 CREATE TABLE [PostTag] (
@@ -439,7 +439,7 @@ public class Person
 modelBuilder.Entity<Person>().HasMany(p => p.Friends).WithMany(p => p.FriendOf);
 ```
 
-実測すると、`PersonPerson` という結合テーブルが作られ、2 つの外部キーがどちらも `People` を指しました。
+SQL Server で実測すると、`PersonPerson` という結合テーブルが作られ、2 つの外部キーがどちらも `People` を指しました。
 
 ```sql
 CREATE TABLE [PersonPerson] (
@@ -848,7 +848,7 @@ CREATE TABLE [Payments] (
 
 派生型だけが持つ列は自動的に NULL 許容になります。公式ドキュメントにも「TPH マッピングを使う場合、データベースの列は必要に応じて自動的に NULL 許容になる」と記載されています。
 
-`UseTptMappingStrategy()` を指定すると **TPT (table-per-type)** になり、基底型と派生型がそれぞれのテーブルに分かれます。派生テーブルの主キーは基底テーブルへの外部キーを兼ねます。
+`UseTptMappingStrategy()` を指定すると **TPT (table-per-type)** になり、基底型と派生型がそれぞれのテーブルに分かれます。派生テーブルの主キーは基底テーブルへの外部キーを兼ねます。SQL Server での DDL は次のとおりです。
 
 ```csharp
 protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -871,7 +871,7 @@ CREATE TABLE [CreditCardPayments] (
 );
 ```
 
-`UseTpcMappingStrategy()` による **TPC (table-per-concrete-type)** では、具象型ごとに独立したテーブルを作り、それぞれが基底型の列も持ちます。主キーが階層全体で一意になるよう、EF Core は共有シーケンスを作成します。
+`UseTpcMappingStrategy()` による **TPC (table-per-concrete-type)** では、具象型ごとに独立したテーブルを作り、それぞれが基底型の列も持ちます。主キーが階層全体で一意になるよう、EF Core は共有シーケンスを作成します。SQL Server での DDL は次のとおりです。
 
 ```sql
 CREATE SEQUENCE [PaymentSequence] START WITH 1 INCREMENT BY 1 NO CYCLE;
@@ -905,7 +905,7 @@ CREATE TABLE [CreditCardPayments] (
 > [!TIP]
 > Ruby on Rails の単一テーブル継承 (STI) は EF Core の TPH に、Django の多テーブル継承は TPT に相当します。Rails の STI が `type` 列を規約とするのに対し、EF Core の識別子列は既定で `Discriminator` という名前のシャドウプロパティになり、値には **CLR のクラス名がそのまま入ります**（実測でも `CreditCardPayment` / `BankTransferPayment` が格納されました）。`HasDiscriminator<string>("payment_type").HasValue<CreditCardPayment>("card")` のように列名と値を変更でき、エンティティの実プロパティにマッピングすることもできます。
 
-派生型を絞り込むクエリでは、EF Core が識別子列の条件を自動的に付け加えます。実測した SQL は次のとおりです。
+派生型を絞り込むクエリでは、EF Core が識別子列の条件を自動的に付け加えます。SQL Server で実測した SQL は次のとおりです。
 
 ```sql
 -- context.Payments.OfType<CreditCardPayment>() が生成する SQL
