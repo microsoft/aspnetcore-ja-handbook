@@ -441,12 +441,33 @@ await context.SaveChangesAsync();
 
 実測では、この操作で結合行が 1 行挿入され、`GETUTCDATE()` を既定値に設定した `TaggedOn` にはデータベース側で値が入りましたが、既定値を設定していない `Note` は空文字のままでした。公式ドキュメントも「ペイロードのプロパティは自動生成される値と組み合わせて使うのが最も一般的」としています。
 
-生成値にできないペイロードを設定するには、結合エンティティを自分で追加してください。
+生成値にできないペイロードを設定する方法は 2 つあります。1 つは結合エンティティを自分で追加することです。
 
 ```csharp
 context.Add(new PostTag { PostId = post.Id, TagId = tag.Id, Note = "手動で設定" });
 await context.SaveChangesAsync();
 ```
+
+もう 1 つは、スキップナビゲーションで関連付けたあとに `DetectChanges()` を呼び、EF Core が作った結合エンティティを `Find` で取り出して書き換える方法です。公式ドキュメントが示している手順です。
+
+```csharp
+post.Tags.Add(tag);
+
+// これを呼ぶと、この時点で結合エンティティのインスタンスが作られる
+context.ChangeTracker.DetectChanges();
+
+var joinEntity = await context.Set<PostTag>().FindAsync(post.Id, tag.Id);
+joinEntity!.Note = "手動で設定";
+
+await context.SaveChangesAsync();
+```
+
+SQL Server 2022 で実測したところ、`DetectChanges()` の後に `Find` で結合エンティティを取得でき、`Note` に設定した値がそのまま保存されました。同時に、既定値を設定した `TaggedOn` にもデータベース側の値が入りました。
+
+> [!WARNING]
+> 結合エンティティ用のクラスを定義しない場合、EF Core は規約で暗黙の結合エンティティ型を作ります。EF Core 10 の実測では、その CLR 型は `Dictionary<string, object>` で、モデル上の名前は `PostTag` でした。
+>
+> ただし**この CLR 型に依存したコードを書かないでください。** 公式ドキュメントは、規約で使われる結合エンティティ型の CLR 型がパフォーマンス改善のために将来のリリースで変わる可能性があると明記しています。結合エンティティを型として扱いたい場合は、上のように `UsingEntity<PostTag>` でクラスを明示的に構成してください。
 
 > [!TIP]
 > スキップナビゲーションから相手を外す操作（`post.Tags.Remove(tag)`）では、**結合エンティティだけが `Deleted` になり、`Tag` 本体は残ります。** 実測でも結合行が 1 件減り、`Tag` は 2 件のまま残りました。一方で `Tag` 本体を削除すると、結合テーブルの外部キーが既定でカスケード削除に設定されているため、関連する結合行もデータベース側で削除されます。
@@ -995,6 +1016,7 @@ modelBuilder.Entity<Animal>()
 
 - [モデルの作成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/)
 - [ID 解決 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/identity-resolution)
+- [外部キーとナビゲーションの変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/relationship-changes)
 - [エンティティのプロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/entity-properties)
 - [リレーションシップ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships)
 - [多対多のリレーションシップ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/many-to-many)
