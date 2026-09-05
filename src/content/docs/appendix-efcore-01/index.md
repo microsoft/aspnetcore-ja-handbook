@@ -25,6 +25,7 @@ description: "EF Core のエンティティ構成、リレーションシップ�
    - [規約・データ注釈・Fluent API](#規約データ注釈fluent-api)
    - [IEntityTypeConfiguration による構成の分割](#ientitytypeconfiguration-による構成の分割)
    - [同じ DbContext 型から複数のモデルを作る](#同じ-dbcontext-型から複数のモデルを作る)
+   - [エンティティの等価性はオーバーライドしない](#エンティティの等価性はオーバーライドしない)
 2. [リレーションシップ](#2-リレーションシップ)
    - [リレーションシップの定義](#リレーションシップの定義)
 3. [値の変換と型のマッピング](#3-値の変換と型のマッピング)
@@ -278,6 +279,42 @@ UseIntProperty=false → Value: String / IntValue なし
 > 公式ドキュメントは、設計時のモデルキャッシュも扱えるよう `designTime` を受け取るオーバーロードも実装するよう案内しています。上の例のようにキーへ `designTime` を含めてください。
 >
 > この仕組みは、マルチテナントでテナントごとにスキーマが違う場合などに使えます。一方で、**検証コードで「構成を変えて 2 パターン試したのに 2 つ目が効かない」という現象の原因もこれです。** 単に挙動を比べたいだけなら、DbContext の型自体を分けるほうが簡単です。
+
+### エンティティの等価性はオーバーライドしない
+
+EF Core はエンティティのインスタンスを比較するときに**参照等価性**を使います。エンティティ型が `Equals` をオーバーライドしていても、EF Core 自身の比較は変わりません。
+
+ただし 1 か所だけ影響が出ます。**コレクションナビゲーションが参照等価性ではなく上書きされた等価性を使う場合**、別々のインスタンスが同じものとして扱われてしまいます。C# の `record` を `HashSet<T>` のナビゲーションと組み合わせると、これが起こります。
+
+```csharp
+public class Blog
+{
+    public int Id { get; set; }
+    // record は値等価性を持つため、HashSet が別インスタンスを同じものと判定する
+    public ICollection<Post> Posts { get; set; } = new HashSet<Post>();
+}
+
+public record Post
+{
+    public int Id { get; set; }
+    public string Title { get; set; } = "";
+    public int BlogId { get; set; }
+}
+```
+
+SQL Server 2022 で実測したところ、値の同じ `Post` を 2 つ追加しても `Posts.Count` は **1** にしかならず、`SaveChanges` 後にデータベースへ入った行も **1 件**でした。例外は出ず、片方が黙って消えます。
+
+公式ドキュメントは**エンティティの等価性をオーバーライドしないこと**を推奨しています。どうしても使う場合は、コレクションナビゲーションに参照等価性を強制してください。.NET 5 以降は `ReferenceEqualityComparer` が BCL に含まれています。
+
+```csharp
+public ICollection<Post> Posts { get; set; }
+    = new HashSet<Post>(ReferenceEqualityComparer.Instance);
+```
+
+同じ条件で比較子だけを差し替えて実測すると、`Posts.Count` は 2、保存された行も 2 件になりました。
+
+> [!NOTE]
+> 主キー・代替キー・外部キー、および一意インデックスに使う型は `IComparable<T>` と `IEquatable<T>` を実装している必要があります。キー値は等価比較だけでなく**順序付け**にも使われ、1 回の `SaveChanges` で複数のエンティティを更新するときにデッドロックを避けるために並べ替えられるためです。`int` や `Guid`、`string` など通常キーに使う型はすでに両方を実装しています。独自のキー型を作る場合は自分で実装してください。
 
 ## 2. リレーションシップ
 
@@ -957,6 +994,7 @@ modelBuilder.Entity<Animal>()
 ## 4. 参考ドキュメント
 
 - [モデルの作成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/)
+- [ID 解決 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/identity-resolution)
 - [エンティティのプロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/entity-properties)
 - [リレーションシップ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships)
 - [多対多のリレーションシップ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/many-to-many)
