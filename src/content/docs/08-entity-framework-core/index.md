@@ -87,6 +87,7 @@ DI コンテナーへの登録やライフタイムの考え方は [第6章：�
    - [インターセプターによる横断的な処理](#インターセプターによる横断的な処理)
 6. [パフォーマンス最適化](#6-パフォーマンス最適化)
    - [まず計測する](#まず計測する)
+   - [ログの出力形式を変える](#ログの出力形式を変える)
    - [EF Core が公開しているメトリックを見る](#ef-core-が公開しているメトリックを見る)
    - [パラメーター名が EF Core 10 で変わった](#パラメーター名が-ef-core-10-で変わった)
    - [クエリタグでログと LINQ を結びつける](#クエリタグでログと-linq-を結びつける)
@@ -1479,6 +1480,37 @@ modelBuilder.Entity<Author>()
 > ```
 >
 > アップグレード時は `dotnet ef migrations add` で生成されるマイグレーションに `RenameColumn` が含まれていないかを必ず確認してください。
+
+#### JSON の中の列挙型は数値になる
+
+JSON にマッピングした型が列挙型 (enum) のプロパティを持つ場合、**EF Core 8 以降は既定で数値として保存されます**。EF Core 7 では文字列でした。
+
+```csharp
+public enum Status { Pending, Shipped, Delivered }
+```
+
+```json
+{"Note":"出荷済み","Status":1}
+```
+
+実測でもこのとおりでした。文字列で保存したい場合は、変換を明示的に構成します。
+
+```csharp
+modelBuilder.Entity<Order>().OwnsOne(x => x.Detail, b =>
+{
+    b.ToJson();
+    b.Property(d => d.Status).HasConversion<string>();
+});
+```
+
+```json
+{"Note":"出荷済み","Status":"Shipped"}
+```
+
+公式ドキュメントは、この変更の理由を「EF Core は昔からリレーショナルデータベースの列に対して列挙型を数値でマッピングしてきた。JSON の値と列やパラメーターの値が突き合わされるクエリを EF Core がサポートしている以上、**両者の表現が一致していることが重要**だから」と説明しています。
+
+> [!WARNING]
+> EF Core 7 で作成した JSON データが残っている状態で EF Core 8 以降に上げると、**既存の行には文字列が、新しい行には数値が入る**という混在が起こります。マイグレーションは JSON の中身までは書き換えません。上記の変換を構成して従来どおり文字列にするか、既存データを移行するかを選んでください。
 
 #### EF Core 10 の JSON 列は `json` 型になる（Azure SQL の破壊的変更）
 
@@ -4200,6 +4232,54 @@ context.ChangeTracker.TrackGraph(graph, node =>
 });
 ```
 
+#### 同じキーのインスタンスが混ざったグラフ
+
+クライアントから受け取った JSON をそのまま追跡させようとすると、**同じキーを持つ複数のインスタンス**が混ざっていることがあります。「投稿の一覧」を「それぞれの投稿が属するブログ」ごとシリアル化すると、同じブログが何度も現れるためです。
+
+```csharp
+// posts[0].Blog と posts[1].Blog が「同じ Id・別インスタンス」になっている
+db.AttachRange(posts);
+```
+
+```text
+InvalidOperationException: The instance of entity type 'Blog' cannot be tracked
+because another instance with the same key value for {'Id'} is already being tracked.
+When attaching existing entities, ensure that only one entity instance with a given
+key value is attached.
+```
+
+実測でもこの例外が発生しました。公式ドキュメントは 2 つの対処を挙げています。**シリアル化の側で参照を保持する設定にする**か、**追跡しながら ID 解決 (identity resolution) を行う**かです。
+
+後者は `TrackGraph` で書けます。すでに同じキーが追跡されていれば、そのノードを追跡しないという判断をコールバックの中で下します。
+
+```csharp
+db.ChangeTracker.TrackGraph(root, node =>
+{
+    var entry = node.Entry;
+    var keyValue = entry.Property("Id").CurrentValue;
+
+    var existing = db.ChangeTracker.Entries().FirstOrDefault(
+        e => e.Metadata == entry.Metadata
+             && Equals(e.Property("Id").CurrentValue, keyValue));
+
+    if (existing == null)
+    {
+        entry.State = EntityState.Unchanged;
+    }
+});
+```
+
+重複を含むグラフを 2 つ渡して実行したところ、`Blog` は 1 つに集約され、合計 3 エンティティが正しく追跡されました（実測）。
+
+```text
+Blog {Id: 1} Unchanged
+Post {Id: 1} Unchanged FK {BlogId: 1}
+Post {Id: 2} Unchanged FK {BlogId: 1}
+```
+
+> [!WARNING]
+> このやり方では、**先に見つかったインスタンスの値が採用され、後から来た重複インスタンスの値は捨てられます。** 重複の間で値が食い違っている可能性がある場合は、どちらを優先するかを明示的に決めてください。
+
 #### チェンジトラッカーの中身を見る
 
 思ったとおりの状態になっているかは、`ChangeTracker.DebugView` で確認できます。公式ドキュメントの説明どおり、**`ShortView` は追跡中のエンティティ・その状態・キー値だけ**を、**`LongView` はさらにすべてのプロパティ値とナビゲーションの状態まで**表示します。
@@ -5130,6 +5210,38 @@ var query = context.Blogs.Where(b => b.Url.Contains("dotnet"));
 Console.WriteLine(query.ToQueryString());
 ```
 
+### ログの出力形式を変える
+
+`LogTo` は既定で複数行にわたる読みやすい形式で出力しますが、ログ基盤に流し込むときは 1 行にまとめたい、時刻を UTC で揃えたい、といった要求が出てきます。`DbContextLoggerOptions` で制御できます。
+
+```csharp
+options.UseSqlServer(connectionString)
+       .LogTo(Console.WriteLine,
+              new[] { RelationalEventId.CommandExecuted },
+              LogLevel.Information,
+              DbContextLoggerOptions.UtcTime | DbContextLoggerOptions.SingleLine);
+```
+
+同じクエリを既定の形式と比べました（実測）。
+
+```text
+--- 既定 ---
+      Executed DbCommand (0ms) [Parameters=[], CommandType='Text', CommandTimeout='30']
+      SELECT "p"."Id", "p"."Name"
+      FROM "Plains" AS "p"
+
+--- UtcTime | SingleLine ---
+2026-09-05T15:42:01.7745760Z -> Executed DbCommand (0ms) [Parameters=[], ...]SELECT "p"."Id", "p"."Name"FROM "Plains" AS "p"
+```
+
+`UtcTime` を付けると ISO 8601 の UTC タイムスタンプが先頭に付き、`SingleLine` を付けると改行が取り除かれて 1 行になります。
+
+> [!WARNING]
+> `SingleLine` は改行を**取り除くだけ**で、空白に置き換えるわけではありません。実測のとおり `...CommandTimeout='30']SELECT` のように語がつながります。人が読むログには向きません。**構造化ログの取り込み用**と考えてください。
+
+> [!TIP]
+> 既定では時刻が出力されません。時刻を入れたい場合は `DefaultWithUtcTime` や `DefaultWithLocalTime` を使うと、既定の内容に時刻だけを足せます。
+
 ### EF Core が公開しているメトリックを見る
 
 ログよりも軽量に、アプリケーション全体の傾向をつかみたいときはメトリックが使えます。EF Core 9 以降、EF Core は `System.Diagnostics.Metrics` API で **`Microsoft.EntityFrameworkCore`** という名前のメーターを公開しています。公式ドキュメントに記載されているのは次の 7 つです。
@@ -5764,6 +5876,65 @@ EF Core の既定は **スナップショット変更追跡 (snapshot change tra
 > ```
 >
 > 最後の一文のとおり、**遅延読み込みプロキシはナビゲーションプロパティだけが `virtual` であればよく**、変更追跡プロキシのほうが要求が厳しい点に注意してください。
+
+#### 通知を自分で実装する
+
+変更追跡プロキシは動的な派生型を作るため、エンティティのプロパティを `virtual` にする、コンストラクターに制約が付くといった条件が付きます。**プロキシを使わずに、自分で `INotifyPropertyChanged` / `INotifyPropertyChanging` を実装する**こともできます。
+
+```csharp
+public class Blog : INotifyPropertyChanged, INotifyPropertyChanging
+{
+    private string _name = "";
+
+    public string Name
+    {
+        get => _name;
+        set
+        {
+            PropertyChanging?.Invoke(this, new PropertyChangingEventArgs(nameof(Name)));
+            _name = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Name)));
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    public event PropertyChangingEventHandler? PropertyChanging;
+}
+```
+
+重要なのは、**インターフェイスを実装しただけでは何も起きない**という点です。公式ドキュメントは「EF Core はこれらのインターフェイスが正しく実装されているかを検証できないため、自動的にはイベントを購読しない」と明記しています。モデル側で戦略を指定する必要があります。
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+    => modelBuilder.HasChangeTrackingStrategy(
+        ChangeTrackingStrategy.ChangedNotifications);
+```
+
+実際に 3 パターンを比べました。いずれも `AutoDetectChangesEnabled = false` にした状態で、読み込んだエンティティのプロパティを書き換えた直後の状態です（実測）。
+
+| エンティティ | 書き換えた直後の状態 |
+| --- | --- |
+| 通常のエンティティ | `Unchanged`（`DetectChanges` を呼ぶと `Modified`） |
+| 通知エンティティ + 戦略を構成した | `Modified`（`DetectChanges` は不要） |
+| 通知エンティティ + 戦略を構成しない | `Unchanged` |
+
+3 つ目が重要です。**インターフェイスを実装しているのに `HasChangeTrackingStrategy` を呼び忘れると、通知はまったく使われません。** 例外も警告も出ないため、気づかないまま「変更が保存されない」状態になります。
+
+戦略は 4 つあり、公式ドキュメントは次のように整理しています。
+
+| `ChangeTrackingStrategy` | 必要なインターフェイス | `DetectChanges` が必要か | 元の値をスナップショットするか |
+| --- | --- | --- | --- |
+| `Snapshot`（既定） | なし | 必要 | する |
+| `ChangedNotifications` | `INotifyPropertyChanged` | 不要 | する |
+| `ChangingAndChangedNotifications` | 上記 + `INotifyPropertyChanging` | 不要 | しない |
+| `ChangingAndChangedNotificationsWithOriginalValues` | 上記 + `INotifyPropertyChanging` | 不要 | する |
+
+`ChangedNotifications` でも元の値は保持されます。実測でも、書き換えた直後に `OriginalValue` から書き換え前の値を取得できました。スナップショットまで不要にしたい場合は `ChangingAndChangedNotifications` を選びますが、その場合 `INotifyPropertyChanging` の実装が必須になります。
+
+> [!WARNING]
+> 公式ドキュメントは、EF Core が要求するのは**すべてのプロパティ（ナビゲーションを含む）の通知**だと述べています。一部のプロパティだけ通知する実装は、EF Core との組み合わせでは正しく動きません。
+>
+> また、エンティティ型ごとに戦略を変えることもできますが、公式ドキュメントは「通知エンティティでない型のために結局 `DetectChanges` が必要になるので、たいていは逆効果」としています。
 
 ### バッファリングとストリーミング
 
@@ -6719,6 +6890,7 @@ flowchart TB
 - [接続の回復性 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-resiliency)
 - [クエリタグ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/tags)
 - [Microsoft.Extensions.Logging による EF Core のログ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/extensions-logging)
+- [簡易ログ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/simple-logging)
 
 ### 読み取り専用レプリカ
 
