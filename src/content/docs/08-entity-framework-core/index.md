@@ -891,6 +891,8 @@ await context.Entry(blog)
     .LoadAsync(cancellationToken);
 ```
 
+関連データを読み込まずに件数だけ数えたり、条件で絞って読み込んだりする方法は[付録 EF Core 3 の「関連データを読み込まずに数える」](../appendix-efcore-03/index.md#関連データを読み込まずに数える)を参照してください。
+
 ### 遅延読み込みと N+1 問題
 
 `Microsoft.EntityFrameworkCore.Proxies` パッケージと `UseLazyLoadingProxies()` を使うと、ナビゲーションプロパティに初めてアクセスしたタイミングで自動的にクエリが発行される **遅延読み込み (Lazy Loading)** を有効にできます。

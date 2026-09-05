@@ -30,6 +30,7 @@ description: "EF Core のマイグレーションの読み方と運用、単一�
    - [LeftJoin / RightJoin 演算子](#leftjoin--rightjoin-演算子)
    - [大文字小文字の区別は照合順序が決める](#大文字小文字の区別は照合順序が決める)
    - [複数の列で並べ替えるキーセットページング](#複数の列で並べ替えるキーセットページング)
+   - [関連データを読み込まずに数える](#関連データを読み込まずに数える)
 3. [SQL を直接扱う](#3-sql-を直接扱う)
    - [生の SQL を使う](#生の-sql-を使う)
    - [ユーザー定義関数とビューをマッピングする](#ユーザー定義関数とビューをマッピングする)
@@ -640,6 +641,58 @@ var page = await context.Posts
 > - [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) — 単一クエリと分割クエリ、照合順序、生の SQL、ユーザー定義関数とビュー
 > - [付録 EF Core 5：パフォーマンスとテスト](../appendix-efcore-05/index.md) — インデックス設計、コンパイル済みクエリ、NativeAOT
 
+### 関連データを読み込まずに数える
+
+本編で扱った明示的読み込み (`Collection(...).LoadAsync()`) は、関連データを**すべて**メモリに読み込みます。件数を数えたいだけの場合や、条件に合うものだけが欲しい場合は `Query()` を使います。`Query()` はそのナビゲーションに対応する `IQueryable` を返すので、後ろに LINQ を続けられます。
+
+```csharp
+var blog = await context.Blogs.SingleAsync(b => b.Id == id, cancellationToken);
+
+// 件数だけを数える。Post のインスタンスは 1 件も作られない
+var postCount = await context.Entry(blog)
+    .Collection(b => b.Posts)
+    .Query()
+    .CountAsync(cancellationToken);
+
+// 条件に合うものだけを読み込む
+var goodPosts = await context.Entry(blog)
+    .Collection(b => b.Posts)
+    .Query()
+    .Where(p => p.Rating > 3)
+    .ToListAsync(cancellationToken);
+```
+
+SQL Server 2022 で実測すると、前者は次の SQL になり、`blog.Posts` は空のままでした。
+
+```sql
+-- SQL Server
+SELECT COUNT(*)
+FROM [Posts] AS [p]
+WHERE [p].[BlogId] = @p
+```
+
+後者は `WHERE` に条件が積まれ、返ってきた 2 件だけが追跡されます。
+
+```sql
+-- SQL Server
+SELECT [p].[Id], [p].[BlogId], [p].[Rating], [p].[Title]
+FROM [Posts] AS [p]
+WHERE [p].[BlogId] = @p AND [p].[Rating] > 3
+```
+
+参照ナビゲーション（単一の相手）を明示的に読み込むときは `Collection` ではなく `Reference` を使います。
+
+```csharp
+await context.Entry(post)
+    .Reference(p => p.Blog)
+    .LoadAsync(cancellationToken);
+```
+
+> [!NOTE]
+> `Collection(...)` や `Reference(...)` が返すエントリーには `IsLoaded` プロパティがあります。公式リファレンスでは「そのナビゲーションが参照するエンティティが読み込まれていると**わかっている**かどうか」と説明されており、`Include` や `Load` / `LoadAsync` がこのフラグを立てます。フラグが立っている状態で再度 `LoadAsync` を呼んでも何も起きません (no-op)。
+>
+> 逆に、**関連エンティティがすべて読み込まれていても `IsLoaded` が `false` のままになることがあります**。読み込まれ方によっては「全部そろっている」と判断できないためです。実際、上の `Query().Where(...)` で読み込んだ場合、2 件が追跡された後も `IsLoaded` は `false` のままでした。確実にすべてを読み込みたいときは `LoadAsync` を呼びます。
+
 ## 3. SQL を直接扱う
 
 ### 生の SQL を使う
@@ -1087,6 +1140,8 @@ WHERE CAST(ISDATE([e].[Title]) AS bit) = CAST(1 AS bit)
 - [マイグレーションの概要 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/migrations/)
 - [マイグレーションの適用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/migrations/applying)
 - [単一クエリと分割クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/single-split-queries)
+- [関連データの明示的読み込み | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/related-data/explicit)
+- [NavigationEntry.IsLoaded プロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.changetracking.navigationentry.isloaded?view=efcore-10.0)
 - [照合順序と大文字小文字の区別 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/collations-and-case-sensitivity)
 - [SQL クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/sql-queries)
 - [ユーザー定義関数のマッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/user-defined-function-mapping)
