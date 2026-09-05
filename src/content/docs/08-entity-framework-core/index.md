@@ -842,6 +842,17 @@ builder.Services.AddDbContext<BloggingContext>(options =>
            .UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking));
 ```
 
+この場合、追跡したいクエリだけ `AsTracking()` を付けて個別に戻せます。
+
+```csharp
+var blog = await context.Blogs
+    .AsTracking()
+    .FirstAsync(b => b.Id == id, cancellationToken);
+```
+
+> [!WARNING]
+> `Select` で射影しても、**結果の中にエンティティのインスタンスが含まれていれば追跡されます**。SQL Server 2022 で実測すると、`Select(b => new { b, b.Name })` は匿名型を返しますが `ChangeTracker` のエントリー数は 1 でした。一方 `Select(b => new { b.Id, b.Name })` のように値だけを取り出した場合は 0 件です。「射影したから追跡されない」とは限りません。
+
 > [!NOTE]
 > **Hibernate** の「デタッチ状態」や、`@Transactional(readOnly = true)` による読み取り専用セッションが近い考え方です。**Django** の `.values()` / `.only()`、**Prisma** の `select` も、必要なデータだけを取り出してオーバーヘッドを減らすという意味で目的が共通します。
 

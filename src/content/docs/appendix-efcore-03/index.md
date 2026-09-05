@@ -31,6 +31,7 @@ description: "EF Core のマイグレーションの読み方と運用、単一�
    - [大文字小文字の区別は照合順序が決める](#大文字小文字の区別は照合順序が決める)
    - [複数の列で並べ替えるキーセットページング](#複数の列で並べ替えるキーセットページング)
    - [関連データを読み込まずに数える](#関連データを読み込まずに数える)
+   - [null の比較は C# と SQL で意味が違う](#null-の比較は-c-と-sql-で意味が違う)
 3. [SQL を直接扱う](#3-sql-を直接扱う)
    - [生の SQL を使う](#生の-sql-を使う)
    - [ユーザー定義関数とビューをマッピングする](#ユーザー定義関数とビューをマッピングする)
@@ -693,6 +694,64 @@ await context.Entry(post)
 >
 > 逆に、**関連エンティティがすべて読み込まれていても `IsLoaded` が `false` のままになることがあります**。読み込まれ方によっては「全部そろっている」と判断できないためです。実際、上の `Query().Where(...)` で読み込んだ場合、2 件が追跡された後も `IsLoaded` は `false` のままでした。確実にすべてを読み込みたいときは `LoadAsync` を呼びます。
 
+### null の比較は C# と SQL で意味が違う
+
+SQL のデータベースは比較を **3 値論理** (`true` / `false` / `null`) で扱いますが、C# は 2 値のブール論理です。EF Core は LINQ を SQL に変換するとき、この差を埋めるために追加の null チェックを補います。
+
+次のエンティティを SQL Server 2022 で実測しました。`String1` と `String2` はどちらも null を許容します。
+
+```csharp
+var q = await context.Entities
+    .Where(e => e.String1 != e.String2)
+    .ToListAsync(cancellationToken);
+```
+
+生成される SQL には、C# と同じ意味になるよう補正が入ります。
+
+```sql
+-- SQL Server
+SELECT [e].[Id], [e].[String1], [e].[String2]
+FROM [Entities] AS [e]
+WHERE ([e].[String1] <> [e].[String2] OR [e].[String1] IS NULL OR [e].[String2] IS NULL)
+  AND ([e].[String1] IS NOT NULL OR [e].[String2] IS NOT NULL)
+```
+
+一方 `==` の場合はもっと単純です。**`!=` は `==` より複雑で遅くなりがち**なので、書き換えられるなら等価比較を使ってください。
+
+```sql
+-- SQL Server
+SELECT [e].[Id], [e].[String1], [e].[String2]
+FROM [Entities] AS [e]
+WHERE [e].[String1] = [e].[String2] OR ([e].[String1] IS NULL AND [e].[String2] IS NULL)
+```
+
+null を明示的に除外しておくと、EF Core はその列を null 非許容として扱えるため SQL が単純になります。
+
+```csharp
+var q = await context.Entities
+    .Where(e => e.String1 != null && e.String2 != null && e.String1 != e.String2)
+    .ToListAsync(cancellationToken);
+```
+
+```sql
+-- SQL Server
+SELECT [e].[Id], [e].[String1], [e].[String2]
+FROM [Entities] AS [e]
+WHERE [e].[String1] IS NOT NULL AND [e].[String2] IS NOT NULL AND [e].[String1] <> [e].[String2]
+```
+
+`UseRelationalNulls(true)` を指定すると、この補正を無効にして SQL 本来の null の扱いをそのまま使えます。
+
+```csharp
+options.UseSqlServer(connectionString, o => o.UseRelationalNulls(true));
+```
+
+> [!WARNING]
+> `UseRelationalNulls(true)` を使うと、**LINQ クエリの意味が C# と一致しなくなります**。上と同じデータ（4 行、うち `String1` か `String2` が null の行が 2 行）で実測したところ、既定では 2 件返る `String1 != String2` が、`UseRelationalNulls(true)` では 1 件しか返りませんでした。生成される SQL は `WHERE [e].[String1] <> [e].[String2]` だけになり、null を含む行が `WHERE` で落ちるためです。公式ドキュメントでも「期待と異なる結果になることがあるため、このモードの使用には注意が必要」と警告されています。
+
+> [!TIP]
+> null 非許容の列どうしの比較がもっとも単純で高速です。可能な場合は列を null 非許容にすることを検討してください。
+
 ## 3. SQL を直接扱う
 
 ### 生の SQL を使う
@@ -1141,6 +1200,7 @@ WHERE CAST(ISDATE([e].[Title]) AS bit) = CAST(1 AS bit)
 - [マイグレーションの適用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/migrations/applying)
 - [単一クエリと分割クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/single-split-queries)
 - [関連データの明示的読み込み | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/related-data/explicit)
+- [クエリでの null 値の比較 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/null-comparisons)
 - [NavigationEntry.IsLoaded プロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.changetracking.navigationentry.isloaded?view=efcore-10.0)
 - [照合順序と大文字小文字の区別 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/collations-and-case-sensitivity)
 - [SQL クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/sql-queries)
