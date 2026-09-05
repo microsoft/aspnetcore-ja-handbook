@@ -90,6 +90,105 @@ flowchart LR
 
 本章では .NET 10 / EF Core 10 を前提とします。EF Core のバージョンは .NET のバージョンに追随しており、EF Core 10 は .NET 10 と同じく LTS (Long Term Support) リリースです。
 
+#### まずは動くコードを見る
+
+細かい説明はこのあとの節で行いますが、先に「EF Core を使うとどう書けるのか」を見ておきます。ブログと投稿という 1 対多の関係を例にします。
+
+**1. テーブルに対応するクラスと `DbContext` を用意する**
+
+```csharp
+public class Blog
+{
+    public int Id { get; set; }
+    public required string Name { get; set; }
+    public int Rating { get; set; }
+    public List<Post> Posts { get; set; } = [];
+}
+
+public class Post
+{
+    public int Id { get; set; }
+    public required string Title { get; set; }
+    public DateTimeOffset PublishedAt { get; set; }
+    public int BlogId { get; set; }
+    public Blog? Blog { get; set; }
+}
+
+public class BloggingContext(DbContextOptions<BloggingContext> options)
+    : DbContext(options)
+{
+    public DbSet<Blog> Blogs => Set<Blog>();
+    public DbSet<Post> Posts => Set<Post>();
+}
+```
+
+**2. 追加する (INSERT)**
+
+オブジェクトを組み立てて `Add` し、`SaveChangesAsync` を呼ぶだけです。
+
+```csharp
+var blog = new Blog { Name = ".NET ブログ", Rating = 4 };
+blog.Posts.Add(new Post { Title = "EF Core 入門", PublishedAt = DateTimeOffset.UtcNow });
+
+context.Blogs.Add(blog);
+await context.SaveChangesAsync();
+
+// 採番された主キーがオブジェクトに書き戻される
+Console.WriteLine(blog.Id);      // 1
+Console.WriteLine(blog.Posts[0].Id);  // 1
+```
+
+`Blog` と `Post` の 2 つの INSERT が発行され、外部キーも自動的に設定されます（実測）。
+
+```sql
+INSERT INTO "Blogs" ("Name", "Rating") VALUES (@p0, @p1) RETURNING "Id";
+INSERT INTO "Posts" ("BlogId", "PublishedAt", "Title") VALUES (@p2, @p3, @p4) RETURNING "Id";
+```
+
+**3. 問い合わせる (SELECT)**
+
+SQL の代わりに LINQ を書きます。
+
+```csharp
+var blogs = await context.Blogs
+    .Where(b => b.Rating >= 3)
+    .OrderBy(b => b.Name)
+    .Select(b => new { b.Name, PostCount = b.Posts.Count })
+    .ToListAsync();
+```
+
+これが次の SQL に変換されます（実測）。`Posts.Count` が副問い合わせになっている点に注目してください。件数を数えるためだけに投稿を全件読み込むことはしません。
+
+```sql
+SELECT "b"."Name", (
+    SELECT COUNT(*)
+    FROM "Posts" AS "p"
+    WHERE "b"."Id" = "p"."BlogId") AS "PostCount"
+FROM "Blogs" AS "b"
+WHERE "b"."Rating" >= 3
+ORDER BY "b"."Name"
+```
+
+**4. 更新する (UPDATE)**
+
+更新用のメソッドは呼びません。読み込んだオブジェクトのプロパティを書き換えて `SaveChangesAsync` を呼ぶと、EF Core が変更を検出して UPDATE を組み立てます。
+
+```csharp
+var blog = await context.Blogs.FirstAsync(b => b.Name == ".NET ブログ");
+blog.Rating = 5;
+await context.SaveChangesAsync();
+```
+
+変更した列だけが UPDATE 文に含まれます（実測）。`Name` は書き換えていないため対象外です。
+
+```sql
+UPDATE "Blogs" SET "Rating" = @p0 WHERE "Id" = @p1 RETURNING 1;
+```
+
+> [!NOTE]
+> 「オブジェクトを書き換えるだけで UPDATE が発行される」という動作が、EF Core を特徴づける**変更追跡 (Change Tracking)** です。Java の Spring Data JPA / Hibernate が永続化コンテキスト内で行うダーティチェックに最も近い考え方です。一方、Django ORM の `Model.save()`、Laravel Eloquent の `$model->save()`、Go の GORM の `db.Save()` のように、オブジェクトごとに保存を指示するスタイルとは異なります。EF Core では**複数のオブジェクトへの変更をまとめて 1 回の `SaveChanges` で反映**します。
+
+
 ### O/R マッパーの位置づけ
 
 .NET でデータベースにアクセスする手段は EF Core だけではありません。用途に応じて選択します。
