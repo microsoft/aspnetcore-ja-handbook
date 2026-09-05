@@ -99,16 +99,16 @@ erDiagram
     Blogs ||--o{ Posts : "1 対多"
 
     Blogs {
-        int Id PK "IDENTITY"
-        nvarchar Name "NOT NULL"
-        int Rating "NOT NULL"
+        int Id PK "ブログ ID（自動採番）"
+        nvarchar Name "ブログ名（必須）"
+        int Rating "評価（必須）"
     }
 
     Posts {
-        int Id PK "IDENTITY"
-        nvarchar Title "NOT NULL"
-        datetimeoffset PublishedAt "NOT NULL"
-        int BlogId FK "NOT NULL"
+        int Id PK "投稿 ID（自動採番）"
+        nvarchar Title "投稿のタイトル（必須）"
+        datetimeoffset PublishedAt "公開日時（必須）"
+        int BlogId FK "所属するブログの Id"
     }
 ```
 
