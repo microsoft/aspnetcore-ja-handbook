@@ -24,6 +24,7 @@ description: "EF Core の切断されたエンティティの保存、一括更�
    - [切断されたエンティティのグラフを保存する](#切断されたエンティティのグラフを保存する)
    - [保存のバッチ処理](#保存のバッチ処理)
    - [データベーストリガーがあるテーブルの保存](#データベーストリガーがあるテーブルの保存)
+   - [保存をストアドプロシージャに割り当てる](#保存をストアドプロシージャに割り当てる)
    - [一括更新・一括削除](#一括更新一括削除)
    - [変更追跡の細かい挙動](#変更追跡の細かい挙動)
 2. [トランザクションと同時実行制御](#2-トランザクションと同時実行制御)
@@ -304,6 +305,107 @@ SELECT [Id] ...
 
 > [!TIP]
 > SQLite にも同種の制限があります。EF Core は `RETURNING` 句を使うため、**AFTER トリガーを持つテーブルや仮想テーブル**では同じ構成が必要です。こちらも EF Core 7 の破壊的変更として影響度 High で挙げられています。
+
+### 保存をストアドプロシージャに割り当てる
+
+既存のデータベースで「テーブルへの直接の書き込みは禁止、更新はすべてストアドプロシージャ経由」という運用が決まっていることがあります。EF Core 7 以降は、`INSERT` / `UPDATE` / `DELETE` の各コマンドをストアドプロシージャに割り当てられます。
+
+> [!IMPORTANT]
+> 公式ドキュメントは「ストアドプロシージャのマッピングをサポートしていることは、ストアドプロシージャを推奨していることを意味しない」と明記しています。既存の運用ルールに合わせる必要がある場合の手段だと考えてください。
+
+割り当ては `OnModelCreating` で行います。次は SQL Server の例です。
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Person>()
+        .InsertUsingStoredProcedure(
+            "People_Insert",
+            sp =>
+            {
+                sp.HasParameter(p => p.Name);
+                sp.HasResultColumn(p => p.Id);     // IDENTITY で採番された値を受け取る
+            })
+        .UpdateUsingStoredProcedure(
+            "People_Update",
+            sp =>
+            {
+                sp.HasOriginalValueParameter(p => p.Id);
+                sp.HasParameter(p => p.Name);
+                sp.HasRowsAffectedResultColumn(); // 影響行数を返してもらう
+            })
+        .DeleteUsingStoredProcedure(
+            "People_Delete",
+            sp =>
+            {
+                sp.HasOriginalValueParameter(p => p.Id);
+                sp.HasRowsAffectedResultColumn();
+            });
+}
+```
+
+この構成で `SaveChangesAsync` を呼ぶと、EF Core が発行する SQL（SQL Server）は次のようになります。通常の `INSERT` 文ではなく `EXEC` になっていることが実測でも確認できました。
+
+```sql
+SET NOCOUNT ON;
+EXEC [People_Insert] @p0;
+```
+
+```sql
+SET NOCOUNT ON;
+EXEC [People_Update] @p0, @p1;
+```
+
+ストアドプロシージャ側は次のように用意します（SQL Server の例）。
+
+```sql
+CREATE PROCEDURE [dbo].[People_Insert]
+    @Name [nvarchar](max)
+AS
+BEGIN
+      INSERT INTO [People] ([Name])
+      OUTPUT INSERTED.[Id]
+      VALUES (@Name);
+END
+```
+
+構成を組み立てるうえで、公式ドキュメントが挙げている注意点は次のとおりです。
+
+| 項目 | 内容 |
+| --- | --- |
+| 名前の省略 | 第 1 引数の名前は省略できます。省略するとテーブル名に `_Insert` / `_Update` / `_Delete` を付けた名前が使われます（実測でも `Docs_Update` が呼ばれました） |
+| パラメーターの順序 | **ストアドプロシージャの定義と同じ順序**で追加します。EF Core は名前付き引数ではなく常に位置引数で呼び出すためです |
+| キーの指定 | 更新・削除ではキーに `HasOriginalValueParameter` を使います。将来のバージョンで可変のキー値がサポートされたときに正しい行が更新されるようにするためです |
+| 値の返し方 | 出力パラメーター、`HasResultColumn`（結果列）、`HasRowsAffectedReturnValue`（戻り値、影響行数のみ）の 3 とおりがあります |
+| 継承 | TPH は 1 組、TPT は抽象型を含むすべての型、TPC は具象型ごとにストアドプロシージャが必要です |
+
+> [!TIP]
+> **すべての型・すべての操作に用意する必要はありません。** たとえば `DeleteUsingStoredProcedure` だけを構成すれば、挿入と更新は通常どおり EF Core が SQL を生成し、削除だけがストアドプロシージャになります。実際に `UpdateUsingStoredProcedure` だけを構成したところ、挿入は通常の `INSERT ... OUTPUT INSERTED.[Id]` のままで、更新だけが `EXEC [Docs_Update]` になりました。
+
+`HasRowsAffectedResultColumn` などで影響行数を返すようにしておくと、[楽観的同時実行制御](#楽観的同時実行制御)はストアドプロシージャでもそのまま機能します。ストアドプロシージャ側で `WHERE` に同時実行トークンを含め、`SELECT @@ROWCOUNT` で影響行数を返す構成にしておき、他のトランザクションが先に行を削除した状態で更新を試みたところ、期待どおり `DbUpdateConcurrencyException` が発生しました（実測）。
+
+```text
+The database operation was expected to affect 1 row(s), but actually affected 0 row(s);
+data may have been modified or deleted since entities were loaded.
+```
+
+> [!WARNING]
+> **ストアドプロシージャ本体はマイグレーションでは作られません。** マッピングを構成しても、EF Core が生成するのはテーブルの DDL だけです（`GenerateCreateScript()` の出力に `CREATE PROCEDURE` は含まれませんでした）。ストアドプロシージャ・ビュー・トリガー・関数のように EF Core が関知しないオブジェクトは、モデルを変更せずに空のマイグレーションを追加し、`migrationBuilder.Sql(...)` に自分で DDL を書いて管理します。
+>
+> ```csharp
+> migrationBuilder.Sql(
+> @"
+>     EXEC ('CREATE PROCEDURE getFullName
+>         @LastName nvarchar(50),
+>         @FirstName nvarchar(50)
+>     AS
+>         SELECT @LastName + @FirstName;')");
+> ```
+>
+> 公式ドキュメントは、`CREATE PROCEDURE` のように「バッチの先頭でなければならない文」を実行するために `EXEC ('...')` で包む書き方を案内しています。またマイグレーションの一部の操作はトランザクション内で実行できないことがあり、その場合は `migrationBuilder.Sql(..., suppressTransaction: true)` でトランザクションから外します。
+
+> [!NOTE]
+> ストアドプロシージャに割り当てられるのは**保存（挿入・更新・削除）だけ**です。クエリは従来どおり通常の `SELECT` が発行されます。ストアドプロシージャからデータを読み取りたい場合は、[付録 EF Core 3 の「生の SQL を使う」](../appendix-efcore-03/index.md#生の-sql-を使う)で扱う `FromSql` を使います。
 
 ### 一括更新・一括削除
 

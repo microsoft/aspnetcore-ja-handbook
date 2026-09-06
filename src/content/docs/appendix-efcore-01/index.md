@@ -830,6 +830,28 @@ modelBuilder.Entity<Order>().OwnsOne(x => x.Detail, b =>
 > [!WARNING]
 > EF Core 7 で作成した JSON データが残っている状態で EF Core 8 以降に上げると、**既存の行には文字列が、新しい行には数値が入る**という混在が起こります。マイグレーションは JSON の中身までは書き換えません。上記の変換を構成して従来どおり文字列にするか、既存データを移行するかを選んでください。
 
+#### JSON コレクションに LINQ 演算子を使うときは追跡動作に注意する
+
+`ToJson()` でマップしたコレクションに対して、射影の中で `OrderBy` や `Take` などの LINQ 演算子を使う場合、`AsNoTrackingWithIdentityResolution()` は使えません。
+
+```csharp
+var blogs = await db.Blogs
+    .AsNoTrackingWithIdentityResolution()
+    .Select(b => new { Blog = b, Top = b.JsonPosts.OrderBy(p => p.Rating).Take(1).ToList() })
+    .ToListAsync();
+```
+
+このクエリは EF Core 9 以降、次の例外になります（実測）。
+
+```text
+InvalidOperationException: Projecting queryable operations on JSON collection is not
+supported for 'NoTrackingWithIdentityResolution'.
+```
+
+EF Core 8 まではこの組み合わせが許可されていましたが、**エンティティが実体化される順序によっては黙って誤った結果やデータの破損を招く**可能性がありました。JSON はデータベースからストリーミングされ、入れ子の要素は親の実体化の一部として処理されるため、ID の解決に使うキー値をマテリアライザーへ確実に渡せないことが原因です。EF Core 9 で、危険な組み合わせは実行前に例外を投げるよう変更されました。
+
+同じクエリを `AsNoTracking()`（ID の解決なし）で実行した場合は成功します。
+
 #### EF Core 10 の JSON 列は `json` 型になる（Azure SQL の破壊的変更）
 
 `OwnsMany(...).ToJson()` のように所有型を JSON として保存する場合や、`string[]` のようなプリミティブコレクションを保存する場合、EF Core 9 までの SQL Server プロバイダーはこれを `nvarchar(max)` 列に格納していました。

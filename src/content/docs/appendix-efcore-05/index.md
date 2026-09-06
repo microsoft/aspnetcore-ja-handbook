@@ -624,6 +624,25 @@ public class ReportGenerator(IDbContextFactory<BloggingContext> contextFactory)
 }
 ```
 
+`DbContext` を頻繁に作り直す場合は、ファクトリー自体をプール対応にできます。`AddDbContextFactory` の代わりに `AddPooledDbContextFactory` を使うと、[DbContext プーリング](#dbcontext-プーリングでインスタンスを使い回す)と同じ仕組みでインスタンスが再利用されます。
+
+```csharp
+builder.Services.AddPooledDbContextFactory<BloggingContext>(options =>
+    options.UseSqlServer(connectionString));
+```
+
+実測すると違いは明確でした。`AddDbContextFactory` では 4 回続けて `CreateDbContextAsync()` を呼ぶと 4 つの別インスタンスが返りましたが、`AddPooledDbContextFactory` では**同じインスタンスが 4 回とも返りました**（破棄するたびにプールへ戻り、次の要求で再利用されるため）。また破棄前に 1 件のエンティティを追跡させておいても、プールから取り出し直したインスタンスの追跡数は 0 に戻っていました。
+
+| 登録方法 | 実装型 | 4 回取得したときのインスタンス数 |
+| --- | --- | --- |
+| `AddDbContextFactory` | `DbContextFactory<T>` | 4 |
+| `AddPooledDbContextFactory` | `PooledDbContextFactory<T>` | 1 |
+
+> [!NOTE]
+> DI を使わずにプールを直接持つこともできます。`PooledDbContextFactory<T>` は公開型なので、`DbContextOptions` を渡して `new` できます。コンストラクターの `poolSize` は保持するインスタンスの最大数で、既定は 1024 です。上限を超えるとキャッシュされなくなり、要求のたびに生成する非プーリングの動作に戻ります。
+>
+> なお、プールを使う場合は `AddDbContextPool` と同じ注意が必要です。リクエストごとに変わる状態をフィールドに持たせる設計とは相性が悪くなります。詳しくは「[DbContext プーリングでインスタンスを使い回す](#dbcontext-プーリングでインスタンスを使い回す)」を参照してください。
+
 ## 2. クエリとモデルの最適化
 
 ### インデックスを正しく張る

@@ -24,6 +24,7 @@ description: "EF Core の代替キーとインデックス、シャドウプロ�
    - [代替キーと一意インデックス](#代替キーと一意インデックス)
    - [1 つのテーブルを複数のエンティティで共有する](#1-つのテーブルを複数のエンティティで共有する)
    - [キーなしエンティティ型でビューや集計結果を読む](#キーなしエンティティ型でビューや集計結果を読む)
+   - [チェック制約で不正な値をデータベース側で弾く](#チェック制約で不正な値をデータベース側で弾く)
    - [シャドウプロパティとバッキングフィールド](#シャドウプロパティとバッキングフィールド)
 2. [採番と履歴](#2-採番と履歴)
    - [シーケンスによる採番](#シーケンスによる採番)
@@ -236,6 +237,45 @@ Only entity types with a primary key may be tracked.
 > - リレーションシップの主体側になれない
 > - 継承階層は作れるが、TPH としてしかマップできない（継承の 3 つの方式は[付録1の「継承のマッピング」](/appendix-efcore-01/#継承のマッピング)を参照）
 > - テーブル分割・エンティティ分割は使えない
+
+### チェック制約で不正な値をデータベース側で弾く
+
+チェック制約 (Check Constraint) は、テーブルのすべての行が満たすべき条件を SQL 式で定義するリレーショナルデータベースの標準機能です。NOT NULL 制約や一意制約と似ていますが、任意の SQL 式を書ける点が違います。EF Core では `ToTable` の中で `HasCheckConstraint` を使って構成します。
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Product>()
+        .ToTable(t => t.HasCheckConstraint("CK_Product_Price", "[Price] > 0"));
+}
+```
+
+生成される DDL（SQL Server）にはテーブル定義の一部として制約が含まれます。
+
+```sql
+CREATE TABLE [Products] (
+    [Id] int NOT NULL IDENTITY,
+    [Name] nvarchar(max) NOT NULL,
+    [Price] decimal(18,2) NOT NULL,
+    CONSTRAINT [PK_Products] PRIMARY KEY ([Id]),
+    CONSTRAINT [CK_Product_Price] CHECK ([Price] > 0)
+);
+```
+
+同じテーブルに複数のチェック制約を、それぞれ別の名前で定義できます。
+
+> [!WARNING]
+> **EF Core はチェック制約を保存前に検証しません。** 制約に違反する値で `SaveChangesAsync` を呼ぶと、データベースがエラーを返し、EF Core はそれを `DbUpdateException` に包んで投げます。実際に `Price = -1` で保存すると、内部例外は次のようになりました（実測）。
+>
+> ```text
+> SqlException: The INSERT statement conflicted with the CHECK constraint "CK_Product_Price".
+> The conflict occurred in database "CcTest", table "dbo.Products", column 'Price'.
+> ```
+>
+> チェック制約は「アプリケーションのバグや別経路からの書き込みでも不正なデータが入らない」という最後の砦です。利用者に見せるバリデーションは、アプリケーション側でも別途実装してください。
+
+> [!TIP]
+> 「主キーは正の数」「終了日は開始日以降」のようによくあるチェック制約は、コミュニティパッケージの [EFCore.CheckConstraints](https://github.com/efcore/EFCore.CheckConstraints) を使うと規約として自動生成できます。公式ドキュメントもこのパッケージを紹介しています。
 
 ### シャドウプロパティとバッキングフィールド
 

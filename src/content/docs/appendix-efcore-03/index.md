@@ -28,6 +28,7 @@ description: "EF Core のマイグレーションの読み方と運用、単一�
    - [マイグレーションバンドルの対象ランタイムを指定する](#マイグレーションバンドルの対象ランタイムを指定する)
    - [モデルとマイグレーションのずれを検出する](#モデルとマイグレーションのずれを検出する)
    - [同時にマイグレーションが走らないようにする](#同時にマイグレーションが走らないようにする)
+   - [特定のテーブルをマイグレーションの対象から外す](#特定のテーブルをマイグレーションの対象から外す)
    - [初期データの投入（シード）](#初期データの投入シード)
    - [既存データベースからスキャフォールディングする](#既存データベースからスキャフォールディングする)
    - [設計時 DbContext ファクトリ](#設計時-dbcontext-ファクトリ)
@@ -380,6 +381,28 @@ DROP TABLE "__EFMigrationsLock";
 > 公式ドキュメントは「ロックの仕組みはプロバイダーによって大きく異なり、プロバイダー固有の問題を伴うことがある」と明記しています。使用するプロバイダーのドキュメントを必ず確認してください。
 >
 > また、`MigrateAsync()` を**明示的なトランザクションで囲むことはサポートされていません**。マイグレーションのトランザクションは EF Core 自身が管理します。
+
+### 特定のテーブルをマイグレーションの対象から外す
+
+同じエンティティ型を複数の `DbContext` にマップしたい場面があります。境界づけられたコンテキスト (Bounded Context) ごとに `DbContext` を分ける設計では、片方のコンテキストがテーブルを所有し、もう片方は読み取りのために同じテーブルを参照するといった構成になります。このとき両方のコンテキストでマイグレーションを作ると、同じテーブルを二重に作ろうとして衝突します。
+
+`ExcludeFromMigrations` を使うと、モデルには含めたままマイグレーションの対象からだけ外せます。
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<AuditLog>()
+        .ToTable("AuditLogs", t => t.ExcludeFromMigrations());
+}
+```
+
+実際に `GenerateCreateScript()` の出力を確認したところ、除外していない `Products` の `CREATE TABLE` だけが生成され、`AuditLogs` の DDL は含まれませんでした（実測）。一方でエンティティ型はモデルに残っているため、`db.AuditLogs` に対する LINQ クエリは通常どおり組み立てられ、`SELECT COUNT(*) FROM [AuditLogs]` が発行されます。
+
+> [!WARNING]
+> **除外するのは「作成の責任」だけで、テーブルが存在しなくてもエラーにはなりません。** 上の状態でテーブルを作らずにクエリを実行すると、実行時に `SqlException: Invalid object name 'AuditLogs'.` になりました。テーブルは他のコンテキストのマイグレーションか、別チームの管理下で確実に作られている必要があります。
+
+> [!TIP]
+> 再びマイグレーションで管理したくなったら、`ExcludeFromMigrations` を外した状態で新しいマイグレーションを作成します。それ以降の変更はマイグレーションに含まれるようになります。
 
 ### 初期データの投入（シード）
 
@@ -1061,6 +1084,30 @@ options.UseSqlServer(connectionString, o => o.UseRelationalNulls(true));
 
 > [!TIP]
 > null 非許容の列どうしの比較がもっとも単純で高速です。可能な場合は列を null 非許容にすることを検討してください。
+
+#### null に ToString() を呼ぶと空文字になる
+
+`ToString()` は SQL に翻訳されます。値が `null` のときに何が返るかは EF Core 9 で整理され、**どのデータ型でも一貫して空文字を返す**ようになりました。以前は `bool?` のプロパティなら `null`、プロパティ以外の `bool?` 式なら `True`、列挙型なら空文字と、ばらばらでした。
+
+```csharp
+var rows = await db.Items
+    .Select(x => new { x.Id, Text = x.Flag.ToString() })   // Flag は bool?
+    .ToListAsync();
+```
+
+SQLite に対して実行すると、次の SQL に翻訳され、`Flag` が `NULL` の行では長さ 0 の文字列が返りました（実測）。
+
+```sql
+SELECT "m"."Id",
+       CASE "m"."Flag" WHEN 0 THEN 'False' WHEN 1 THEN 'True' ELSE '' END AS "T"
+FROM "Ms" AS "m"
+```
+
+これは `Nullable<T>.ToString()` が C# 側でも空文字を返す挙動に合わせたものです。以前の挙動に戻したい場合は、クエリを次のように書き換えます。
+
+```csharp
+var oldBehavior = db.Items.Select(x => x.Flag == null ? null : x.Flag.ToString());
+```
 
 ### エンティティをそのまま JSON にすると循環参照で失敗する
 

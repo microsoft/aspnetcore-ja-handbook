@@ -270,6 +270,33 @@ public sealed class SqliteContextFactory : IDisposable
 > [!NOTE]
 > `decimal` の扱いは EF Core 10 で改善されました。以前は大小比較と並べ替えがクライアント評価を必要としましたが、EF Core 10 は `ef_compare()` という独自関数と `EF_DECIMAL` という独自の照合順序を接続に登録し、データベース側で処理します。ただし `TEXT` 格納であることは変わらないため、SQL Server の `decimal(18, 2)` と厳密に同じ丸めになるとは限りません。
 
+#### Math のメソッドはサーバー側で評価される
+
+EF Core 8 以降、`Math` クラスのメソッドは、対応する SQLite の数学関数があるものはすべて SQL に翻訳されます。EF Core 7 までは `Abs` / `Max` / `Min` / `Round` だけが翻訳され、それ以外は最終的な `Select` 式に現れた場合にクライアント側で評価されていました。
+
+```csharp
+var q = db.Ms.Select(x => new
+{
+    P = Math.Pow(x.V, 2),
+    Sq = Math.Sqrt(x.V),
+    L = Math.Log(x.V),
+    E = Math.Exp(x.V),
+});
+```
+
+実際に発行された SQL は次のとおりで、4 つとも SQLite の関数に翻訳されていました（実測）。`Math.Log` が `ln` になる点に注意してください。
+
+```sql
+SELECT pow("m"."V", 2.0) AS "P", sqrt("m"."V") AS "Sq",
+       ln("m"."V") AS "L", exp("m"."V") AS "E"
+FROM "Ms" AS "m"
+```
+
+> [!NOTE]
+> SQLite の数学関数はバージョン 3.35.0 で追加されましたが、**ビルド時に既定では無効**です。EF Core の SQLite プロバイダーが依存する `SQLitePCLRaw.bundle_e_sqlite3`（および `SQLitePCLRaw.bundle_e_sqlcipher`）では有効化されているため、通常の使い方であれば影響はありません。
+>
+> 一方、別の方法でネイティブの SQLite ライブラリを組み込んでいる場合は、数学関数が無効なまま SQL が発行され、実行時に *no such function* エラーになる可能性があります。その場合は `SQLITE_ENABLE_MATH_FUNCTIONS` を有効にしてビルドするか、`Microsoft.Data.Sqlite` の `CreateFunction` で自分で関数を登録します。
+
 #### Unhex は null を返すことがある
 
 SQLite プロバイダーには `EF.Functions.Unhex()` があり、16 進数表記の文字列をバイト配列に変換します。SQLite の `unhex` 関数に翻訳されますが、**入力が正しい 16 進数でなければ `NULL` が返ります**。
