@@ -323,6 +323,37 @@ MigrateAsync 完了まで 6.1 秒（待たされた）
 
 `MigrateAsync()` は**ロックが解放されるまで待ち**、解放された直後に処理を続けました。二重適用は起こりません。
 
+#### マイグレーションを自分でトランザクションに包んではいけない
+
+再試行を効かせるつもりで、次のように `MigrateAsync()` を実行戦略と明示的トランザクションで包むコードが以前は広く使われていました。
+
+```csharp
+// これは公式にサポートされない書き方
+await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+{
+    await using var tx = await db.Database.BeginTransactionAsync(cancellationToken);
+    await db.Database.MigrateAsync(cancellationToken);
+    await tx.CommitAsync(cancellationToken);
+});
+```
+
+**公式ドキュメントは、`MigrateAsync` を明示的トランザクションで包むことを「サポートされない」と明記しています。** 理由は、外側でトランザクションを開始してしまうと**上で説明したデータベースロックを取得できなくなり、同時実行から保護されなくなる**ためです。EF Core 9 以降の `Migrate` / `MigrateAsync` は、必要なトランザクションと実行戦略を自分で管理します。
+
+EF Core 9 ではこのパターンが `MigrationsUserTransactionWarning` による例外になりました。EF Core 10.0.11 で実際に上のコードを実行したところ、**例外にはならず、同じ警告 ID の警告がログに記録されました**（実測）。
+
+```text
+warn: RelationalEventId.MigrationsUserTransactionWarning[20412] (Microsoft.EntityFrameworkCore.Migrations)
+```
+
+例外にならなくても、ロックによる保護が失われることに変わりはありません。**外側のトランザクションと実行戦略は外して、`MigrateAsync()` をそのまま呼んでください。**
+
+```csharp
+await db.Database.MigrateAsync(cancellationToken);
+```
+
+> [!NOTE]
+> EF Core 9 では、保留中のマイグレーションを**すべて 1 つのトランザクション**にまとめて適用する変更が入りましたが、公式の EF Core 10 のリリースノートによれば、この変更は「さまざまなマイグレーションのシナリオで問題を起こした」として **EF Core 10 で元に戻されました**。EF Core 10 では以前と同じく、マイグレーションごとにトランザクションが張られます。
+
 #### SQLite では放置されたロックが残る
 
 SQLite にはアプリケーションロックの仕組みがないため、公式ドキュメントによれば EF Core は代わりに **`__EFMigrationsLock` テーブル**を作成し、そこに行を挿入することでロックを表現します。実際にマイグレーションを適用した直後のテーブル一覧を見ると、次のようになっていました（実測）。
