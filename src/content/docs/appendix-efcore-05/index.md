@@ -681,6 +681,38 @@ modelBuilder.Entity<Post>().HasIndex(p => p.HalfPrice);
 
 同じ 20,000 行のテーブルでこの構成にして `WHERE [HalfPrice] = 7` を実行すると、物理演算子は **Index Seek** に変わりました。計算列については「[計算列](../appendix-efcore-02/index.md#計算列)」も参照してください。
 
+#### インデックスに列を含める（付加列）
+
+絞り込みには使わないが取得はする列を、インデックスの**キーではない列**としてインデックスに持たせられます。公式ドキュメントは「クエリで使うすべての列がキー列か非キー列としてインデックスに含まれていれば、テーブル自体にアクセスする必要がなくなるため、クエリのパフォーマンスが大きく向上する」と説明しています。
+
+```csharp
+modelBuilder.Entity<Post>()
+    .HasIndex(p => p.Price)
+    .IncludeProperties(p => p.Title);
+```
+
+SQL Server 2022 に対してこのモデルで `GenerateCreateScript()` を実行すると、次の DDL が生成されました。
+
+```sql
+CREATE INDEX [IX_Posts_Price] ON [Posts] ([Price]) INCLUDE ([Title]);
+```
+
+効果を確かめるため、20,000 行の `Posts` テーブルに対して `Price` で絞り込み `Title` と `Price` を取得するクエリを、`INCLUDE` の有無だけを変えて `SET SHOWPLAN_ALL ON` で比較しました。
+
+```csharp
+db.Posts.Where(p => p.Price == 7m).Select(p => new { p.Title, p.Price })
+```
+
+| インデックスの定義 | 実行プランに現れた物理演算子 |
+| --- | --- |
+| `([Price])` | Index Seek ＋ **Clustered Index Seek** ＋ **Nested Loops** |
+| `([Price]) INCLUDE ([Title])` | **Index Seek のみ** |
+
+`INCLUDE` がない場合、SQL Server はインデックスで該当行を見つけたあと、`Title` を取りに行くためにクラスター化インデックスを引き直しています（キー参照）。`Title` をインデックスに含めるとこの往復がなくなり、インデックスだけでクエリが完結しました。
+
+> [!NOTE]
+> 付加列はインデックスのサイズを増やすため、書き込みコストとストレージは増えます。「絞り込みには使わないが、そのクエリで必ず一緒に取得する列」に絞って指定してください。
+
 #### SQL Server 固有のインデックス構成
 
 インデックスの細かな性質はデータベースごとに異なるため、EF Core はプロバイダー固有の API で構成します。SQL Server プロバイダーでは**クラスター化**と**フィル ファクター**を指定できます。
@@ -1215,3 +1247,5 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 - [簡易ログ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/simple-logging)
 - [RelationalQueryableExtensions.CreateDbCommand メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.relationalqueryableextensions.createdbcommand?view=efcore-10.0)
 - [EF Core のメトリック | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/metrics)
+- [インデックス | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/indexes)
+- [付加列を使用したインデックスの作成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/relational-databases/indexes/create-indexes-with-included-columns?view=sql-server-ver17)

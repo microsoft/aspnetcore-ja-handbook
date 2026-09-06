@@ -26,6 +26,7 @@ description: "EF Core のマイグレーションの読み方と運用、単一�
    - [EF Core ツールの使い分け](#ef-core-ツールの使い分け)
    - [SQL スクリプトとマイグレーションバンドルを使い分ける](#sql-スクリプトとマイグレーションバンドルを使い分ける)
    - [マイグレーションバンドルの対象ランタイムを指定する](#マイグレーションバンドルの対象ランタイムを指定する)
+   - [モデルとマイグレーションのずれを検出する](#モデルとマイグレーションのずれを検出する)
    - [同時にマイグレーションが走らないようにする](#同時にマイグレーションが走らないようにする)
    - [初期データの投入（シード）](#初期データの投入シード)
    - [既存データベースからスキャフォールディングする](#既存データベースからスキャフォールディングする)
@@ -244,6 +245,53 @@ error NETSDK1047: 資産ファイル 'obj/project.assets.json' に 'net10.0/linu
 ```
 
 `--target-runtime` を使えば、プロジェクトに `RuntimeIdentifiers` を追加しなくても生成できます。実測では macOS 上から `--target-runtime linux-x64` でバンドルを生成し、Linux 向けの実行可能ファイル（ELF 64-bit）が出力されることを確認しました。生成したバンドルを実際に SQL Server 2022 に対して実行し、マイグレーションが適用されることも確認済みです。
+
+### モデルとマイグレーションのずれを検出する
+
+エンティティを変更したのにマイグレーションを追加し忘れると、モデルとデータベースのスキーマがずれます。**EF Core 9 以降、この状態で `Migrate()` / `MigrateAsync()` または `dotnet ef database update` を呼ぶと例外になります。** 公式は影響度が「High」の破壊的変更として扱っています。
+
+SQL Server 2022 に対して、`Blog` に `Url` プロパティを足したままマイグレーションを作らずに `MigrateAsync()` を呼ぶと、次の例外になりました。
+
+```text
+InvalidOperationException: An error was generated for warning
+'Microsoft.EntityFrameworkCore.Migrations.PendingModelChangesWarning':
+The model for context 'PendContext' has pending changes.
+Add a new migration before updating the database.
+```
+
+同じ状態で `dotnet ef database update` を実行した場合も、同じ警告 ID で失敗します。
+
+#### コードから検出する
+
+`DatabaseFacade.HasPendingModelChanges()` で同じ判定をコードから行えます。公式は「マイグレーションの追加を忘れたときに失敗する単体テストを書くのに使える」と述べています。
+
+```csharp
+using var db = new BloggingContext();
+
+if (db.Database.HasPendingModelChanges())
+{
+    throw new InvalidOperationException("マイグレーションが追加されていません。");
+}
+```
+
+#### CI で検出する
+
+`dotnet ef migrations has-pending-model-changes` は、**保留中の変更があると終了コード 1 を返します**（実測）。ビルドパイプラインにそのまま組み込めます。
+
+| 状態 | 出力 | 終了コード |
+| --- | --- | --- |
+| 保留中の変更あり | `Changes have been made to the model since the last migration. Add a new migration.` | 1 |
+| 保留中の変更なし | `No changes have been made to the model since the last migration.` | 0 |
+
+> [!WARNING]
+> 例外メッセージが案内するとおり、この検査は `ConfigureWarnings` で抑制できます。
+>
+> ```csharp
+> options.UseSqlServer(connectionString)
+>        .ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning));
+> ```
+>
+> **しかし抑制してもモデルの変更が適用されるわけではありません。** 上と同じ条件で抑制して `MigrateAsync()` を実行したところ、呼び出しは成功したにもかかわらず、`Blogs` テーブルの列は `Id` と `Name` の 2 つのままで **`Url` 列は作られませんでした**。公式も、保留中の変更は「`Migrate` を呼んでも他のマイグレーションと一緒には適用されない」と述べています。抑制は問題を隠すだけで、その列を使うクエリは実行時に失敗します。
 
 ### 同時にマイグレーションが走らないようにする
 
@@ -1363,6 +1411,8 @@ WHERE CAST(ISDATE([e].[Title]) AS bit) = CAST(1 AS bit)
 - [関連データとシリアル化 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/related-data/serialization)
 - [照合順序と大文字小文字の区別 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/collations-and-case-sensitivity)
 - [SQL クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/sql-queries)
+- [マイグレーションの管理 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/migrations/managing)
+- [EF Core 9 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-9.0/breaking-changes)
 - [ユーザー定義関数のマッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/user-defined-function-mapping)
 - [SQL Server プロバイダーの関数マッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/functions)
 - [SQL Server プロバイダーの全文検索 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/full-text-search)
