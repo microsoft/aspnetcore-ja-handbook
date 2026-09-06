@@ -1263,6 +1263,19 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 >
 > ただしこれは「非同期をやめてよい」という意味ではありません。同期版はスレッドをブロックするため、**Web アプリケーションでは既定を非同期のままにしてください。** 大きな BLOB を扱う特定のクエリで実測して差が大きい場合に限り、その箇所だけ同期実行を検討するというのが公式の趣旨です。なお測定値はネットワーク遅延を含む環境依存の値なので、必ず自分の環境で計測してから判断してください。
 
+> [!NOTE]
+> **Azure Cosmos DB では、同期 API は「遅い」ではなく「使えない」です。** Cosmos DB プロバイダーが内部で使う Azure Cosmos DB SDK は同期入出力に対応していないため、**EF Core 9.0 以降、`ToList()` や `SaveChanges()` を呼ぶと既定で例外になります。**
+>
+> 実際に Azure 上の Azure Cosmos DB（NoSQL API）に対して EF Core 10 から実行したところ、次のようになりました（実測で確認）。
+>
+> | 呼び出し | 結果 |
+> | --- | --- |
+> | `SaveChangesAsync()` / `ToListAsync()` | 成功 |
+> | `ToList()` | `InvalidOperationException: Azure Cosmos DB does not support synchronous I/O.` |
+> | `SaveChanges()` | `DbUpdateException`（内部例外が同じ `InvalidOperationException`） |
+>
+> EF Core 8 以前は内部で `.GetAwaiter().GetResult()` を呼んでブロックしていましたが、公式ドキュメントはこれを「sync over async」と呼び、**デッドロックを招きうる強く非推奨の手法**だと説明しています。SQL Server では同期版を使っても動作はする（遅くなるだけ）のに対し、Cosmos DB では最初から動きません。**プロバイダーを差し替える可能性があるなら、なおさら非同期版で統一しておくべきです。**
+
 ### 同時実行検出を無効にしてはいけない
 
 1 つの `DbContext` インスタンスを複数のスレッドから同時に使うと `InvalidOperationException` になります。この例外を出しているのは EF Core の **同時実行検出 (concurrency detection)** という仕組みで、`DbContextOptionsBuilder.EnableThreadSafetyChecks(false)` で無効にできます。公式ドキュメントは「わずかな性能向上が得られるが、`DbContext` インスタンスが同時に使われた場合の **動作は未定義になり、プログラムは予測できない形で失敗する可能性がある**」と説明し、「性能向上が相当なものであることを確認し、アプリケーションを同時実行のバグについて十分にテストしたうえでのみ無効化すること」と釘を刺しています。
@@ -1289,4 +1302,6 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 - [RelationalQueryableExtensions.CreateDbCommand メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.relationalqueryableextensions.createdbcommand?view=efcore-10.0)
 - [EF Core のメトリック | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/metrics)
 - [インデックス | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/indexes)
+- [Azure Cosmos DB プロバイダーの制限事項 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/limitations)
+- [EF Core 9.0 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-9.0/breaking-changes)
 - [付加列を使用したインデックスの作成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/relational-databases/indexes/create-indexes-with-included-columns?view=sql-server-ver17)

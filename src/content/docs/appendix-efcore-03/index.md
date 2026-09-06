@@ -51,6 +51,19 @@ description: "EF Core のマイグレーションの読み方と運用、単一�
 
 ## 1. マイグレーションの詳細
 
+> [!NOTE]
+> **マイグレーションはリレーショナルデータベース専用の仕組みです。** Azure Cosmos DB のようなドキュメントデータベースには決まったスキーマがないため、公式ドキュメントは「スキーマのマイグレーションはサポートされない」「既存データベースからのリバースエンジニアリング（スキャフォールディング）もサポートされない」と明記しています。
+>
+> 実際に Azure 上の Azure Cosmos DB（NoSQL API）に EF Core 10 から接続して確認したところ、次のようになりました（実測で確認）。
+>
+> | 書いたコード | 結果 |
+> | --- | --- |
+> | `db.Database.MigrateAsync()` | **コンパイルエラー** `CS1061`。`Migrate` 系の拡張メソッドはリレーショナルプロバイダー専用に定義されているため、Cosmos プロバイダーだけを参照したプロジェクトでは存在しない |
+> | `db.Database.EnsureCreatedAsync()` | 成功。データベースとコンテナーが作成される |
+> | `HasIndex(o => o.Customer)` | `InvalidOperationException: The entity type 'Order' has an index defined over properties 'Customer'. The Azure Cosmos DB provider for EF Core currently does not support index definitions.` |
+>
+> インデックスを定義できないのは機能不足ではありません。Azure Cosmos DB は**格納した項目をすべて自動でインデックス化する**ため、EF Core 側で個別に指定する必要がないからです。なお `HasIndex` は EF Core 8 までは無視されるだけでしたが、**EF Core 9 で例外を投げるように変更**されました。黙って無視されるより、書いた設定が効かないことにその場で気づけるほうが安全という判断です。
+
 ### 生成されたマイグレーションを読む
 
 生成されるマイグレーションは通常の C# コードです。内容を確認し、必要なら手を入れられます。
@@ -1634,3 +1647,4 @@ WHERE CONTAINS([a].[Contents], N'vegetables')
 - [SQL Server プロバイダーの全文検索 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/full-text-search)
 - [SQLite プロバイダーの関数マッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sqlite/functions)
 - [SQL Server プロバイダーのその他の考慮事項 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/misc)
+- [Azure Cosmos DB プロバイダーの制限事項 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/limitations)
