@@ -669,8 +669,17 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 > | `UseSqlServer(...)` | `SqlServerExecutionStrategy`（再試行しない） |
 > | `UseSqlServer(..., s => s.EnableRetryOnFailure())` | `SqlServerRetryingExecutionStrategy` |
 > | `UseAzureSql(...)` | `SqlServerRetryingExecutionStrategy` |
+> | `ConfigureSqlEngine(c => c.EnableRetryOnFailureByDefault())` ＋ `UseSqlServer(...)` | `SqlServerRetryingExecutionStrategy` |
 >
 > EF Core のソースでも、実行戦略が指定されていない場合にエンジンの種類が Azure SQL / Azure Synapse であれば `SqlServerRetryingExecutionStrategy` を既定にする実装になっています。実測でも、`UseSqlServer` では `SqlServerExecutionStrategy`（`RetriesOnFailure = false`）が、`UseAzureSql` では `SqlServerRetryingExecutionStrategy`（`RetriesOnFailure = true`）が選ばれることを確認しました。
+>
+> 表の最後の行は、**`UseSqlServer` の呼び出しが自分で変更できないコードの中にある場合**の逃げ道です。公式ドキュメントは「制御できないコードで `UseSqlServer` が呼ばれることがある。EF Core 9 以降、そうした状況で接続の回復性を有効にするには、事前に `ConfigureSqlEngine(c => c.EnableRetryOnFailureByDefault())` を呼ぶ」と説明しています。実測でも、この順番で構成すると `UseSqlServer` のまま `SqlServerRetryingExecutionStrategy` が選ばれました。
+>
+> ```csharp
+> builder.Services.AddDbContext<BloggingContext>(options => options
+>     .ConfigureSqlEngine(c => c.EnableRetryOnFailureByDefault())
+>     .UseSqlServer(connectionString));
+> ```
 
 > [!WARNING]
 > 再試行を有効にした状態で `BeginTransactionAsync` による明示的トランザクションを使うと、`InvalidOperationException` が発生します。再試行戦略は個々の操作を再実行するため、トランザクション全体をやり直す必要があることを EF Core が判断できないためです。
@@ -1287,3 +1296,4 @@ public record CreateBlogRequest(string Name, string Url);
 - [レプリカからのクエリ読み取り | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/azure-sql/database/read-scale-out?view=azuresql)
 - [アクティブ geo レプリケーション | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/azure-sql/database/active-geo-replication-overview?view=azuresql)
 - [ワークロードをセカンダリ可用性グループレプリカにオフロードする | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/database-engine/availability-groups/windows/active-secondaries-readable-secondary-replicas-always-on-availability-groups?view=sql-server-ver17)
+- [SQL Server / Azure SQL データベース プロバイダー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/)

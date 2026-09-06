@@ -37,6 +37,7 @@ description: "EF Core のマイグレーションの読み方と運用、単一�
    - [大文字小文字の区別は照合順序が決める](#大文字小文字の区別は照合順序が決める)
    - [複数の列で並べ替えるキーセットページング](#複数の列で並べ替えるキーセットページング)
    - [関連データを読み込まずに数える](#関連データを読み込まずに数える)
+   - [常に Include する（AutoInclude）](#常に-include-するautoinclude)
    - [null の比較は C# と SQL で意味が違う](#null-の比較は-c-と-sql-で意味が違う)
    - [エンティティをそのまま JSON にすると循環参照で失敗する](#エンティティをそのまま-json-にすると循環参照で失敗する)
 3. [SQL を直接扱う](#3-sql-を直接扱う)
@@ -860,6 +861,46 @@ await context.Entry(post)
 >
 > 逆に、**関連エンティティがすべて読み込まれていても `IsLoaded` が `false` のままになることがあります**。読み込まれ方によっては「全部そろっている」と判断できないためです。実際、上の `Query().Where(...)` で読み込んだ場合、2 件が追跡された後も `IsLoaded` は `false` のままでした。確実にすべてを読み込みたいときは `LoadAsync` を呼びます。
 
+### 常に Include する（AutoInclude）
+
+特定のナビゲーションを「いつ取得しても必ず一緒に読み込む」とモデル側で決められます。
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Blog>().Navigation(b => b.Theme).AutoInclude();
+}
+```
+
+こう構成すると、`Include` を書かなくても JOIN が入ります。SQL Server 2022 で `db.Blogs` の生成 SQL を確認したところ、次のようになりました。
+
+```sql
+-- SQL Server
+SELECT [b].[Id], [b].[Name], [b].[ThemeId], [t].[Id], [t].[Color]
+FROM [Blogs] AS [b]
+LEFT JOIN [Theme] AS [t] ON [b].[ThemeId] = [t].[Id]
+```
+
+公式ドキュメントは、この構成が「結果に含まれるすべてのエンティティに対して適用される」と述べています。つまり、別のエンティティの `Include` の結果としてぶら下がってきた `Blog` にも `Theme` の読み込みが付いてきます。
+
+特定のクエリでだけ読み込みたくない場合は `IgnoreAutoIncludes()` を使います。
+
+```csharp
+var blogs = await db.Blogs.IgnoreAutoIncludes().ToListAsync();
+```
+
+```sql
+-- SQL Server
+SELECT [b].[Id], [b].[Name], [b].[ThemeId]
+FROM [Blogs] AS [b]
+```
+
+> [!WARNING]
+> **所有型へのナビゲーションは `IgnoreAutoIncludes()` では外れません。** 所有型は規約によって自動読み込みに構成されますが、公式ドキュメントは「`IgnoreAutoIncludes` API を使っても含まれることは止められず、クエリ結果に含まれ続ける」と明記しています。実際に所有型 `Address` を持つ `Blog` で試したところ、`IgnoreAutoIncludes()` を付けても `[b].[Address_City]` は SELECT に残りました。
+
+> [!NOTE]
+> `AutoInclude` は書き忘れを防げる一方で、**そのエンティティを取得するすべてのクエリに JOIN のコストを課します**。一覧表示のように関連データが不要な画面でも必ず JOIN が入るため、既定では設定せず、必要なクエリで `Include` を書くほうが挙動を追いやすくなります。
+
 ### null の比較は C# と SQL で意味が違う
 
 SQL のデータベースは比較を **3 値論理** (`true` / `false` / `null`) で扱いますが、C# は 2 値のブール論理です。EF Core は LINQ を SQL に変換するとき、この差を埋めるために追加の null チェックを補います。
@@ -1405,6 +1446,7 @@ WHERE CAST(ISDATE([e].[Title]) AS bit) = CAST(1 AS bit)
 - [マイグレーションの概要 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/migrations/)
 - [マイグレーションの適用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/migrations/applying)
 - [単一クエリと分割クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/single-split-queries)
+- [関連データの一括読み込み | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/related-data/eager)
 - [関連データの明示的読み込み | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/related-data/explicit)
 - [クエリでの null 値の比較 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/null-comparisons)
 - [NavigationEntry.IsLoaded プロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.changetracking.navigationentry.isloaded?view=efcore-10.0)
