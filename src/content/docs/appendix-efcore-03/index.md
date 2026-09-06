@@ -422,6 +422,51 @@ dotnet ef dbcontext scaffold "<接続文字列>" Microsoft.EntityFrameworkCore.S
     --output-dir Models --no-onconfiguring
 ```
 
+#### 既定値を持つ `bool` 列は `bool?` にならない
+
+データベースファーストで運用していると、EF Core 8.0 での変更が生成結果に効いてきます。**既定値の制約を持つ NULL 非許容の `bit` 列は、以前は `bool?` として生成されていましたが、EF Core 8.0 以降は `bool` として生成されます。**
+
+SQL Server 2022 に次のテーブルを作ってスキャフォールディングしました。
+
+```sql
+-- SQL Server
+CREATE TABLE Articles (
+  Id int IDENTITY PRIMARY KEY,
+  Title nvarchar(200) NOT NULL,
+  IsPublished bit NOT NULL CONSTRAINT DF_Articles_IsPublished DEFAULT 1
+);
+```
+
+生成されたプロパティと構成は次のとおりでした（実測）。
+
+```csharp
+public bool IsPublished { get; set; }   // bool? ではない
+
+entity.Property(e => e.IsPublished).HasDefaultValue(true, "DF_Articles_IsPublished");
+```
+
+以前 `bool?` にしていたのは、**`bool` の CLR 既定値が `false` のため、`false` を設定しても「未設定」と区別できず、データベースの既定値 `true` が入ってしまう**問題があったからです。EF Core 8.0 では、値が設定済みかどうかを判定する基準値（**センチネル**）を変更できるようになり、既定値が `true` の `bool` プロパティにはこれが自動で適用されます。実測でも `Sentinel = True` になっていました。
+
+結果として、`false` と `true` で発行される INSERT が変わります（実測）。
+
+```sql
+-- SQL Server：IsPublished = false を設定した場合（値が送られる）
+INSERT INTO [Articles] ([IsPublished], [Title])
+OUTPUT INSERTED.[Id]
+VALUES (@p0, @p1);
+
+-- SQL Server：IsPublished = true を設定した場合（列が外れ、DB の既定値が使われて読み戻される）
+INSERT INTO [Articles] ([Title])
+OUTPUT INSERTED.[Id], INSERTED.[IsPublished]
+VALUES (@p2);
+```
+
+> [!NOTE]
+> 公式ドキュメントは、この変更が影響するのは「定期的にデータベースを再スキャフォールディングする データベースファーストのフロー」だけだと述べています。推奨される対応は、コード側を NULL 非許容の `bool` に合わせることです。どうしても以前の生成結果が必要な場合は、スキャフォールディングの T4 テンプレートを編集して元のマッピングに戻せます。
+
+> [!WARNING]
+> EF Core 8.0 では**生成されるナビゲーションの名前も変わることがあります**。以前は複合外部キーの列名に共通の接頭辞があるとそれをナビゲーション名に使っていましたが、この規則は廃止されました。公式は、この規則が `S` や `Student_`、ときには `_` だけといった「非常に貧弱な名前」を生むことがあったためだと説明しています。再スキャフォールディングでナビゲーション名が変わると既存のコードが壊れるため、差分を確認してください。
+
 ### 設計時 DbContext ファクトリ
 
 `dotnet ef` コマンドは、設計時に `DbContext` のインスタンスを生成する必要があります。通常はアプリケーションの `Program.cs` からホストを構築して解決しますが、それが難しい構成（クラスライブラリにマイグレーションを置く場合など）では `IDesignTimeDbContextFactory<T>` を実装します。
@@ -732,6 +777,33 @@ modelBuilder.Entity<Customer>()
 
 > [!WARNING]
 > データベース側の列の照合順序も合わせて大文字小文字を区別するものに変更しないと、.NET 側とデータベース側で判定が食い違います。**片方だけを変えてはいけません。**
+
+#### 文字列の主キーは EF Core 側でも大文字小文字を区別しない
+
+照合順序の話はデータベース側の比較でしたが、**EF Core が変更追跡でキー値を突き合わせるときの比較**も同じ考え方に合わせられています。EF Core 8.0 以降、SQL Server / Azure SQL プロバイダーでは、文字列のキー値が **.NET の大文字小文字を区別しない序数比較子**で比較されます。それ以前は大文字小文字を区別する比較子でした。
+
+公式ドキュメントはこの変更の理由を、「SQL Server は既定で、外部キーの値が主キーの値に一致するかを大文字小文字を区別せずに比較する。EF が大文字小文字を区別して比較すると、**本来つながるはずの外部キーと主キーが結び付かないことがある**」と説明しています。
+
+実際に文字列キーを持つエンティティで確認したところ、キーの比較子は `CaseInsensitiveValueComparer` になり、`"ABC"` を主キーに持つ追跡中のエンティティを小文字の `"abc"` で検索して見つけられました（実測）。
+
+```text
+キーの ValueComparer            = CaseInsensitiveValueComparer
+comparer.Equals("ABC", "abc")   = True
+```
+
+区別が必要な場合は、`ValueComparer` を明示的に設定します。
+
+```csharp
+var comparer = new ValueComparer<string>(
+    (l, r) => string.Equals(l, r, StringComparison.Ordinal),
+    v => v.GetHashCode(),
+    v => v);
+
+modelBuilder.Entity<Blog>().Property(e => e.Id).Metadata.SetValueComparer(comparer);
+```
+
+> [!NOTE]
+> ただし、比較子を大文字小文字を区別するものに変えても、**データベース側の照合順序は変わりません**。大文字小文字を厳密に区別したいなら、列の照合順序（`UseCollation` / `HasCollation`）とあわせて設計してください。
 
 ### 複数の列で並べ替えるキーセットページング
 
@@ -1455,6 +1527,7 @@ WHERE CAST(ISDATE([e].[Title]) AS bit) = CAST(1 AS bit)
 - [SQL クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/sql-queries)
 - [マイグレーションの管理 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/migrations/managing)
 - [EF Core 9 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-9.0/breaking-changes)
+- [EF Core 8 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-8.0/breaking-changes)
 - [ユーザー定義関数のマッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/user-defined-function-mapping)
 - [SQL Server プロバイダーの関数マッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/functions)
 - [SQL Server プロバイダーの全文検索 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/full-text-search)
