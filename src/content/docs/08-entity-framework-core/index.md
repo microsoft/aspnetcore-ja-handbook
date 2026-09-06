@@ -326,6 +326,9 @@ dotnet ef --version
 > [!TIP]
 > チーム開発では、グローバルツールの代わりに **ローカルツール** としてリポジトリに固定すると、開発者間でバージョンを揃えられます。`dotnet new tool-manifest` を実行してから `dotnet tool install dotnet-ef` を実行すると、ツールマニフェストファイルにバージョンが記録されます。このファイルをリポジトリにコミットしておけば、他の開発者は `dotnet tool restore` を実行するだけで同じバージョンを復元できます。実測では、マニフェストに `"version": "10.0.11"` が記録され、`dotnet tool restore` で復元できることを確認しました。
 
+> [!NOTE]
+> Visual Studio を使う場合は、`dotnet ef` の代わりにパッケージマネージャーコンソールの `Add-Migration` などのコマンドも使えます。また、1 つのプロジェクトが複数のターゲットフレームワークを指定している場合は `--framework` オプションが必要になります。どちらも[付録3の「EF Core ツールの使い分け」](/appendix-efcore-03/#ef-core-ツールの使い分け)を参照してください。
+
 ---
 
 ## 2. DbContext と ASP.NET Core への組み込み
@@ -384,6 +387,9 @@ public class Contributor
 
 > [!IMPORTANT]
 > プロジェクトで **null 許容参照型 (Nullable Reference Types)** が有効（`<Nullable>enable</Nullable>`。.NET 6 以降のテンプレートでは既定）になっていると、EF Core は `string` を NOT NULL 列、`string?` を NULL 許容列として扱います。意図しない NOT NULL 制約を避けるため、null を許す列は必ず `?` を付けます。
+
+> [!NOTE]
+> ここで示した書き方は、**.NET のコード分析ルールと衝突することがあります。** `List<T>` を公開する `public List<Post> Posts { get; set; }` は CA1002 と CA2227 に、URL を `string` で持つプロパティは CA1056 に該当します。いずれも EF Core では意図した書き方なので、警告をエラーとして扱う設定のプロジェクトでは抑制が必要です。具体的な対処は[付録2の「コード分析ルールがエンティティ定義と衝突する」](/appendix-efcore-02/#コード分析ルールがエンティティ定義と衝突する)を参照してください。
 
 ### DbContext の定義
 
@@ -1147,6 +1153,9 @@ dotnet ef migrations bundle --output efbundle
 
 > [!NOTE]
 > 公式ドキュメントは、バンドルの制約として「SQL スクリプトと違い、実行される SQL を事前に確認したり、含まれるマイグレーションを一覧したりする手段が現時点ではない」と述べています。デプロイ前に SQL のレビューが必要な運用では、`dotnet ef migrations script` を使ってください。
+
+> [!TIP]
+> 適用範囲を絞るスクリプトの生成、`--self-contained` によるバンドルの配布、バンドル実行中のロックの挙動など、どちらをどう使い分けるかは[付録3の「SQL スクリプトとマイグレーションバンドルを使い分ける」](/appendix-efcore-03/#sql-スクリプトとマイグレーションバンドルを使い分ける)で扱います。
 
 ### 起動時マイグレーションの是非
 
