@@ -86,12 +86,42 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 
 開発環境では、しきい値を超えたコマンドだけを警告として記録すると、遅いクエリを見つけやすくなります。実運用では Application Insights などの APM (Application Performance Monitoring) ツールでデータベース依存関係を追跡します。
 
-`ToQueryString()` を使うと、実行せずに生成される SQL を確認できます。
+`ToQueryString()` を使うと、実行せずに生成される SQL を確認できます。SQL Server ではパラメーターの `DECLARE` が先頭に付くため、出力をそのまま SQL Server Management Studio に貼り付けて実行できます。
 
 ```csharp
-var query = context.Blogs.Where(b => b.Url.Contains("dotnet"));
+var url = "dotnet";
+var query = context.Blogs.Where(b => b.Url.Contains(url));
 Console.WriteLine(query.ToQueryString());
 ```
+
+SQL 文字列ではなく `DbCommand` そのものが欲しい場合は `CreateDbCommand()` を使います。`CommandText` に加えて、パラメーターの値・型・サイズ、コマンドのタイムアウトまで取得できます。
+
+```csharp
+using System.Data.Common;
+
+using var command = query.CreateDbCommand();
+
+Console.WriteLine(command.CommandText);
+Console.WriteLine(command.CommandTimeout);
+foreach (DbParameter p in command.Parameters)
+{
+    Console.WriteLine($"{p.ParameterName} = {p.Value} ({p.DbType}, size={p.Size})");
+}
+```
+
+SQL Server 2022 に対して実行した結果は次のとおりです。`ToQueryString()` と違って `CommandText` にはパラメーターの値が埋め込まれず、`Parameters` コレクションから個別に取得します。
+
+```text
+SELECT [b].[Id], [b].[Name], [b].[Url]
+FROM [Blogs] AS [b]
+WHERE [b].[Url] LIKE @url_contains ESCAPE N'\'
+
+CommandTimeout : 30
+@url_contains = %dotnet% (String, size=4000)
+```
+
+> [!WARNING]
+> 公式 API リファレンスは `CreateDbCommand()` について 2 つの注意を挙げています。1 つは、**返される `DbCommand` は `IDisposable` であり、破棄の責任は呼び出し側にある**こと。もう 1 つは、**このコマンドを直接実行しても EF Core が実行した場合と同じ動作になる保証はない**ことです。診断目的に限って使ってください。
 
 ### ログの出力形式を変える
 
@@ -1130,4 +1160,5 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 - [クエリタグ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/tags)
 - [Microsoft.Extensions.Logging による EF Core のログ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/extensions-logging)
 - [簡易ログ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/simple-logging)
+- [RelationalQueryableExtensions.CreateDbCommand メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.relationalqueryableextensions.createdbcommand?view=efcore-10.0)
 - [EF Core のメトリック | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/metrics)

@@ -41,6 +41,7 @@ EF Core は機能が非常に多いため、この章では **ASP.NET Core か�
    - [遅延読み込みと N+1 問題](#遅延読み込みと-n1-問題)
    - [投影 (Projection) による最適化](#投影-projection-による最適化)
    - [ページング](#ページング)
+   - [発行される SQL を確認する](#発行される-sql-を確認する)
 4. [保存とトランザクションの基本](#4-保存とトランザクションの基本)
    - [追加・更新・削除の基本](#追加更新削除の基本)
    - [SaveChanges の既定のトランザクション動作](#savechanges-の既定のトランザクション動作)
@@ -916,10 +917,87 @@ var page = await context.Posts
 > [!NOTE]
 > 公式ドキュメントは、ランダムアクセスが本当に必要かをよく検討するよう促したうえで、必要な場合の実装として「**次へ／前への移動はキーセット、任意のページへのジャンプはオフセット**」という併用を挙げています。
 
+### 発行される SQL を確認する
+
+LINQ で書いたクエリも、次節で扱う `SaveChangesAsync` も、最終的には SQL に変換されてデータベースへ送られます。この変換は自動で行われるため、**書いたコードからは実際に流れる SQL が見えません**。意図しない結合や全件取得が起きていないかを確かめるために、EF Core は生成された SQL を取り出す手段を用意しています。
+
+| 手段 | 見えるもの | クエリを実行するか |
+| --- | --- | --- |
+| `ToQueryString()` | クエリの SQL | 実行しない |
+| ログ | 実際に実行されたすべての SQL（クエリ・保存・マイグレーション） | 実行する |
+| インターセプター | 実行直前の `DbCommand` | 実行する |
+
+#### 実行せずにクエリの SQL を見る
+
+`ToQueryString()` は、クエリを実行せずに生成される SQL を文字列で返します。
+
+```csharp
+var url = "dotnet";
+var query = context.Blogs
+    .Where(b => b.Url.Contains(url))
+    .OrderBy(b => b.Id);
+
+Console.WriteLine(query.ToQueryString());
+```
+
+SQL Server 2022 に対して実行すると、次の SQL が得られます。
+
+```sql
+DECLARE @url_contains nvarchar(4000) = N'%dotnet%';
+
+SELECT [b].[Id], [b].[Name], [b].[Url]
+FROM [Blogs] AS [b]
+WHERE [b].[Url] LIKE @url_contains ESCAPE N'\'
+ORDER BY [b].[Id]
+```
+
+先頭にパラメーターの `DECLARE` が付くため、**この出力をそのまま SQL Server Management Studio などに貼り付けて実行できます**。実行計画を確認したいときに便利です。
+
+> [!NOTE]
+> 上の例で `DECLARE` が現れたのは、条件に**変数** `url` を使ったからです。`Where(b => b.Url.Contains("dotnet"))` のように定数を直接書くと、EF Core はパラメーターにせず `WHERE [b].[Url] LIKE N'%dotnet%'` のように SQL へ埋め込みます。公式パフォーマンスガイダンスは、定数を使うと**クエリごとに異なる SQL が生成されるため、データベース側も実行計画を再利用できない**と説明しています。変わる値は変数に入れてください。
+
+> [!IMPORTANT]
+> `ToQueryString()` は `IQueryable` の拡張メソッドであり、**クエリ専用**です。`SaveChangesAsync` が発行する `INSERT` / `UPDATE` / `DELETE` は取得できません。`ExecuteUpdateAsync` / `ExecuteDeleteAsync` も `Task<int>` を返すため対象外です。これらの SQL を見るには、次に説明するログを使います。
+
+#### 実際に実行された SQL をログで見る
+
+`AddDbContext` で登録した `DbContext` は、ASP.NET Core のログ設定をそのまま使います。`appsettings.Development.json` で次のカテゴリーを `Information` にすると、実行されたすべての SQL がログに流れます。
+
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Microsoft.EntityFrameworkCore.Database.Command": "Information"
+    }
+  }
+}
+```
+
+`SaveChangesAsync` で 1 件の追加と 1 件の更新を行ったときに、SQL Server 2022 に対して実際に出力されたログは次のとおりです。
+
+```text
+info: Microsoft.EntityFrameworkCore.Database.Command[20101]
+      Executed DbCommand (8ms) [Parameters=[@p1='?' (DbType = Int32), @p0='?' (Size = 4000), @p2='?' (DbType = Int32), @p3='?' (Size = 4000)], CommandType='Text', CommandTimeout='30']
+      SET NOCOUNT ON;
+      UPDATE [Blogs] SET [Name] = @p0
+      OUTPUT 1
+      WHERE [Id] = @p1;
+      INSERT INTO [Posts] ([BlogId], [Title])
+      OUTPUT INSERTED.[Id]
+      VALUES (@p2, @p3);
+```
+
+`UPDATE` と `INSERT` が 1 つのコマンドにまとめられており、`SaveChangesAsync` が変更をバッチにして送っていることが読み取れます。
+
+> [!WARNING]
+> ログの `Parameters` に注目してください。値が `'?'` になっています。EF Core は**既定でパラメーターの値をログに出力しません**。個人情報などがログに残るのを防ぐためです。`EnableSensitiveDataLogging()` を呼ぶと実際の値（`@url_contains='%dotnet%'` のような形）が出力されますが、**本番環境では有効にしないでください**。
+
 > [!TIP]
 > **さらに詳しく**
 >
 > - [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) — 単一クエリと分割クエリ、LeftJoin / RightJoin、照合順序と大文字小文字、キーセットページング、生の SQL、ユーザー定義関数とビュー
+> - [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md) — ログの出力形式、`CreateDbCommand()` による `DbCommand` の取得、ログとセキュリティ
+> - [付録 EF Core 4：保存の応用とトランザクション](../appendix-efcore-04/index.md) — インターセプターで SQL に割り込む
 
 ## 4. 保存とトランザクションの基本
 
@@ -1417,6 +1495,8 @@ flowchart TB
 - [EF Core ツールのリファレンス (.NET CLI) | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/cli/dotnet)
 - [リバースエンジニアリング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/scaffolding/)
 - [データのクエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/)
+- [ログ、イベント、診断 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/)
+- [EntityFrameworkQueryableExtensions.ToQueryString メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.entityframeworkqueryableextensions.toquerystring?view=efcore-10.0)
 - [追跡クエリと非追跡クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/tracking)
 - [関連データの読み込み | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/related-data/)
 - [ページネーション | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/pagination)
