@@ -1591,6 +1591,29 @@ WHERE CAST(ISDATE([e].[Title]) AS bit) = CAST(1 AS bit)
 >
 > 部分一致がしたいだけなら `EF.Functions.Like` または `string.Contains` を使ってください。公式ドキュメントも、全文検索を使う前に全文検索カタログと全文検索インデックスを作成する必要があると明記しています。
 
+全文検索カタログと全文検索インデックスは、EF Core 10 ではモデルから構成できません。公式ドキュメントは、空のマイグレーションを追加して SQL を直接書く方法を案内しています。
+
+```csharp
+protected override void Up(MigrationBuilder migrationBuilder)
+{
+    migrationBuilder.Sql(
+        sql: "CREATE FULLTEXT CATALOG ftCatalog AS DEFAULT;",
+        suppressTransaction: true);
+
+    migrationBuilder.Sql(
+        sql: "CREATE FULLTEXT INDEX ON Articles(Contents) KEY INDEX PK_Articles;",
+        suppressTransaction: true);
+}
+```
+
+`KEY INDEX` には、その表の一意・非 NULL・単一列のインデックス名（通常は主キーのインデックス）を指定します。マイグレーションの一部の操作はトランザクション内で実行できないため、`suppressTransaction: true` でトランザクションから外します（[付録 EF Core 4 の「保存をストアドプロシージャに割り当てる」](../appendix-efcore-04/index.md#保存をストアドプロシージャに割り当てる)でも同じ指定を使っています）。
+
+全文検索を有効にした SQL Server 2022 に対してこの 2 文を実行してから検索したところ、`EF.Functions.Contains` が翻訳した SQL は次のようになり、該当する行が返りました（実測）。
+
+```sql
+WHERE CONTAINS([a].[Contents], N'vegetables')
+```
+
 ## 4. 参考ドキュメント
 
 - [マイグレーションの概要 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/migrations/)
