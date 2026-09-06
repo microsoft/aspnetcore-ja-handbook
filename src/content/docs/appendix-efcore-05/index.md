@@ -173,37 +173,43 @@ options.UseSqlServer(connectionString)
 `MeterListener` で購読して実測してみます。**同じ形のクエリを 3 回、別の形のクエリを 1 回、`SaveChanges` を 1 回**実行した結果です。
 
 ```text
-active_dbcontexts                     = 0
-compiled_query_cache_hits             = 2
-compiled_query_cache_misses           = 2
-execution_strategy_operation_failures = 0
-optimistic_concurrency_failures       = 0
-queries                               = 4
-savechanges                           = 1
+microsoft.entityframeworkcore.active_dbcontexts = 1
+microsoft.entityframeworkcore.queries = 4
+microsoft.entityframeworkcore.savechanges = 1
+microsoft.entityframeworkcore.compiled_query_cache_hits = 2
+microsoft.entityframeworkcore.compiled_query_cache_misses = 2
+microsoft.entityframeworkcore.execution_strategy_operation_failures = 0
+microsoft.entityframeworkcore.optimistic_concurrency_failures = 0
 ```
 
-`misses` が 2 なのは、**クエリの形が 2 種類**あったからです。同じ形の 2 回目と 3 回目は `hits` に入っています。**`misses` がクエリ実行回数と同じ勢いで増えていたら、キャッシュがまったく効いていない**ことを意味します。動的に組み立てた式ツリーや、定数を埋め込んでしまったクエリが原因になりがちです。
+`active_dbcontexts` が 1 なのは、`DbContext` を破棄する前に観測したためです。破棄した後に観測すると 0 になります。`misses` が 2 なのは、**クエリの形が 2 種類**あったからです。同じ形の 2 回目と 3 回目は `hits` に入っています。**`misses` がクエリ実行回数と同じ勢いで増えていたら、キャッシュがまったく効いていない**ことを意味します。動的に組み立てた式ツリーや、定数を埋め込んでしまったクエリが原因になりがちです。
 
 ```csharp
-var meter = new MeterListener();
-meter.InstrumentPublished = (instrument, listener) =>
+using MeterListener meterListener = new();
+meterListener.InstrumentPublished = (instrument, listener) =>
 {
     if (instrument.Meter.Name == "Microsoft.EntityFrameworkCore")
     {
         listener.EnableMeasurementEvents(instrument);
     }
 };
-meter.SetMeasurementEventCallback<long>((instrument, value, _, _) =>
+meterListener.SetMeasurementEventCallback<long>((instrument, value, _, _) =>
     Console.WriteLine($"{instrument.Name} = {value}"));
-meter.Start();
+meterListener.SetMeasurementEventCallback<int>((instrument, value, _, _) =>
+    Console.WriteLine($"{instrument.Name} = {value}"));
+meterListener.Start();
 
 // ここでクエリを実行する
 
-meter.RecordObservableInstruments();
+meterListener.RecordObservableInstruments();
 ```
 
 > [!WARNING]
-> EF Core のメトリックはすべて**観測可能な計測器 (observable instrument)** です。値を取り出すには `RecordObservableInstruments()` を明示的に呼ぶ必要があります。これを忘れるとコールバックが 1 度も呼ばれず、「メトリックが取れない」と誤解しがちです（実測で確認）。
+> **落とし穴が 2 つあります。どちらも「メトリックが取れない」という同じ症状になります。**
+>
+> 1 つ目は、EF Core のメトリックがすべて**観測可能な計測器 (observable instrument)** であることです。値を取り出すには `RecordObservableInstruments()` を明示的に呼ぶ必要があります。これを忘れるとコールバックが 1 度も呼ばれません（実測で確認）。
+>
+> 2 つ目は、**計測器によって値の型が違う**ことです。EF Core のソースコードを見ると、`active_dbcontexts` だけが `ObservableUpDownCounter<int>` で、残りの 6 つは `ObservableCounter<long>` として作られています。`SetMeasurementEventCallback<long>` だけを登録すると、**`active_dbcontexts` の行だけが黙って出てきません。** 上のコードで `<int>` 版も登録しているのはこのためです（実測で確認）。
 
 > [!TIP]
 > `compiled_query_cache_misses` と `optimistic_concurrency_failures` は、そのまま監視のアラート条件にできます。前者はこの付録の「[コンパイル済みクエリ](#コンパイル済みクエリ)」で説明したキャッシュの効き具合を、後者は「[楽観的同時実行制御](../appendix-efcore-04/index.md#楽観的同時実行制御)」で説明した競合の発生頻度を表します。

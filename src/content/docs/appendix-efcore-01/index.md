@@ -924,6 +924,80 @@ CREATE TABLE [Docs] (
 > [!NOTE]
 > SQLite にはこれらに対応するネイティブの型がなく、`Microsoft.Data.Sqlite` はすべて `TEXT` として格納します。テストで SQLite を使う場合、この差が原因で本番と挙動が変わることがあります（[付録 EF Core 6](../appendix-efcore-06/index.md) を参照）。
 
+#### 位置情報を扱う（空間データ）
+
+緯度経度や地図上の図形を扱う場合、EF Core は **NetTopologySuite (NTS)** というライブラリの型をそのままモデルに書けます。SQL Server なら `Microsoft.EntityFrameworkCore.SqlServer.NetTopologySuite` パッケージを追加し、`UseNetTopologySuite()` を呼びます。
+
+```csharp
+options.UseSqlServer(connectionString, o => o.UseNetTopologySuite());
+```
+
+使える型は `NetTopologySuite.Geometries` 名前空間の `Point`、`LineString`、`Polygon` などです。基底の `Geometry` 型にすると、どの図形でも入れられます。
+
+```csharp
+public class City
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public Point? Location { get; set; }
+}
+```
+
+> [!WARNING]
+> **座標の順番が、地図アプリで見慣れた「緯度, 経度」とは逆です。** NTS の座標は X と Y で表され、公式ドキュメントは **X に経度、Y に緯度**を入れるよう明記しています。取り違えると、緯度に 90 を超える値が入って実行時に失敗します。東京駅（北緯 35.6812 度、東経 139.7671 度）を正しく書くと次のようになります。
+>
+> ```csharp
+> var factory = NtsGeometryServices.Instance.CreateGeometryFactory(srid: 4326);
+> var tokyo = factory.CreatePoint(new Coordinate(139.7671, 35.6812));  // X=経度, Y=緯度
+> ```
+>
+> 逆に `new Coordinate(35.6812, 139.7671)` と書いて SQL Server に送ると、次の例外になります（実測で確認）。
+>
+> ```text
+> Parameter 1 ("@wrong"): The supplied value is not a valid instance of data type geography.
+> ```
+
+距離や包含の判定は、LINQ に書けば SQL に翻訳されます。SQL Server 2022 に東京駅と大阪駅を格納して実測した結果です。
+
+```csharp
+var distance = await db.Cities
+    .Where(c => c.Name == "大阪駅")
+    .Select(c => c.Location!.Distance(tokyo))
+    .SingleAsync();
+```
+
+```sql
+-- SQL Server
+DECLARE @tokyo geography = 0xE6100000010C8104...;
+SELECT [c].[Location].STDistance(@tokyo)
+FROM [Cities] AS [c]
+WHERE [c].[Name] = N'大阪駅'
+```
+
+`Distance` は SQL Server の `STDistance` に翻訳され、**403,830.7** という値が返りました。単位はメートルなので、東京駅から大阪駅まで約 404 km ということです。
+
+> [!WARNING]
+> **同じ `Distance` でも、データベースで計算させるか .NET 側で計算するかで単位が変わります。** 公式ドキュメントは、**NTS は演算のときに SRID（座標系の識別子）を無視し、平面座標系を仮定する**と明記しています。そのため経度緯度をそのまま渡すと、距離・長さ・面積は**メートルではなく度**で返ります。
+>
+> 実際に、いったんエンティティを読み込んでから .NET 側で `Distance` を呼ぶと **4.381917** になりました（実測で確認）。上のサーバー側計算の 403,830.7 メートルと同じ 2 点なのに、値がまったく違います。**度をメートルに換算する定数はありません**（緯度によって 1 度の長さが変わるため）。距離が必要なら、上の例のようにクエリの中で計算してデータベースに評価させてください。
+
+列の型は既定で `geography` になります。平面座標として扱いたい場合は `HasColumnType` で `geometry` に変更します。どちらになるかを `INFORMATION_SCHEMA.COLUMNS` で実測しました。
+
+| モデルの記述 | 生成された列型 |
+| --- | --- |
+| `public Point? Location { get; set; }` | `geography` |
+| `.Property(z => z.Shape).HasColumnType("geometry")` | `geometry` |
+
+`geography` を選んだ場合、SQL Server は多角形の頂点の並び順に制約を課します。公式ドキュメントは**外周は反時計回り、内側の穴は時計回り**でなければならず、**NTS がデータベースに送る前に検証する**と説明しています。実際に時計回りの多角形を保存しようとすると、次の例外になりました（実測で確認）。`geometry` 列では同じ多角形が問題なく保存できます。
+
+```text
+System.ArgumentException: When writing a SQL Server geography value,
+the shell of a polygon must be oriented counter-clockwise.
+```
+
+> [!NOTE]
+> **NTS では表現できない図形があります。** 公式ドキュメントは `CircularString`、`CompoundCurve`、`CurvePolygon`（曲線を含む型）が NTS で未対応であることを警告しています。SQL Server 側にこれらのデータがある場合は、`STCurveToLine` で折れ線に変換してから EF Core で扱ってください。また既存データベースからスキャフォールディングする場合は、**先に空間パッケージを追加しておく必要があります。** 後から追加すると、型マッピングが見つからないという警告とともに列がスキップされます。
+
 ### 継承のマッピング
 
 エンティティに継承関係がある場合、EF Core は 3 つのマッピング方法を提供します。既定は **TPH (table-per-hierarchy)** で、階層全体を 1 つのテーブルに格納し、行がどの型かを示す **識別子列 (discriminator)** を暗黙的に追加します。
@@ -1066,3 +1140,5 @@ modelBuilder.Entity<Animal>()
 - [カスケード削除 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/cascade-delete)
 - [外部キーと主キー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/foreign-and-principal-keys)
 - [高度なテーブルマッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/table-splitting)
+- [空間データ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/spatial)
+- [SQL Server プロバイダーの空間データ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/spatial)

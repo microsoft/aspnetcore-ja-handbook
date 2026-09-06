@@ -604,11 +604,6 @@ dotnet ef migrations add InitialCreate \
 
 ---
 
-> [!TIP]
-> **さらに詳しく**
->
-> - [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) — 生成されたマイグレーションの読み方、既定値制約の命名、同時実行の防止、シード
-
 #### 複数のフレームワークを対象にしているプロジェクト
 
 `TargetFrameworks` で複数のフレームワークを対象にしているプロジェクトでは、**EF Core 10 からどのフレームワークを使うかの指定が必須になりました。**
@@ -622,7 +617,7 @@ Use the --framework option to specify which target framework to use.
 dotnet ef migrations add Init --framework net10.0
 ```
 
-以前は EF Core が候補の中から 1 つを選んでいましたが、選ばれるフレームワークが意図と違うと分かりにくい失敗をするため、明示が求められるようになりました。ライブラリープロジェクトで複数フレームワークを対象にしている場合は、CI のスクリプトにも `--framework` を追加してください。
+以前は EF Core が候補の中から 1 つを選んでいましたが、選ばれるフレームワークが意図と違うと分かりにくい失敗をするため、明示が求められるようになりました。ライブラリプロジェクトで複数フレームワークを対象にしている場合は、CI のスクリプトにも `--framework` を追加してください。
 
 #### 生成されるナビゲーション名は EF Core 8 で変わった
 
@@ -945,7 +940,6 @@ var page = await context.Posts
 > [!TIP]
 > **さらに詳しく**
 >
-> - [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) — 単一クエリと分割クエリ、照合順序、生の SQL、ユーザー定義関数とビュー
 > - [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md) — インデックス設計、コンパイル済みクエリ、NativeAOT
 
 ### 関連データを読み込まずに数える
