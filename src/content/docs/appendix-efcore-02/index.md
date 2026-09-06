@@ -35,6 +35,7 @@ description: "EF Core の代替キーとインデックス、シャドウプロ�
    - [hierarchyid で階層構造を扱う](#hierarchyid-で階層構造を扱う)
    - [SQL Server 固有の列オプション](#sql-server-固有の列オプション)
    - [計算列](#計算列)
+   - [Azure SQL の価格レベルをマイグレーションで指定する](#azure-sql-の価格レベルをマイグレーションで指定する)
 4. [モデル全体にかかる構成](#4-モデル全体にかかる構成)
    - [コマンドのタイムアウト](#コマンドのタイムアウト)
    - [一括構成（規約前の構成）](#一括構成規約前の構成)
@@ -909,6 +910,60 @@ CREATE TABLE [People] (
 > [!NOTE]
 > 「最終更新日時」を格納計算列で管理したくなりますが、多くのデータベースは計算列に `GETDATE()` のような関数を指定できません。公式ドキュメントはこの用途にはデータベーストリガーを使うよう案内しています。
 
+### Azure SQL の価格レベルをマイグレーションで指定する
+
+Azure SQL Database のサービスレベルや最大サイズは、通常 Azure ポータルや Azure CLI で設定します。ただしスキーマをマイグレーションで管理している場合は、**モデル側で指定してマイグレーションと一緒に適用する**こともできます。
+
+| API | 指定するもの | 生成される T-SQL の句 |
+| --- | --- | --- |
+| `HasServiceTier` | サービスレベル | `EDITION` |
+| `HasDatabaseMaxSize` | データベースの最大サイズ | `MAXSIZE` |
+| `HasPerformanceLevel` | パフォーマンスレベル | `SERVICE_OBJECTIVE` |
+| `HasPerformanceLevelSql` | エラスティックプールなど、文字列リテラルにならない値 | `SERVICE_OBJECTIVE` |
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.HasServiceTier("GeneralPurpose");
+    modelBuilder.HasDatabaseMaxSize("10 GB");
+    modelBuilder.HasPerformanceLevel("GP_S_Gen5_1");
+
+    // エラスティックプールに入れる場合は HasPerformanceLevelSql を使う
+    // modelBuilder.HasPerformanceLevelSql("ELASTIC_POOL ( name = myelasticpool )");
+}
+```
+
+このモデルからマイグレーションを生成すると、テーブル作成の前に次の `ALTER DATABASE` が入ります（実測で確認）。
+
+```sql
+-- Azure SQL
+BEGIN
+DECLARE @db_name nvarchar(max) = QUOTENAME(DB_NAME());
+EXEC(N'ALTER DATABASE ' + @db_name + ' MODIFY (
+MAXSIZE = 10 GB, EDITION = ''GeneralPurpose'', SERVICE_OBJECTIVE = ''GP_S_Gen5_1'' );');
+END
+```
+
+実際に Azure SQL Database（サーバーレスの `GP_S_Gen5_1`、最大サイズ 1 GB で作成）に対して `dotnet ef database update` を実行したところ、適用後に最大サイズが **10 GB** に変わっていることを確認しました（実測）。
+
+> [!WARNING]
+> `ALTER DATABASE` はトランザクションの中で実行できません。実測では適用時に次の警告が出ました。
+>
+> ```text
+> The migration operation 'BEGIN DECLARE @db_name ...' from migration 'Initial' cannot be
+> executed in a transaction. If the app is terminated or an unrecoverable error occurs while
+> this operation is being executed then the migration will be left in a partially applied
+> state and would need to be reverted manually before it can be applied again.
+> Create a separate migration that contains just this operation.
+> ```
+>
+> 警告が案内しているとおり、**この操作だけを含む単独のマイグレーションに分けて**ください。テーブル作成と混ぜると、途中で失敗したときに手作業での巻き戻しが必要になります。
+
+> [!NOTE]
+> 公式ドキュメントは、Azure SQL に接続するときは `UseSqlServer` ではなく `UseAzureSql` を使うよう案内しています。理由は[付録 EF Core 4 の「接続の回復性とトランザクションの併用」](../appendix-efcore-04/index.md#接続の回復性とトランザクションの併用)で説明しているとおり、`UseAzureSql` なら Azure SQL に適した設定で再試行が自動的に構成されるためです。
+
+---
+
 ## 4. モデル全体にかかる構成
 
 ### コマンドのタイムアウト
@@ -1039,6 +1094,48 @@ public override async Task<int> SaveChangesAsync(CancellationToken cancellationT
 > ```
 >
 > 親 (`Blog`) がフィルターで除外されているのに子 (`Post`) が除外されないと、`Post` を起点にしたクエリで親が読み込めず、予期しない結果になります。ナビゲーションを省略可能にするか、関係する両方のエンティティに対応するフィルターを定義してください。
+
+この警告を無視すると、**`Include` を足しただけで件数が減ります。** `fish` を含む `Blog` と含まない `Blog` に投稿を 3 件ずつ用意し、SQL Server 2022 で実測しました。
+
+```csharp
+var withoutInclude = await context.Posts.ToListAsync();                       // 6 件
+var withInclude    = await context.Posts.Include(p => p.Blog).ToListAsync();  // 3 件
+```
+
+必須ナビゲーションは「関連エンティティが必ず存在する」ことを意味するため、EF Core は `INNER JOIN` を組み立てます。フィルターで除外された `Blog` に紐づく `Post` は、この結合で一緒に消えます。
+
+```sql
+-- SQL Server
+SELECT [p].[PostId], [p].[BlogId], [p].[Title], [b0].[BlogId], [b0].[Url]
+FROM [Posts] AS [p]
+INNER JOIN (
+    SELECT [b].[BlogId], [b].[Url]
+    FROM [Blogs] AS [b]
+    WHERE [b].[Url] LIKE N'%fish%'
+) AS [b0] ON [p].[BlogId] = [b0].[BlogId]
+```
+
+公式ドキュメントが挙げている 2 つの対処を、それぞれ実測した結果です。
+
+| 構成 | `Include` なし | `Include` あり |
+| --- | --- | --- |
+| 必須ナビゲーションのまま（既定） | 6 件 | **3 件** |
+| `IsRequired(false)` で省略可能にする | 6 件 | 6 件 |
+| `Post` 側にも同じフィルターを定義する | 3 件 | 3 件 |
+
+省略可能にすると `LEFT JOIN` になるため件数は減りませんが、`Post.Blog` が `null` になり得ます。**件数を揃えたいのか、親を必ず取りたいのかで選び分けてください。**
+
+> [!WARNING]
+> **論理削除を採用するなら、データベース側のカスケード削除を構成してはいけません。** 公式ドキュメントは「エンティティを論理削除する場合はデータベースでカスケード削除を構成しないこと。誤って論理削除ではなく実際に削除されてしまう可能性がある」と明記しています。
+>
+> `Blog` と `Post` の両方に `IsDeleted` のフィルターを設定したうえで、外部キーが既定の `ON DELETE CASCADE` のまま親を `Remove` してしまうと、SQL Server 2022 では次のようになりました（実測で確認）。
+>
+> | 操作 | `Blogs` の実行数 | `Posts` の実行数 |
+> | --- | --- | --- |
+> | `IsDeleted = true` にして保存（論理削除） | 1 | 2 |
+> | 親を `Remove` して保存（物理削除） | **0** | **0** |
+>
+> 論理削除の運用に 1 か所でも物理削除の経路が混ざると、データベース側のカスケードによって子まで消えます。論理削除を使う場合は `OnDelete(DeleteBehavior.Restrict)` などでデータベースのカスケードを外し、削除は必ずフラグの更新として行ってください。
 
 > [!NOTE]
 > **Django** の `Manager` によるデフォルトクエリセットの絞り込みや、**Laravel** の Eloquent におけるグローバルスコープが同種の機能に相当します。**Hibernate** では、常に適用される静的な制約が `@SQLRestriction`（`@Where` は Hibernate 6.3 で非推奨になり、Hibernate 7 で削除されました）、セッション単位で有効・無効を切り替えられる動的なフィルターが `@FilterDef` / `@Filter` と、2 つの仕組みに分かれています。EF Core 10 の名前付きフィルターは、後者の `@FilterDef` / `@Filter` に近い粒度の制御を提供します。

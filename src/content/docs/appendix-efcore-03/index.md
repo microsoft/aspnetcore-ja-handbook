@@ -223,6 +223,28 @@ dotnet ef migrations script AddNewTables AddAuditTable
 
 `--idempotent` を付けると、各マイグレーションが未適用かどうかを確認してから実行するスクリプトが生成されるため、現在の適用状況が分からないデータベースにも安全に流せます。
 
+> [!WARNING]
+> **SQLite ではべき等スクリプトを生成できません。** 公式ドキュメントは「他のデータベースと違い SQLite には手続き言語が含まれていないため、べき等スクリプトが必要とする if-then の論理を生成する方法がない」と説明しています。実際に SQLite のプロジェクトで実行すると、次のエラーになりました（実測で確認）。
+>
+> ```text
+> Generating idempotent scripts for migrations is not currently supported for SQLite.
+> ```
+>
+> 公式は代わりに、最後に適用したマイグレーションが分かっているなら `dotnet ef migrations script <そのマイグレーション名>` で差分スクリプトを作り、分からないなら `dotnet ef database update --connection "Data Source=My.db"` で適用することを勧めています。テストで SQLite を使う場合（[付録 EF Core 6](../appendix-efcore-06/index.md)）は、この違いに注意してください。
+
+> [!NOTE]
+> SQLite は `ALTER TABLE` でできることが少ないため、EF Core は多くのスキーマ変更を**テーブルの再構築 (rebuild)** に置き換えます。列を 1 つ削除するマイグレーションを SQLite 向けに生成したところ、次の SQL になりました（実測で確認）。
+>
+> ```sql
+> -- SQLite
+> CREATE TABLE "ef_temp_Items" ( "Id" INTEGER NOT NULL CONSTRAINT "PK_Items" PRIMARY KEY AUTOINCREMENT, "Name" TEXT NOT NULL );
+> INSERT INTO "ef_temp_Items" ("Id", "Name") SELECT "Id", "Name" FROM "Items";
+> DROP TABLE "Items";
+> ALTER TABLE "ef_temp_Items" RENAME TO "Items";
+> ```
+>
+> 公式は「再構築が可能なのは EF Core のモデルに含まれるデータベースオブジェクトだけで、マイグレーションの中で手作業で作ったものなど、モデルに含まれないオブジェクトがあると `NotSupportedException` が投げられる」と注意しています。
+
 自動デプロイには **マイグレーションバンドル** が推奨されます。公式ドキュメントによれば、バンドルは CI で生成でき、実行時に .NET SDK も EF Core ツールもアプリケーションのソースコードも不要で、**自己完結型にすれば .NET ランタイムすら不要**な単一の実行可能ファイルです。EF Core のマイグレーションロックも機能します。
 
 ```bash
