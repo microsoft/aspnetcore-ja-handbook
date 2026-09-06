@@ -29,6 +29,7 @@ description: "EF Core のマイグレーションの読み方と運用、単一�
    - [モデルとマイグレーションのずれを検出する](#モデルとマイグレーションのずれを検出する)
    - [同時にマイグレーションが走らないようにする](#同時にマイグレーションが走らないようにする)
    - [特定のテーブルをマイグレーションの対象から外す](#特定のテーブルをマイグレーションの対象から外す)
+   - [マイグレーション履歴テーブルをカスタマイズする](#マイグレーション履歴テーブルをカスタマイズする)
    - [初期データの投入（シード）](#初期データの投入シード)
    - [既存データベースからスキャフォールディングする](#既存データベースからスキャフォールディングする)
    - [設計時 DbContext ファクトリ](#設計時-dbcontext-ファクトリ)
@@ -262,6 +263,22 @@ dotnet ef migrations bundle --self-contained --target-runtime linux-x64 --output
 ./efbundle --connection "$CONNECTION_STRING"
 ```
 
+> [!WARNING]
+> **`DbContext` の構成が `appsettings.json` を読んでいる場合、その構成ファイルをバンドルと一緒にコピーしてください。** 公式ドキュメントは「構成ファイルはバンドルの実行ディレクトリから解決される」と述べています。`dotnet ef migrations bundle` 自身も、生成の最後に次のメッセージを出します（実測で確認）。
+>
+> ```text
+> Don't forget to copy appsettings.json alongside your bundle if you need it to apply migrations.
+> ```
+>
+> 実測では、**カレントディレクトリではなくバンドルの実行可能ファイルが置かれている場所**が探索されました。バンドルを `/tmp/bundleout/efbundle` に置いて別のディレクトリから実行すると、カレントディレクトリに `appsettings.json` を置いても次のエラーになります。
+>
+> ```text
+> The configuration file 'appsettings.json' was not found and is not optional.
+> The expected physical path was '/tmp/bundleout/appsettings.json'.
+> ```
+>
+> バンドル本体と同じディレクトリに置くと成功しました。**なお相対パスのデータベースファイルはカレントディレクトリを基準に作られる**ため、構成ファイルとデータベースで基準ディレクトリが異なる点にも注意してください。接続文字列は `--connection` オプションで渡すほうが確実です。公式も「本番の秘密情報を構成ファイルに置かず、安全な構成ソースか `--connection` オプションで渡すこと」と警告しています。
+
 > [!NOTE]
 > 公式ドキュメントは、バンドルの制約として「SQL スクリプトと違い、実行される SQL を事前に確認したり、含まれるマイグレーションを一覧したりする手段が現時点ではない」と述べています。デプロイ前に SQL のレビューが必要な運用では、バンドルではなく `dotnet ef migrations script` でスクリプトを生成してください。
 
@@ -439,6 +456,69 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 > [!TIP]
 > 再びマイグレーションで管理したくなったら、`ExcludeFromMigrations` を外した状態で新しいマイグレーションを作成します。それ以降の変更はマイグレーションに含まれるようになります。
 
+### マイグレーション履歴テーブルをカスタマイズする
+
+EF Core は適用済みのマイグレーションを `__EFMigrationsHistory` テーブルに記録します。このテーブルの名前・スキーマ・列名は変更できます。既存のデータベースの命名規則に合わせたい場合や、アプリケーション用のテーブルと分けて管理したい場合に使います。
+
+テーブル名とスキーマは `MigrationsHistoryTable()` で指定します。
+
+```csharp
+options.UseSqlServer(
+    connectionString,
+    x => x.MigrationsHistoryTable("__MyMigrationsHistory", "mySchema"));
+```
+
+列名など、それ以上の構成を変えるには、プロバイダー固有の `IHistoryRepository` サービスを差し替えます。次は SQL Server で `MigrationId` 列の名前を `Id` に変える例です。
+
+```csharp
+#pragma warning disable EF1001
+
+internal class MyHistoryRepository : SqlServerHistoryRepository
+{
+    public MyHistoryRepository(HistoryRepositoryDependencies dependencies)
+        : base(dependencies)
+    {
+    }
+
+    protected override void ConfigureTable(EntityTypeBuilder<HistoryRow> history)
+    {
+        base.ConfigureTable(history);
+        history.Property(h => h.MigrationId).HasColumnName("Id");
+    }
+}
+```
+
+```csharp
+options
+    .UseSqlServer(connectionString)
+    .ReplaceService<IHistoryRepository, MyHistoryRepository>();
+```
+
+両方を適用してマイグレーションを生成すると、履歴テーブルの作成 SQL が次のようになりました（実測で確認）。
+
+```sql
+-- SQL Server
+IF OBJECT_ID(N'[mySchema].[__MyMigrationsHistory]') IS NULL
+BEGIN
+    IF SCHEMA_ID(N'mySchema') IS NULL EXEC(N'CREATE SCHEMA [mySchema];');
+    CREATE TABLE [mySchema].[__MyMigrationsHistory] (
+        [Id] nvarchar(150) NOT NULL,
+        [ProductVersion] nvarchar(32) NOT NULL,
+        CONSTRAINT [PK___MyMigrationsHistory] PRIMARY KEY ([Id])
+    );
+END;
+```
+
+SQL Server 2022 に実際に `dotnet ef database update` を実行したところ、テーブルは `mySchema.__MyMigrationsHistory` として作られ、列は `Id` と `ProductVersion` の 2 つになりました（実測）。
+
+> [!IMPORTANT]
+> 公式ドキュメントは「マイグレーションを**適用したあとで**履歴テーブルをカスタマイズした場合、データベース側の既存テーブルを更新するのは自分の責任である」と述べています。EF Core は古い `__EFMigrationsHistory` を新しい名前に移行してくれません。カスタマイズは最初のマイグレーションを適用する前に決めてください。
+
+> [!WARNING]
+> `SqlServerHistoryRepository` は**内部 (internal) 名前空間にあり、将来のリリースで変更される可能性がある**と公式が明記しています。継承するとビルド時に `EF1001` の警告が出るため、`#pragma warning disable EF1001` で抑制する必要があります。この警告は「使ってはいけない」という意味ではなく、「EF Core のバージョンを上げたときに壊れる可能性を受け入れているか」を確認するものです。テーブル名とスキーマの変更だけで足りるなら、`MigrationsHistoryTable()` にとどめてください。
+
+---
+
 ### 初期データの投入（シード）
 
 マスターデータや動作確認用の初期データを投入する方法は 2 つあります。
@@ -489,6 +569,18 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 
 > [!IMPORTANT]
 > `UseSeeding` と `UseAsyncSeeding` は **両方を登録してください**。実際に SQLite で試したところ、`EnsureCreated()`（同期）では `UseSeeding` だけが呼ばれ、`EnsureCreatedAsync()`（非同期）では `UseAsyncSeeding` だけが呼ばれました。片方しか登録していないと、呼び出し側の API によってシードが実行されません。
+
+> [!WARNING]
+> **シードコードはロールバック（ダウングレード）のあとにも実行されます。** 公式ドキュメントは「構成されたシードコードはダウングレードのあとに実行される。ターゲットが `0` の場合にアプリケーションのスキーマが存在しないことも含め、ターゲットのマイグレーション時点のスキーマに耐えられなければならない」と述べています。
+>
+> 実際に SQLite で `dotnet ef database update 0` を実行したところ、テーブルがすべて削除されたあとにシードコードが呼び出され、次の例外でコマンド自体が失敗しました（実測で確認）。
+>
+> ```text
+> An exception occurred while iterating over the results of a query for context type 'Ctx'.
+> Microsoft.Data.Sqlite.SqliteException (0x80004005): SQLite Error 1: 'no such table: Blogs'.
+> ```
+>
+> シードコードの中でテーブルの有無を確認するか、例外を捕捉して何もしないようにしてください。例外を捕捉するように書き換えると、同じ `update 0` が最後まで完走することも確認しました。
 >
 > また、これらのデリゲートは毎回の実行で呼ばれる可能性があるため、上記のように **既に存在するかを確認してから追加** してください。この点は `HasData` と異なり、EF Core が重複を防いでくれません。
 

@@ -10,11 +10,11 @@ EF Core は機能が非常に多いため、この章では **ASP.NET Core か�
 | 付録 | 扱う内容 |
 | --- | --- |
 | [付録 EF Core 1：モデル定義（エンティティとリレーションシップ）](../appendix-efcore-01/index.md) | エンティティの構成、リレーションシップ、値の変換・所有型・複合型、継承 |
-| [付録 EF Core 2：モデル定義（キー・採番・SQL Server 固有）](../appendix-efcore-02/index.md) | 代替キー、シャドウプロパティ、シーケンス、テンポラルテーブル、空間データ、hierarchyid |
-| [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) | マイグレーションの読み方、分割クエリ、照合順序、生の SQL、ユーザー定義関数 |
+| [付録 EF Core 2：モデル定義（キー・採番・SQL Server 固有）](../appendix-efcore-02/index.md) | 代替キー、シャドウプロパティ、シーケンス、テンポラルテーブル、空間データ、hierarchyid、Azure SQL の価格レベル |
+| [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) | マイグレーションの読み方、履歴テーブルのカスタマイズ、分割クエリ、照合順序、生の SQL、ユーザー定義関数 |
 | [付録 EF Core 4：更新・トランザクション・レプリカ](../appendix-efcore-04/index.md) | 切断されたエンティティ、同時実行制御、デッドロック、インターセプター、レプリカ |
 | [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md) | 計測と診断、インデックス、コンパイル済みクエリとモデル、NativeAOT、変更検出のコスト |
-| [付録 EF Core 6：テスト](../appendix-efcore-06/index.md) | 実データベースに対するテスト、SQLite インメモリとその制限、WebApplicationFactory、リポジトリパターン |
+| [付録 EF Core 6：テスト](../appendix-efcore-06/index.md) | 実データベースに対するテスト、製品コードがトランザクションを使うテスト、SQLite インメモリとその制限、WebApplicationFactory、リポジトリパターン |
 
 
 ---
@@ -587,7 +587,7 @@ Singleton サービスやバックグラウンドサービスから `DbContext` 
 > **さらに詳しく**
 >
 > - [付録 EF Core 1：モデル定義（エンティティとリレーションシップ）](../appendix-efcore-01/index.md) — コンストラクターへのバインド、Null 許容参照型とスキーマ、規約・データ注釈・Fluent API、`IEntityTypeConfiguration` による構成の分割、リレーションシップの詳細、エンティティの等価性、値の変換・所有型・複合型、継承のマッピング
-> - [付録 EF Core 2：モデル定義（キー・採番・SQL Server 固有）](../appendix-efcore-02/index.md) — 代替キー、テーブル分割、キーなしエンティティ型、シャドウプロパティ、シーケンス、主キーの採番方法の制御、テンポラルテーブル、空間データ、hierarchyid、計算列、SQL Server 固有の列オプション、コマンドのタイムアウト、一括構成、グローバルクエリフィルター、コード分析ルールとの衝突
+> - [付録 EF Core 2：モデル定義（キー・採番・SQL Server 固有）](../appendix-efcore-02/index.md) — 代替キー、テーブル分割、キーなしエンティティ型、シャドウプロパティ、シーケンス、主キーの採番方法の制御、テンポラルテーブル、空間データ、hierarchyid、計算列、SQL Server 固有の列オプション、Azure SQL の価格レベルの指定、コマンドのタイムアウト、一括構成、グローバルクエリフィルター、コード分析ルールとの衝突
 
 ## 3. クエリの基本
 
@@ -930,7 +930,7 @@ info: Microsoft.EntityFrameworkCore.Database.Command[20101]
 > [!TIP]
 > **さらに詳しく**
 >
-> - [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) — 単一クエリと分割クエリ、LeftJoin / RightJoin、照合順序と大文字小文字、キーセットページング、生の SQL、ユーザー定義関数とビュー
+> - [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) — マイグレーション履歴テーブルのカスタマイズ、単一クエリと分割クエリ、LeftJoin / RightJoin、照合順序と大文字小文字、キーセットページング、生の SQL、ユーザー定義関数とビュー
 > - [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md) — ログの出力形式、`CreateDbCommand()` による `DbCommand` の取得、ログとセキュリティ、メトリックの参照、クエリタグでログと LINQ を結びつける、コレクションのパラメーター化と IN 句、バッファリングとストリーミング
 > - [付録 EF Core 4：保存の応用とトランザクション](../appendix-efcore-04/index.md) — インターセプターで SQL に割り込む
 
@@ -1322,6 +1322,9 @@ flowchart TB
 | リポジトリのテストダブル | 該当なし（DB を使わない） | 非常に速い | ビジネスロジックの単体テスト |
 | InMemory プロバイダー | 低い | 速い | 非推奨 |
 
+> [!TIP]
+> データベースを変更するテストは、トランザクションを開始してコミットしないことで独立性を保つのが定石です。ただし**テスト対象のコード自身がトランザクションを明示的に使う場合はこの手が使えません。** その扱い方と、テストごとのクリーンアップを速くする方法は[付録6の「製品コードがトランザクションを使うテスト」](/appendix-efcore-06/#製品コードがトランザクションを使うテスト)にまとめています。
+
 ### InMemory プロバイダーが推奨されない理由
 
 `Microsoft.EntityFrameworkCore.InMemory` は手軽ですが、公式ドキュメントは **テスト用途での使用を強く非推奨 (strongly discouraged)** としています。
@@ -1387,7 +1390,7 @@ flowchart TB
 > [!TIP]
 > **さらに詳しく**
 >
-> - [付録 EF Core 6：テスト](../appendix-efcore-06/index.md) — 実データベースに対するテスト、SQLite インメモリ、SQLite の制限、`WebApplicationFactory` による統合テスト、リポジトリパターン
+> - [付録 EF Core 6：テスト](../appendix-efcore-06/index.md) — 実データベースに対するテスト、製品コードがトランザクションを使うテスト、テストの効率的なクリーンアップ、SQLite インメモリ、SQLite の制限、`WebApplicationFactory` による統合テスト、リポジトリパターン
 
 ## 8. 参考ドキュメント
 
