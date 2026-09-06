@@ -315,7 +315,7 @@ public ICollection<Post> Posts { get; set; }
 同じ条件で比較子だけを差し替えて実測すると、`Posts.Count` は 2、保存された行も 2 件になりました。
 
 > [!NOTE]
-> 主キー・代替キー・外部キー、および一意インデックスに使う型は `IComparable<T>` と `IEquatable<T>` を実装している必要があります。キー値は等価比較だけでなく**順序付け**にも使われ、1 回の `SaveChanges` で複数のエンティティを更新するときにデッドロックを避けるために並べ替えられるためです。`int` や `Guid`、`string` など通常キーに使う型はすでに両方を実装しています。独自のキー型を作る場合は自分で実装してください。
+> 主キー・代替キー・外部キー、および一意インデックスに使う型は `IComparable<T>` と `IEquatable<T>` を実装している必要があります。キー値は等価比較だけでなく**順序付け**にも使われ、1 回の `SaveChanges` で複数のエンティティを更新するときにデッドロックを避けるために並べ替えられるためです。`int` や `Guid`、`string` など通常キーに使う型はすでに両方を実装しています。独自のキー型を作る場合は自分で実装してください。主キー以外の列を一意にする方法は[付録2の「代替キーと一意インデックス」](/appendix-efcore-02/#代替キーと一意インデックス)で扱います。
 
 ## 2. リレーションシップ
 
@@ -407,7 +407,7 @@ CREATE TABLE [PostTag] (
 ```
 
 > [!WARNING]
-> 結合エンティティのプロパティ名が外部キーの規約に合っていないと、EF Core は **その名前のシャドウプロパティ (shadow property) を別に作り、自分が定義したプロパティはただのデータ列になります。** 型名 `Article` に対して `PostId` というプロパティを定義したところ、`ArticlesId` というシャドウの外部キー列が追加で生成され、`PostId` は外部キーではない列として残りました。この状態で保存しようとすると次の例外になります。
+> 結合エンティティのプロパティ名が外部キーの規約に合っていないと、EF Core は **その名前のシャドウプロパティ (shadow property) を別に作り、自分が定義したプロパティはただのデータ列になります。** 型名 `Article` に対して `PostId` というプロパティを定義したところ、`ArticlesId` というシャドウの外部キー列が追加で生成され、`PostId` は外部キーではない列として残りました。シャドウプロパティそのものの詳細は[付録2の「シャドウプロパティとバッキングフィールド」](/appendix-efcore-02/#シャドウプロパティとバッキングフィールド)を参照してください。この状態で保存しようとすると次の例外になります。
 >
 > ```text
 > InvalidOperationException: The value of 'ArticleTag.ArticlesId' is unknown when attempting
@@ -965,7 +965,7 @@ CREATE TABLE [CreditCardPayments] (
 );
 ```
 
-`UseTpcMappingStrategy()` による **TPC (table-per-concrete-type)** では、具象型ごとに独立したテーブルを作り、それぞれが基底型の列も持ちます。主キーが階層全体で一意になるよう、EF Core は共有シーケンスを作成します。SQL Server での DDL は次のとおりです。
+`UseTpcMappingStrategy()` による **TPC (table-per-concrete-type)** では、具象型ごとに独立したテーブルを作り、それぞれが基底型の列も持ちます。主キーが階層全体で一意になるよう、EF Core は共有シーケンスを作成します（シーケンスの構成方法は[付録2の「シーケンスによる採番」](/appendix-efcore-02/#シーケンスによる採番)を参照）。SQL Server での DDL は次のとおりです。
 
 ```sql
 CREATE SEQUENCE [PaymentSequence] START WITH 1 INCREMENT BY 1 NO CYCLE;

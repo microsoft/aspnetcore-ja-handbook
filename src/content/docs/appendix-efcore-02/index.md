@@ -234,7 +234,7 @@ Only entity types with a primary key may be tracked.
 > - **規約によって検出されることがない。** 必ず `HasNoKey()` か `[Keyless]` で明示的に構成する必要があります
 > - **通常のエンティティ型からキーなしエンティティ型へのナビゲーションプロパティを持てない。** 実際に書いてみると、モデル構築の時点で `Unable to determine the relationship represented by navigation 'NavBlog.Counts' of type 'BlogPostCount'.` という例外になりました
 > - リレーションシップの主体側になれない
-> - 継承階層は作れるが、TPH としてしかマップできない
+> - 継承階層は作れるが、TPH としてしかマップできない（継承の 3 つの方式は[付録1の「継承のマッピング」](/appendix-efcore-01/#継承のマッピング)を参照）
 > - テーブル分割・エンティティ分割は使えない
 
 ### シャドウプロパティとバッキングフィールド
@@ -740,7 +740,7 @@ WHERE [n].[Path].IsDescendantOf(@devPath) = CAST(1 AS bit)
 
 #### スパース列
 
-**スパース列 (sparse column)** は、`NULL` の格納を最適化する代わりに、`NULL` でない値の取得コストが上がる列です。TPH 継承のように「一部の型にしか存在しない列」がテーブルの大半で `NULL` になるケースで効きます。
+**スパース列 (sparse column)** は、`NULL` の格納を最適化する代わりに、`NULL` でない値の取得コストが上がる列です。TPH 継承（[付録1の「継承のマッピング」](/appendix-efcore-01/#継承のマッピング)）のように「一部の型にしか存在しない列」がテーブルの大半で `NULL` になるケースで効きます。
 
 ```csharp
 modelBuilder.Entity<SpecialPost>()
@@ -750,7 +750,7 @@ modelBuilder.Entity<SpecialPost>()
 
 #### UTF-8 の照合順序
 
-SQL Server 2019 以降は `char` / `varchar` 列に UTF-8 の照合順序を指定でき、Unicode を `nvarchar` より小さく格納できる場合があります。EF Core からは、列の型を `varchar` にしたうえで `_UTF8` で終わる照合順序を指定し、あわせて `IsUnicode()` を呼びます。
+SQL Server 2019 以降は `char` / `varchar` 列に UTF-8 の照合順序を指定でき、Unicode を `nvarchar` より小さく格納できる場合があります。EF Core からは、列の型を `varchar` にしたうえで `_UTF8` で終わる照合順序を指定し、あわせて `IsUnicode()` を呼びます。照合順序がクエリの結果そのものを変える点は[付録3の「大文字小文字の区別は照合順序が決める」](/appendix-efcore-03/#大文字小文字の区別は照合順序が決める)で扱います。
 
 ```csharp
 modelBuilder.Entity<SpecialPost>()

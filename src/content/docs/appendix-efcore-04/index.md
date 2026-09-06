@@ -83,7 +83,7 @@ Post {Id: 2} Modified FK {BlogId: 1}
 >
 > 公式ドキュメントも「削除は扱いが難しい。エンティティが存在しないことが削除を意味することが多いためだ」と述べ、次の 2 つを挙げています。
 >
-> - **論理削除 (soft delete)** にして、削除を更新として扱う（グローバルクエリフィルターと組み合わせる）
+> - **論理削除 (soft delete)** にして、削除を更新として扱う（[付録2の「グローバルクエリフィルターと名前付きクエリフィルター」](/appendix-efcore-02/#グローバルクエリフィルターと名前付きクエリフィルター)と組み合わせる）
 > - データベースを読み込んでグラフの差分を取り、消えている子に `Remove` を呼ぶ
 >
 > エンティティを削除するには `Deleted` 状態で追跡されている必要があります。「送られてこなかった」という情報だけで EF Core が削除を判断することはありません。
@@ -342,7 +342,7 @@ await context.Posts
     cancellationToken);
 ```
 
-EF Core 10 では、**JSON 列にマッピングされた複合型のプロパティも `ExecuteUpdateAsync` で更新できる** ようになりました。EF Core 9 以前は JSON 列を一括更新できず、エンティティを読み込んで `SaveChangesAsync` するしかありませんでした。
+EF Core 10 では、**JSON 列にマッピングされた複合型のプロパティも `ExecuteUpdateAsync` で更新できる** ようになりました。EF Core 9 以前は JSON 列を一括更新できず、エンティティを読み込んで `SaveChangesAsync` するしかありませんでした。複合型と所有型の違いは[付録1の「値の変換・所有型・複合型」](/appendix-efcore-01/#値の変換所有型複合型)で扱います。
 
 ```csharp
 modelBuilder.Entity<Blog>().ComplexProperty(b => b.Details, bd => bd.ToJson());

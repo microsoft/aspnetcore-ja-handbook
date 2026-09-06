@@ -484,7 +484,7 @@ public virtual ICollection<Enrollment> Enrollments { get; set; } = new List<Enro
 
 ### 単一クエリと分割クエリ
 
-複数のコレクションナビゲーションを `Include` すると、EF Core は既定で 1 つの SQL に JOIN してまとめます。このとき、結果セットに同じ行が繰り返し現れる **カルテシアン爆発 (Cartesian Explosion)** が起こります。
+複数のコレクションナビゲーションを `Include` すると、EF Core は既定で 1 つの SQL に JOIN してまとめます。このとき、結果セットに同じ行が繰り返し現れる **カルテシアン爆発 (Cartesian Explosion)** が起こります。転送量そのものを減らす手段は[付録5の「インデックスを正しく張る」](/appendix-efcore-05/#インデックスを正しく張る)ではなく投影であり、判断の順序は[付録5の「まず計測する」](/appendix-efcore-05/#まず計測する)に従ってください。
 
 ```csharp
 var blogs = await context.Blogs
@@ -914,7 +914,7 @@ builder.Services.ConfigureHttpJsonOptions(
 
 ### 生の SQL を使う
 
-LINQ で表現できないクエリや、ストアドプロシージャの呼び出しには生の SQL を使います。
+LINQ で表現できないクエリや、ストアドプロシージャの呼び出しには生の SQL を使います。生の SQL と `SaveChanges` を 1 つのトランザクションにまとめる場合は[付録4の「セーブポイント」](/appendix-efcore-04/#セーブポイント)と[「接続の回復性とトランザクションの併用」](/appendix-efcore-04/#接続の回復性とトランザクションの併用)もあわせて確認してください。
 
 ```csharp
 var blogs = await context.Blogs
@@ -1221,7 +1221,7 @@ var affected = await context.Database
 
 ### ユーザー定義関数とビューをマッピングする
 
-EF Core の公式パフォーマンスガイダンスは、EF が生成しない最適な SQL を使いたい場合の手段を **3 つ**挙げています。1 つ目が前節の `FromSql` で、残りの 2 つが**ユーザー定義関数 (User-Defined Function: UDF)** と**データベースビュー**です。`FromSql` は「その 1 か所でしか使わない SQL」に向く一方、複数のクエリから再利用したいロジックは関数やビューにするほうが管理しやすくなります。
+EF Core の公式パフォーマンスガイダンスは、EF が生成しない最適な SQL を使いたい場合の手段を **3 つ**挙げています。1 つ目が前節の `FromSql` で、残りの 2 つが**ユーザー定義関数 (User-Defined Function: UDF)** と**データベースビュー**です。`FromSql` は「その 1 か所でしか使わない SQL」に向く一方、複数のクエリから再利用したいロジックは関数やビューにするほうが管理しやすくなります。ビューや集計結果を主キーのない型として読む方法は[付録2の「キーなしエンティティ型でビューや集計結果を読む」](/appendix-efcore-02/#キーなしエンティティ型でビューや集計結果を読む)で扱います。
 
 #### スカラー関数
 
