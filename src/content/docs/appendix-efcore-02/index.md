@@ -12,7 +12,8 @@ description: "EF Core の代替キーとインデックス、シャドウプロ�
 - [付録 EF Core 1：モデル定義（エンティティとリレーションシップ）](../appendix-efcore-01/index.md)
 - [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md)
 - [付録 EF Core 4：更新・トランザクション・レプリカ](../appendix-efcore-04/index.md)
-- [付録 EF Core 5：パフォーマンスとテスト](../appendix-efcore-05/index.md)
+- [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md)
+- [付録 EF Core 6：テスト](../appendix-efcore-06/index.md)
 
 
 ---

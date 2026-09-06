@@ -12,7 +12,8 @@ description: "EF Core のエンティティ構成、リレーションシップ�
 - [付録 EF Core 2：モデル定義（キー・採番・SQL Server 固有）](../appendix-efcore-02/index.md)
 - [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md)
 - [付録 EF Core 4：更新・トランザクション・レプリカ](../appendix-efcore-04/index.md)
-- [付録 EF Core 5：パフォーマンスとテスト](../appendix-efcore-05/index.md)
+- [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md)
+- [付録 EF Core 6：テスト](../appendix-efcore-06/index.md)
 
 
 ---
@@ -902,7 +903,7 @@ CREATE TABLE [Docs] (
 `TimeSpan` も SQL Server では `time` になりますが、意味が違います。公式ドキュメントは、`DateTime` は使われない時刻成分を含むため `date` にマッピングすると混乱を招き、`TimeSpan` は「時刻」ではなく**時間の間隔**（日数を含むこともある）を表すと説明しています。日付だけ・時刻だけを扱う列には `DateOnly` / `TimeOnly` を使ってください。
 
 > [!NOTE]
-> SQLite にはこれらに対応するネイティブの型がなく、`Microsoft.Data.Sqlite` はすべて `TEXT` として格納します。テストで SQLite を使う場合、この差が原因で本番と挙動が変わることがあります（[付録 EF Core 5](../appendix-efcore-05/index.md) を参照）。
+> SQLite にはこれらに対応するネイティブの型がなく、`Microsoft.Data.Sqlite` はすべて `TEXT` として格納します。テストで SQLite を使う場合、この差が原因で本番と挙動が変わることがあります（[付録 EF Core 6](../appendix-efcore-06/index.md) を参照）。
 
 ### 継承のマッピング
 

@@ -12,7 +12,8 @@ description: "EF Core の切断されたエンティティの保存、一括更�
 - [付録 EF Core 1：モデル定義（エンティティとリレーションシップ）](../appendix-efcore-01/index.md)
 - [付録 EF Core 2：モデル定義（キー・採番・SQL Server 固有）](../appendix-efcore-02/index.md)
 - [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md)
-- [付録 EF Core 5：パフォーマンスとテスト](../appendix-efcore-05/index.md)
+- [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md)
+- [付録 EF Core 6：テスト](../appendix-efcore-06/index.md)
 
 
 ---

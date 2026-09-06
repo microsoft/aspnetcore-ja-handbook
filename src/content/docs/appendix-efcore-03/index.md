@@ -12,7 +12,8 @@ description: "EF Core のマイグレーションの読み方と運用、単一�
 - [付録 EF Core 1：モデル定義（エンティティとリレーションシップ）](../appendix-efcore-01/index.md)
 - [付録 EF Core 2：モデル定義（キー・採番・SQL Server 固有）](../appendix-efcore-02/index.md)
 - [付録 EF Core 4：更新・トランザクション・レプリカ](../appendix-efcore-04/index.md)
-- [付録 EF Core 5：パフォーマンスとテスト](../appendix-efcore-05/index.md)
+- [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md)
+- [付録 EF Core 6：テスト](../appendix-efcore-06/index.md)
 
 
 ---
@@ -22,8 +23,10 @@ description: "EF Core のマイグレーションの読み方と運用、単一�
 1. [マイグレーションの詳細](#1-マイグレーションの詳細)
    - [生成されたマイグレーションを読む](#生成されたマイグレーションを読む)
    - [既定値の制約に名前を付ける](#既定値の制約に名前を付ける)
+   - [マイグレーションバンドルの対象ランタイムを指定する](#マイグレーションバンドルの対象ランタイムを指定する)
    - [同時にマイグレーションが走らないようにする](#同時にマイグレーションが走らないようにする)
    - [初期データの投入（シード）](#初期データの投入シード)
+   - [既存データベースからスキャフォールディングする](#既存データベースからスキャフォールディングする)
    - [設計時 DbContext ファクトリ](#設計時-dbcontext-ファクトリ)
 2. [クエリの制御](#2-クエリの制御)
    - [単一クエリと分割クエリ](#単一クエリと分割クエリ)
@@ -147,6 +150,16 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 > [!WARNING]
 > 公式ドキュメントは「**既存のマイグレーションがある状態で `UseNamedDefaultConstraints()` を有効にすると、次に追加するマイグレーションでモデル内のすべての既定値制約がリネームされる**」と注意しています。稼働中のデータベースに対して有効化する場合は、生成されたマイグレーションの差分を必ず確認してください。
 
+### マイグレーションバンドルの対象ランタイムを指定する
+
+`dotnet ef migrations bundle` で対象ランタイムを指定するオプションは **`--target-runtime`（短縮形 `-r`）** です。よく似た `--runtime` というオプションも存在しますが、こちらは「ツールがビルドに使うランタイム」を指す別のオプションで、`--self-contained` と組み合わせると次のエラーで失敗することがあります（実測）。
+
+```text
+error NETSDK1047: 資産ファイル 'obj/project.assets.json' に 'net10.0/linux-x64' のターゲットがありません。
+```
+
+`--target-runtime` を使えば、プロジェクトに `RuntimeIdentifiers` を追加しなくても生成できます。実測では macOS 上から `--target-runtime linux-x64` でバンドルを生成し、Linux 向けの実行可能ファイル（ELF 64-bit）が出力されることを確認しました。生成したバンドルを実際に SQL Server 2022 に対して実行し、マイグレーションが適用されることも確認済みです。
+
 ### 同時にマイグレーションが走らないようにする
 
 起動時マイグレーションでいちばん怖いのは、**複数のインスタンスが同時に起動してマイグレーションを二重に適用する**ことです。コンテナーをスケールアウトした瞬間や、ローリングデプロイの最中に起こります。
@@ -255,6 +268,25 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 > `UseSeeding` と `UseAsyncSeeding` は **両方を登録してください**。実際に SQLite で試したところ、`EnsureCreated()`（同期）では `UseSeeding` だけが呼ばれ、`EnsureCreatedAsync()`（非同期）では `UseAsyncSeeding` だけが呼ばれました。片方しか登録していないと、呼び出し側の API によってシードが実行されません。
 >
 > また、これらのデリゲートは毎回の実行で呼ばれる可能性があるため、上記のように **既に存在するかを確認してから追加** してください。この点は `HasData` と異なり、EF Core が重複を防いでくれません。
+
+### 既存データベースからスキャフォールディングする
+
+既存のデータベースからエンティティと `DbContext` を生成する `dotnet ef dbcontext scaffold` には、そのまま使うと危険な既定の挙動があります。
+
+このコマンドをそのまま実行すると、**生成された `DbContext` の `OnConfiguring` に接続文字列がそのまま埋め込まれます**。SQL Server 2022 に対して実際に実行したところ、パスワードを含む接続文字列がソースコードに書き出され、あわせて次の `#warning` が生成されました。
+
+```csharp
+protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+#warning To protect potentially sensitive information in your connection string, you should move it out of source code.
+    => optionsBuilder.UseSqlServer("Server=...;User Id=sa;Password=...");
+```
+
+公式ドキュメントは、これは「生成されたコードが最初に使うときにいきなり動かないという体験を避けるため」であり、**接続文字列が製品コードに存在してはならない**と明記しています。`--no-onconfiguring` オプションを付けると `OnConfiguring` の生成そのものを抑止でき、実測でも接続文字列を含まない、DI 用のコンストラクターだけを持つクラスが生成されました。
+
+```bash
+dotnet ef dbcontext scaffold "<接続文字列>" Microsoft.EntityFrameworkCore.SqlServer \
+    --output-dir Models --no-onconfiguring
+```
 
 ### 設計時 DbContext ファクトリ
 
@@ -641,7 +673,7 @@ var page = await context.Posts
 > **さらに詳しく**
 >
 > - [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) — 単一クエリと分割クエリ、照合順序、生の SQL、ユーザー定義関数とビュー
-> - [付録 EF Core 5：パフォーマンスとテスト](../appendix-efcore-05/index.md) — インデックス設計、コンパイル済みクエリ、NativeAOT
+> - [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md) — インデックス設計、コンパイル済みクエリ、NativeAOT
 
 ### 関連データを読み込まずに数える
 

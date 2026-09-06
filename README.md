@@ -32,7 +32,8 @@
 | 付録 EF Core 2 | [モデル定義（キー・採番・SQL Server 固有）](src/content/docs/appendix-efcore-02/index.md) | <ol><li>キーとインデックス</li><li>採番と履歴</li><li>SQL Server 固有のマッピング</li><li>モデル全体にかかる構成</li><li>参考ドキュメント</li></ol> |
 | 付録 EF Core 3 | [マイグレーションの詳細とクエリ](src/content/docs/appendix-efcore-03/index.md) | <ol><li>マイグレーションの詳細</li><li>クエリの制御</li><li>SQL を直接扱う</li><li>参考ドキュメント</li></ol> |
 | 付録 EF Core 4 | [更新・トランザクション・レプリカ](src/content/docs/appendix-efcore-04/index.md) | <ol><li>保存の応用</li><li>トランザクションと同時実行制御</li><li>イベントとインターセプター</li><li>読み取り専用レプリカの扱い</li><li>参考ドキュメント</li></ol> |
-| 付録 EF Core 5 | [パフォーマンスとテスト](src/content/docs/appendix-efcore-05/index.md) | <ol><li>計測と診断</li><li>クエリとモデルの最適化</li><li>実行時のコストを下げる</li><li>データベースを使ったテスト</li><li>参考ドキュメント</li></ol> |
+| 付録 EF Core 5 | [パフォーマンス](src/content/docs/appendix-efcore-05/index.md) | <ol><li>計測と診断</li><li>クエリとモデルの最適化</li><li>実行時のコストを下げる</li><li>参考ドキュメント</li></ol> |
+| 付録 EF Core 6 | [テスト](src/content/docs/appendix-efcore-06/index.md) | <ol><li>データベースを使ったテスト</li><li>参考ドキュメント</li></ol> |
 
 ---
 

@@ -13,7 +13,8 @@ EF Core は機能が非常に多いため、この章では **ASP.NET Core か�
 | [付録 EF Core 2：モデル定義（キー・採番・SQL Server 固有）](../appendix-efcore-02/index.md) | 代替キー、シャドウプロパティ、シーケンス、テンポラルテーブル、空間データ、hierarchyid |
 | [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) | マイグレーションの読み方、分割クエリ、照合順序、生の SQL、ユーザー定義関数 |
 | [付録 EF Core 4：更新・トランザクション・レプリカ](../appendix-efcore-04/index.md) | 切断されたエンティティ、同時実行制御、デッドロック、インターセプター、レプリカ |
-| [付録 EF Core 5：パフォーマンスとテスト](../appendix-efcore-05/index.md) | 計測、インデックス、コンパイル済みクエリ、NativeAOT、データベースを使ったテスト |
+| [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md) | 計測と診断、インデックス、コンパイル済みクエリとモデル、NativeAOT、変更検出のコスト |
+| [付録 EF Core 6：テスト](../appendix-efcore-06/index.md) | 実データベースに対するテスト、SQLite インメモリとその制限、WebApplicationFactory、リポジトリパターン |
 
 
 ---
@@ -254,28 +255,7 @@ EF Core 自体はデータベースに依存せず、**プロバイダー** と�
 > [!WARNING]
 > **プロバイダーは EF Core のメジャーバージョンをまたいで動作しません。** 公式ドキュメントは「EF Core 8 向けにリリースされたプロバイダーは EF Core 9 では動作しない」と明記しています。EF Core のバージョンを上げるときは、使っているプロバイダーが対応済みかを必ず先に確認してください。
 >
-> 上の表の最終列は **公式のプロバイダー一覧に記載されている値** です。ただし、この一覧は Microsoft 以外が提供するプロバイダーの最新状況に追いついていないことがあります。実際に NuGet の安定版を復元して確かめると、執筆時点では次のようになりました。
->
-> | パッケージ | 復元された安定版 | EF Core 10 のプロジェクトに追加した結果 |
-> | --- | --- | --- |
-> | `Npgsql.EntityFrameworkCore.PostgreSQL` | 10.0.3 | 警告なし。実際に PostgreSQL 16 へ接続してクエリと保存が動作 |
-> | `Pomelo.EntityFrameworkCore.MySql` | 9.0.0 | **`NU1608` 警告**（下記）。ビルドは通るが、実行すると例外で落ちる |
->
-> ```text
-> warning NU1608: 依存関係の制約外で検出されたパッケージのバージョン:
-> Pomelo.EntityFrameworkCore.MySql 9.0.0 では
-> Microsoft.EntityFrameworkCore.Relational (>= 9.0.0 && <= 9.0.999) が必要ですが、
-> バージョン Microsoft.EntityFrameworkCore.Relational 10.0.11 は解決されました。
-> ```
->
-> この警告を無視してそのまま MySQL 8 に接続すると、実行時に次の例外になります。**ビルドが通ることは動作の保証になりません。**
->
-> ```text
-> System.MissingMethodException: Method not found:
-> 'System.String Microsoft.EntityFrameworkCore.Diagnostics.AbstractionsStrings.ArgumentIsEmpty(System.Object)'.
-> ```
->
-> つまり **公式一覧だけでも NuGet だけでも判断せず、両方を確認してください。** サードパーティー製プロバイダーを使うプロジェクトでは、EF Core のバージョンをプロバイダーの対応状況に合わせて決めるのが安全です。
+> 上の表の最終列は公式のプロバイダー一覧に記載されている値ですが、この一覧は Microsoft 以外が提供するプロバイダーの最新状況に追いついていないことがあります。**公式一覧だけでも NuGet だけでも判断せず、両方を確認してください。** 実際に NuGet の安定版で確かめた結果は[付録5の「サードパーティー製プロバイダーはバージョンを実際に確かめる」](/appendix-efcore-05/#サードパーティー製プロバイダーはバージョンを実際に確かめる)にまとめています。
 
 > [!IMPORTANT]
 > 1 つの `DbContext` インスタンスに設定できるプロバイダーは 1 つだけです。同じ `DbContext` の型を別々のインスタンスで異なるプロバイダーに接続することは可能ですが、単一のインスタンスが複数のプロバイダーを使うことはできません。
@@ -311,20 +291,7 @@ dotnet ef dbcontext scaffold "Server=(localdb)\mssqllocaldb;Database=Blogging;Tr
 ```
 
 > [!WARNING]
-> このコマンドをそのまま実行すると、**生成された `DbContext` の `OnConfiguring` に接続文字列がそのまま埋め込まれます**。SQL Server 2022 に対して実際に実行したところ、パスワードを含む接続文字列がソースコードに書き出され、あわせて次の `#warning` が生成されました。
->
-> ```csharp
-> protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
-> #warning To protect potentially sensitive information in your connection string, you should move it out of source code.
->     => optionsBuilder.UseSqlServer("Server=...;User Id=sa;Password=...");
-> ```
->
-> 公式ドキュメントは、これは「生成されたコードが最初に使うときにいきなり動かないという体験を避けるため」であり、**接続文字列が製品コードに存在してはならない**と明記しています。`--no-onconfiguring` オプションを付けると `OnConfiguring` の生成そのものを抑止でき、実測でも接続文字列を含まない、DI 用のコンストラクターだけを持つクラスが生成されました。
->
-> ```bash
-> dotnet ef dbcontext scaffold "<接続文字列>" Microsoft.EntityFrameworkCore.SqlServer \
->     --output-dir Models --no-onconfiguring
-> ```
+> スキャフォールディングをそのまま実行すると、**生成された `DbContext` の `OnConfiguring` に接続文字列がそのまま埋め込まれます**。`--no-onconfiguring` オプションで抑止できます。詳しくは[付録3の「既存データベースからスキャフォールディングする」](/appendix-efcore-03/#既存データベースからスキャフォールディングする)を参照してください。
 
 ### パッケージの追加とツールの準備
 
@@ -618,7 +585,12 @@ sequenceDiagram
 - EF Core が投げる `InvalidOperationException` はコンテキストを回復不能な状態にすることがあり、握りつぶして処理を続行してはいけない
 
 > [!WARNING]
-> `DbContext` は **スレッドセーフではありません。** 同じインスタンスに対して複数の操作を同時に実行すると、次の例外が発生します。
+> `DbContext` は **スレッドセーフではありません。** 公式ドキュメントは「EF Core は同じ `DbContext` インスタンス上で複数の並行操作が実行されることをサポートしない。これには非同期クエリの並列実行と、複数スレッドからの明示的な同時利用の両方が含まれる」と明記しています。`await` せずに 2 つの操作を同時に走らせると、実測でも例外になりました。
+>
+> ```csharp
+> // これは動かない
+> await Task.WhenAll(context.SaveChangesAsync(), context.SaveChangesAsync());
+> ```
 >
 > ```text
 > System.InvalidOperationException: A second operation was started on this context instance
@@ -626,24 +598,9 @@ sequenceDiagram
 > concurrently using the same instance of DbContext.
 > ```
 >
-> 並列にクエリを実行したい場合は、後述する `IDbContextFactory<T>` でインスタンスを分けます。
-
-> [!WARNING]
-> やっかいなのは、**この例外がいつも出るとは限らない**ことです。SQLite のように同期的な I/O を行うプロバイダーでは、`Task.WhenAll(context.Blogs.ToListAsync(), context.Posts.ToListAsync())` のような書き方をしても各クエリが順番に完了してしまい、例外が発生しないことがあります（実際に 20 回試行して 1 度も発生しませんでした）。一方、`Task.Run` で明確に別スレッドから実行すると確実に例外になります。
+> さらに公式ドキュメントは「**並行アクセスが検出されなかった場合、未定義の動作、アプリケーションのクラッシュ、データの破損につながる可能性がある**」とも警告しています。例外が出ないことを「安全である証拠」と考えないでください。
 >
-> つまり **SQLite を使った単体テストでは問題が表面化せず、本番の SQL Server で初めて落ちる**、ということが起こり得ます。「テストが通ったから安全」と考えず、1 つの `DbContext` インスタンスを複数の処理で共有しない設計を徹底してください。
-
-> [!WARNING]
-> 上の例外を出しているのは EF Core の **同時実行検出 (concurrency detection)** という仕組みで、`DbContextOptionsBuilder.EnableThreadSafetyChecks(false)` で無効にできます。公式ドキュメントは「わずかな性能向上が得られるが、`DbContext` インスタンスが同時に使われた場合の **動作は未定義になり、プログラムは予測できない形で失敗する可能性がある**」と説明し、「性能向上が相当なものであることを確認し、アプリケーションを同時実行のバグについて十分にテストしたうえでのみ無効化すること」と釘を刺しています。
->
-> 実際に SQL Server 2022 に対して、同じ `DbContext` インスタンスから 2 本のクエリを `Task.Run` で並行実行する処理を、検出の有無を変えて 3 回ずつ試したところ、次の結果になりました（実測で確認）。
->
-> | 同時実行検出 | 発生した例外 |
-> | --- | --- |
-> | 有効（既定） | 3 回とも `InvalidOperationException: A second operation was started on this context instance before a previous operation completed.`（原因と対処ページへのリンク付き） |
-> | 無効 | 1 回目: `InvalidOperationException`（接続が閉じられていない旨）<br>2 回目: `InvalidOperationException`（同上、接続状態の表示だけが異なる）<br>3 回目: `InvalidCastException: Unable to cast object of type 'Microsoft.Data.ProviderBase.DbConnectionClosedConnecting' to type 'Microsoft.Data.SqlClient.SqlInternalConnectionTds'.` |
->
-> 検出を無効にすると、**実行のたびに違う低レベルの例外が出て、原因にたどり着けなくなります。** 公式が言う「予測できない形で失敗する」とはこのことです。この設定は原則として既定のままにしてください。
+> ASP.NET Core では、1 つのクライアント要求を実行するスレッドが常に 1 つで、要求ごとに別の DI スコープ（したがって別の `DbContext` インスタンス）が割り当てられるため、ほとんどのアプリケーションではこの問題から守られています。危険になるのは、1 つの要求の中で複数のクエリを `Task.WhenAll` で並列に走らせるような書き方をしたときです。並列にクエリを実行したい場合は、後述する `IDbContextFactory<T>` でインスタンスを分けます。
 
 Singleton サービスやバックグラウンドサービスから `DbContext` を使う場合は、`IServiceScopeFactory` でスコープを作るか、`IDbContextFactory<T>` を使います。
 
@@ -675,16 +632,6 @@ public class ReportWorker(
 | 同上 | Production | **例外なく起動してしまう** |
 | `IServiceScopeFactory` でスコープを作る | Development | 正常に動作し、クエリが実行された |
 
-> [!TIP]
-> スコープの検証では、もう 1 つ「**Scoped サービスをルートのサービスプロバイダーから解決していないか**」も確認されます。`app.Services.GetRequiredService<BloggingContext>()` のようにスコープを作らずに解決すると、次の例外になります（実測）。
->
-> ```text
-> System.InvalidOperationException: Cannot resolve scoped service
-> 'BloggingContext' from root provider.
-> ```
->
-> ルートコンテナーで作られた Scoped サービスは、アプリケーションの終了時まで破棄されず、実質的に Singleton に昇格してしまうためです。
-
 ```csharp
 builder.Services.AddDbContextFactory<BloggingContext>(options =>
     options.UseSqlServer(connectionString));
@@ -708,42 +655,9 @@ public class ReportGenerator(IDbContextFactory<BloggingContext> contextFactory)
 > [!NOTE]
 > **Spring Boot** の `EntityManager` は `@PersistenceContext` によって注入されますが、そのスコープはリクエスト単位ではなく **トランザクションスコープ** です（Jakarta Persistence の仕様が「特に指定しなければトランザクションスコープの永続化コンテキストが使われる」と定めています）。EF Core の `DbContext` は明示的に Scoped として登録され、`SaveChangesAsync` の呼び出しが保存の契機になる点が異なります。**Django** の ORM は 1 つのスレッドが 1 つの接続を保持する形で暗黙的に接続を管理しますが、EF Core はインスタンスの寿命を DI コンテナーが管理します。
 
-#### 並行操作は検出されて例外になる
-
-公式ドキュメントは「EF Core は同じ `DbContext` インスタンス上で複数の並行操作が実行されることをサポートしない。これには非同期クエリの並列実行と、複数スレッドからの明示的な同時利用の両方が含まれる」と明記しています。**非同期呼び出しは必ずすぐに `await` するか、並列実行する操作には別々の `DbContext` インスタンスを使ってください。**
-
-同じインスタンスに対して `SaveChangesAsync` を `await` せずに 2 つ同時に走らせたところ、実測でも例外になりました。
-
-```csharp
-// これは動かない
-await Task.WhenAll(context.SaveChangesAsync(), context.SaveChangesAsync());
-```
-
-```text
-System.InvalidOperationException: A second operation was started on this context instance before a
-previous operation completed. This is usually caused by different threads concurrently using the same
-instance of DbContext.
-```
-
-> [!WARNING]
-> 公式ドキュメントは「**並行アクセスが検出されなかった場合、未定義の動作、アプリケーションのクラッシュ、データの破損につながる可能性がある**」と警告しています。上の例外が出るのは EF Core が検出できたケースであり、検出できないケースもあるという意味です。例外が出ないことを「安全である証拠」と考えないでください。
->
-> ASP.NET Core では、1 つのクライアント要求を実行するスレッドが常に 1 つで、要求ごとに別の DI スコープ（したがって別の `DbContext` インスタンス）が割り当てられるため、ほとんどのアプリケーションではこの問題から守られています。危険になるのは、1 つの要求の中で複数のクエリを `Task.WhenAll` で並列に走らせるような書き方をしたときです。
-
 ### DbContext プーリング
 
-`AddDbContext` の代わりに `AddDbContextPool` を使うと、`DbContext` インスタンスを再利用するプールが有効になります。インスタンスの生成と内部サービスの初期化コストが削減され、高スループットのアプリケーションでは有意な差が出ます。スコープの作成と `DbContext` の取得だけを 3,000 回繰り返して測ったところ、1 回あたり 0.141 ミリ秒・約 62 KB の割り当てが、0.0015 ミリ秒・512 バイトになりました。ただしこれは `DbContext` の生成コストだけを取り出した数値です。実際のリクエストではクエリの実行時間が大半を占めるため、エンドポイント全体の応答時間がこの比率で改善するわけではありません。
-
-```csharp
-builder.Services.AddDbContextPool<BloggingContext>(
-    options => options.UseSqlServer(connectionString),
-    poolSize: 1024);
-```
-
-`poolSize` は保持するインスタンスの最大数で、既定は 1024 です。プールが空の場合は新しいインスタンスが生成されるため、上限を超えても動作は継続します。実際に `poolSize: 2` を指定して 5 つのスコープを同時に保持したところ、3 つ目以降も例外にならず、待機によるブロックも発生しませんでした。プールの上限は「同時実行数の上限」ではなく「使い回すために保持しておく数の上限」だと理解してください。
-
-> [!WARNING]
-> プールされた `DbContext` インスタンスは再利用されるため、実質的に Singleton のように扱われます。`OnConfiguring` は最初の 1 回しか呼ばれず、リクエストごとに変化する状態（テナント ID や現在のユーザーなど）をコンストラクターやフィールドに保持する設計とは相性が悪くなります。そのような場合は、`AddDbContext` を使うか、状態をリセットするフックを実装してください。
+高スループットのアプリケーションでは、`AddDbContext` の代わりに `AddDbContextPool` を使うと、`DbContext` インスタンスを再利用するプールが有効になり、インスタンスの生成コストを削減できます。ただしプールされたインスタンスは再利用されるため、リクエストごとに変わる状態をフィールドに保持する設計とは相性が悪くなります。詳しくは[付録5の「DbContext プーリングでインスタンスを使い回す」](/appendix-efcore-05/#dbcontext-プーリングでインスタンスを使い回す)を参照してください。
 
 > [!TIP]
 > **さらに詳しく**
@@ -1278,15 +1192,6 @@ dotnet ef migrations bundle --self-contained --target-runtime linux-x64 --output
 ./efbundle --connection "$CONNECTION_STRING"
 ```
 
-> [!WARNING]
-> 対象ランタイムを指定するオプションは **`--target-runtime`（短縮形 `-r`）** です。よく似た `--runtime` というオプションも存在しますが、こちらは「ツールがビルドに使うランタイム」を指す別のオプションで、`--self-contained` と組み合わせると次のエラーで失敗することがあります（実測）。
->
-> ```text
-> error NETSDK1047: 資産ファイル 'obj/project.assets.json' に 'net10.0/linux-x64' のターゲットがありません。
-> ```
->
-> `--target-runtime` を使えば、プロジェクトに `RuntimeIdentifiers` を追加しなくても生成できます。実測では macOS 上から `--target-runtime linux-x64` でバンドルを生成し、Linux 向けの実行可能ファイル（ELF 64-bit）が出力されることを確認しました。生成したバンドルを実際に SQL Server 2022 に対して実行し、マイグレーションが適用されることも確認済みです。
-
 > [!NOTE]
 > 公式ドキュメントは、バンドルの制約として「SQL スクリプトと違い、実行される SQL を事前に確認したり、含まれるマイグレーションを一覧したりする手段が現時点ではない」と述べています。デプロイ前に SQL のレビューが必要な運用では、バンドルではなく `dotnet ef migrations script` でスクリプトを生成してください。
 
@@ -1334,7 +1239,7 @@ app.Run();
 > **さらに詳しく**
 >
 > - [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) — 生成されたマイグレーションの読み方、制約への命名、同時実行の抑止、初期データの投入、設計時 DbContext ファクトリ
-> - [付録 EF Core 5：パフォーマンスとテスト](../appendix-efcore-05/index.md) — 計測と診断、インデックスの効き方、コンパイル済みクエリ、コンパイル済みモデル、NativeAOT
+> - [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md) — 計測と診断、インデックスの効き方、コンパイル済みクエリ、コンパイル済みモデル、NativeAOT
 
 ## 6. 本番運用とスケールアウト
 
@@ -1404,7 +1309,7 @@ B は A の完了を待ってからロックを取得し、**適用済みと判�
 > **さらに詳しく**
 >
 > - [付録 EF Core 4：更新・トランザクション・レプリカ](../appendix-efcore-04/index.md) — 楽観的同時実行制御、`DbUpdateConcurrencyException` の解決、実行戦略とトランザクションの併用、読み取りスケールアウト
-> - [付録 EF Core 5：パフォーマンスとテスト](../appendix-efcore-05/index.md) — `DbContext` プーリングと接続プールの違い、計測と診断
+> - [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md) — `DbContext` プーリングと接続プールの違い、計測と診断
 
 ## 7. テストとアーキテクチャ
 
@@ -1446,69 +1351,7 @@ flowchart TB
 
 ### WebApplicationFactory を使った統合テスト
 
-ASP.NET Core の統合テストでは、`WebApplicationFactory<TEntryPoint>` でアプリケーション全体を起動し、テスト用のデータベースに差し替えます。
-
-```csharp
-using System.Data.Common;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.Data.Sqlite;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
-
-public class BloggingApiFactory : WebApplicationFactory<Program>
-{
-    protected override void ConfigureWebHost(IWebHostBuilder builder)
-    {
-        builder.ConfigureServices(services =>
-        {
-            // 既定の DbContext 構成を取り除く
-            services.RemoveAll<DbContextOptions<BloggingContext>>();
-            services.RemoveAll<DbContextOptions>();
-
-            // 接続を開いたままにしてインメモリデータベースを保持する
-            services.AddSingleton<DbConnection>(_ =>
-            {
-                var connection = new SqliteConnection("DataSource=:memory:");
-                connection.Open();
-                return connection;
-            });
-
-            services.AddDbContext<BloggingContext>((serviceProvider, options) =>
-            {
-                var connection = serviceProvider.GetRequiredService<DbConnection>();
-                options.UseSqlite(connection);
-            });
-        });
-
-        builder.UseEnvironment("Testing");
-    }
-}
-```
-
-テスト側では `HttpClient` を取得してエンドポイントを呼び出します。
-
-```csharp
-public class BlogsApiTests(BloggingApiFactory factory) : IClassFixture<BloggingApiFactory>
-{
-    [Fact]
-    public async Task Get_blogs_returns_ok()
-    {
-        using var scope = factory.Services.CreateScope();
-        var context = scope.ServiceProvider.GetRequiredService<BloggingContext>();
-        await context.Database.EnsureCreatedAsync();
-
-        var client = factory.CreateClient();
-        var response = await client.GetAsync("/api/blogs");
-
-        response.EnsureSuccessStatusCode();
-    }
-}
-```
-
-> [!TIP]
-> `Program.cs` がトップレベルステートメントで書かれている場合、テストプロジェクトから `Program` クラスを参照するために、Web プロジェクト側に `public partial class Program { }` を追加するか、テストプロジェクトから `InternalsVisibleTo` を設定する必要があります。
+ASP.NET Core の統合テストでは、`WebApplicationFactory<TEntryPoint>` でアプリケーション全体を起動し、`ConfigureServices` で `DbContext` の登録だけをテスト用のデータベースに差し替えます。エンドポイントからデータベースまでを通しで検証できるため、EF Core を使う API の回帰テストに向いています。具体的な実装は[付録6の「WebApplicationFactory で API ごとテストする」](/appendix-efcore-06/#webapplicationfactory-で-api-ごとテストする)を参照してください。
 
 ### アーキテクチャ例：レイヤー構成のまとめ
 
@@ -1556,7 +1399,7 @@ flowchart TB
 > [!TIP]
 > **さらに詳しく**
 >
-> - [付録 EF Core 5：パフォーマンスとテスト](../appendix-efcore-05/index.md) — 実データベースに対するテスト、SQLite インメモリ、SQLite の制限、リポジトリパターン
+> - [付録 EF Core 6：テスト](../appendix-efcore-06/index.md) — 実データベースに対するテスト、SQLite インメモリ、SQLite の制限、`WebApplicationFactory` による統合テスト、リポジトリパターン
 
 ## 8. 参考ドキュメント
 
