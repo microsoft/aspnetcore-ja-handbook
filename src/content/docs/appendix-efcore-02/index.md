@@ -686,6 +686,20 @@ public class Shop
 }
 ```
 
+> [!WARNING]
+> **座標の順番が、地図アプリで見慣れた「緯度, 経度」とは逆です。** NTS の座標は X と Y で表され、公式ドキュメントは **X に経度、Y に緯度**を入れるよう明記しています。取り違えると、緯度に 90 を超える値が入って実行時に失敗します。東京駅（北緯 35.6812 度、東経 139.7671 度）を正しく書くと次のようになります。
+>
+> ```csharp
+> var factory = NtsGeometryServices.Instance.CreateGeometryFactory(srid: 4326);
+> var tokyo = factory.CreatePoint(new Coordinate(139.7671, 35.6812));  // X=経度, Y=緯度
+> ```
+>
+> 逆に `new Coordinate(35.6812, 139.7671)` と書いて SQL Server 2022 に送ると、次の例外になりました（実測で確認）。
+>
+> ```text
+> Parameter 1 ("@wrong"): The supplied value is not a valid instance of data type geography.
+> ```
+
 実測した DDL では、SQL Server の `geography` 型の列が作られました。
 
 ```sql
@@ -708,6 +722,30 @@ ORDER BY [s].[Location].STDistance(@origin)
 ```
 
 東京タワー付近を基準に東京駅と大阪駅を並べたところ、それぞれ約 3,186 m と約 401,307 m という結果になりました。距離の計算がデータベース側で行われるため、全件を取得してからアプリケーションで計算する必要がありません。
+
+> [!WARNING]
+> **同じ `Distance` でも、データベースで計算させるか .NET 側で計算するかで単位が変わります。** 公式ドキュメントは、**NTS は演算のときに SRID（座標系の識別子）を無視し、平面座標系を仮定する**と明記しています。そのため経度緯度をそのまま渡すと、距離・長さ・面積は**メートルではなく度**で返ります。
+>
+> 東京駅と大阪駅の 2 点で実測したところ、上のようにクエリの中で計算させると **403,830.7**（メートル）、いったんエンティティを読み込んでから .NET 側で `Distance` を呼ぶと **4.381917**（度）になりました。同じ 2 点なのに値がまったく違います。**度をメートルに換算する定数はありません**（緯度によって 1 度の長さが変わるため）。距離が必要なら、クエリの中で計算してデータベースに評価させてください。
+
+#### `geography` と `geometry` を使い分ける
+
+列の型は既定で `geography`（地球を球とみなす座標系）になります。平面座標として扱いたい場合は `HasColumnType` で `geometry` に変更します。どちらになるかを `INFORMATION_SCHEMA.COLUMNS` で実測しました。
+
+| モデルの記述 | 生成された列型 |
+| --- | --- |
+| `public Point? Location { get; set; }` | `geography` |
+| `.Property(z => z.Shape).HasColumnType("geometry")` | `geometry` |
+
+`geography` を選んだ場合、SQL Server は多角形の頂点の並び順に制約を課します。公式ドキュメントは**外周は反時計回り、内側の穴は時計回り**でなければならず、**NTS がデータベースに送る前に検証する**と説明しています。実際に時計回りの多角形を保存しようとすると、次の例外になりました（実測で確認）。`geometry` 列では同じ多角形が問題なく保存できます。
+
+```text
+System.ArgumentException: When writing a SQL Server geography value,
+the shell of a polygon must be oriented counter-clockwise.
+```
+
+> [!NOTE]
+> **NTS では表現できない図形があります。** 公式ドキュメントは `CircularString`、`CompoundCurve`、`CurvePolygon`（曲線を含む型）が NTS で未対応であることを警告しています。SQL Server 側にこれらのデータがある場合は、`STCurveToLine` で折れ線に変換してから EF Core で扱ってください。また既存データベースからスキャフォールディングする場合は、**先に空間パッケージを追加しておく必要があります。** 後から追加すると、型マッピングが見つからないという警告とともに列がスキップされます。
 
 ### hierarchyid で階層構造を扱う
 
@@ -1044,6 +1082,7 @@ dotnet_diagnostic.CA1056.severity = none
 - [SQL Server のメモリ最適化テーブルのサポート | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/memory-optimized-tables)
 - [SQL Server プロバイダーの値生成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/value-generation)
 - [空間データ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/spatial)
+- [SQL Server プロバイダーの空間データ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/spatial)
 - [一括構成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/bulk-configuration)
 - [グローバルクエリフィルター | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/filters)
 - [SQL Server プロバイダーのインデックス | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/indexes)

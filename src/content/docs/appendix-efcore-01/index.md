@@ -82,6 +82,35 @@ public class Book
 >
 > なお公式ドキュメントは「現時点でコンストラクターのバインドはすべて規約による。使用するコンストラクターを明示的に構成する機能は将来のリリースで予定されている」と述べています。複数のコンストラクターを持つ型では、どれが選ばれるかをコードで指定できません。
 
+#### エンティティのコンストラクターにサービスを注入できる（が、勧められない）
+
+EF Core はエンティティのコンストラクターに、**EF Core が知っているサービス**を注入できます。公式ドキュメントが挙げているのは `DbContext`、`ILazyLoader`（遅延読み込みサービス）、`Action<object, string>`（遅延読み込みデリゲート）、`IEntityType`（そのエンティティ型のメタデータ）の 4 つです。アプリケーション側のサービスは注入できません。
+
+```csharp
+public class Blog
+{
+    public Blog() { }
+
+    private Blog(ShopDbContext context) => Context = context;   // EF Core だけが呼ぶ
+
+    private ShopDbContext? Context { get; set; }
+
+    public int Id { get; set; }
+    public ICollection<Post>? Posts { get; set; }
+
+    // 記事を全件読み込まずに件数だけを取る
+    public int PostsCount
+        => Posts?.Count
+           ?? Context?.Set<Post>().Count(p => Id == EF.Property<int?>(p, "BlogId"))
+           ?? 0;
+}
+```
+
+実測すると、EF Core がクエリの結果として生成したインスタンスでは `PostsCount` が **3** を返し、自分で `new Blog()` したインスタンスでは **0** になりました。上のコードが `Context?.` と null 条件演算子を使っているのは、**EF Core が作っていないインスタンスでは注入が行われない**ためです。
+
+> [!WARNING]
+> 公式ドキュメントは、この `DbContext` の注入について「**エンティティ型を EF Core に直接結合させてしまうため、アンチパターンと見なされることが多い。** 使う前に他の選択肢を慎重に検討すること」と警告しています。件数だけが欲しいのであれば、クエリ側で投影する（`Select(b => new { b.Id, Count = b.Posts.Count })`）ほうが、エンティティを永続化技術から独立させたまま同じ結果を得られます。
+
 ### Null 許容参照型がスキーマを決める
 
 C# の **Null 許容参照型 (nullable reference types: NRT)** は、新規プロジェクトのテンプレートでは既定で有効です。EF Core はこの注釈を読んで、列を `NOT NULL` にするか `NULL` にするかを決めます。**同じプロパティ宣言でも、NRT の有効・無効で生成されるスキーマが変わります。**
@@ -538,6 +567,77 @@ CREATE TABLE [PersonPerson] (
 > b.Friends.Add(a);
 > ```
 
+#### 同じ 2 つの型のあいだにリレーションシップが 2 つあると構築に失敗する
+
+ブログに「記事の一覧」と「注目記事」の 2 つを持たせるように、**同じ 2 つの型のあいだにリレーションシップが 2 本ある**モデルは珍しくありません。ところが、これを規約任せにするとモデルの構築そのものが失敗します。
+
+```csharp
+public class Blog
+{
+    public int Id { get; set; }
+    public List<Post> Posts { get; } = new();     // 記事の一覧
+    public int? FeaturedPostId { get; set; }
+    public Post? FeaturedPost { get; set; }       // 注目記事
+}
+
+public class Post
+{
+    public int Id { get; set; }
+    public int BlogId { get; set; }
+    public Blog? Blog { get; set; }
+}
+```
+
+公式ドキュメントは「何も構成しないと、EF の規約は 2 つの型のあいだのどのナビゲーションどうしを対にすべきかを判断できない」と説明しています。実測すると、`DbContext` を使った瞬間に次の例外になりました。
+
+```text
+System.InvalidOperationException: Unable to determine the relationship represented by
+navigation 'Blog.FeaturedPost' of type 'Post'. Either manually configure the relationship,
+or ignore this property using the '[NotMapped]' attribute or by using
+'EntityTypeBuilder.Ignore' in 'OnModelCreating'.
+```
+
+Fluent API では、2 本のリレーションシップを個別に書けば解決します。
+
+```csharp
+protected override void OnModelCreating(ModelBuilder modelBuilder)
+{
+    modelBuilder.Entity<Blog>()
+        .HasMany(b => b.Posts).WithOne(p => p.Blog).HasForeignKey(p => p.BlogId);
+
+    modelBuilder.Entity<Blog>()
+        .HasOne(b => b.FeaturedPost).WithOne().HasForeignKey<Blog>(b => b.FeaturedPostId);
+}
+```
+
+データ注釈で書く場合は、対にしたい相手のナビゲーション名を `[InverseProperty]` で指定します。上のモデルなら `Blog.Posts` の相手が `Post.Blog` であることを教えます。
+
+```csharp
+[InverseProperty("Blog")]
+public List<Post> Posts { get; } = new();
+```
+
+どちらの方法でも、実測したモデルは `Post.BlogId → Blog` と `Blog.FeaturedPostId → Post` の 2 本の外部キーになりました。
+
+> [!IMPORTANT]
+> 公式ドキュメントは `[InverseProperty]` について「**同じ型どうしのあいだにリレーションシップが 2 つ以上あるときにのみ必要**であり、1 つしかない場合は 2 つのナビゲーションが自動的に対にされる」と明記しています。リレーションシップが 1 本しかないモデルに予防的に付ける必要はありません。
+
+#### `[Required]` は付ける場所で効果が変わる
+
+リレーションシップを必須にする（外部キーを `NOT NULL` にする）ために `[Required]` を使うことがあります。ただし**付ける場所によって、効くか黙って無視されるかが変わります。**
+
+公式ドキュメントは、従属側（外部キーを持つ側）のナビゲーションに付けた場合は外部キーが `NOT NULL` になり、**主体側のナビゲーションに付けた場合は効果がない**と明記しています。実測でも次のとおりでした。
+
+| `[Required]` を付けた場所 | 外部キーの NULL 許容 |
+| --- | --- |
+| 従属側のナビゲーション（`Post.Blog`） | `NOT NULL` になる |
+| 主体側のナビゲーション（`Blog.Posts`） | **`NULL` のまま（無視される）** |
+
+主体側に付けても例外や警告は出ないため、「必須にしたつもりが任意のままだった」という食い違いに気づきにくい点に注意してください。
+
+> [!NOTE]
+> Null 許容参照型 (NRT) が有効な場合、`public Blog Blog { get; set; }` のように非 null で宣言した時点で外部キーは `NOT NULL` になります。公式ドキュメントも「この例の `BlogId` は NRT によってすでに非 null なので、`[Required]` 属性は効果を持たない」と述べています。NRT を有効にしているなら、`[Required]` をリレーションシップに使う場面はほとんどありません。
+
 #### カスケード削除は「子を読み込んでいるか」で主体が変わる
 
 `OnDelete` を明示しなかった場合の既定値は、外部キーが NULL 許容かどうかで決まります。実測で確認した既定値は次のとおりです。
@@ -924,80 +1024,6 @@ CREATE TABLE [Docs] (
 > [!NOTE]
 > SQLite にはこれらに対応するネイティブの型がなく、`Microsoft.Data.Sqlite` はすべて `TEXT` として格納します。テストで SQLite を使う場合、この差が原因で本番と挙動が変わることがあります（[付録 EF Core 6](../appendix-efcore-06/index.md) を参照）。
 
-#### 位置情報を扱う（空間データ）
-
-緯度経度や地図上の図形を扱う場合、EF Core は **NetTopologySuite (NTS)** というライブラリの型をそのままモデルに書けます。SQL Server なら `Microsoft.EntityFrameworkCore.SqlServer.NetTopologySuite` パッケージを追加し、`UseNetTopologySuite()` を呼びます。
-
-```csharp
-options.UseSqlServer(connectionString, o => o.UseNetTopologySuite());
-```
-
-使える型は `NetTopologySuite.Geometries` 名前空間の `Point`、`LineString`、`Polygon` などです。基底の `Geometry` 型にすると、どの図形でも入れられます。
-
-```csharp
-public class City
-{
-    public int Id { get; set; }
-    public string Name { get; set; } = "";
-    public Point? Location { get; set; }
-}
-```
-
-> [!WARNING]
-> **座標の順番が、地図アプリで見慣れた「緯度, 経度」とは逆です。** NTS の座標は X と Y で表され、公式ドキュメントは **X に経度、Y に緯度**を入れるよう明記しています。取り違えると、緯度に 90 を超える値が入って実行時に失敗します。東京駅（北緯 35.6812 度、東経 139.7671 度）を正しく書くと次のようになります。
->
-> ```csharp
-> var factory = NtsGeometryServices.Instance.CreateGeometryFactory(srid: 4326);
-> var tokyo = factory.CreatePoint(new Coordinate(139.7671, 35.6812));  // X=経度, Y=緯度
-> ```
->
-> 逆に `new Coordinate(35.6812, 139.7671)` と書いて SQL Server に送ると、次の例外になります（実測で確認）。
->
-> ```text
-> Parameter 1 ("@wrong"): The supplied value is not a valid instance of data type geography.
-> ```
-
-距離や包含の判定は、LINQ に書けば SQL に翻訳されます。SQL Server 2022 に東京駅と大阪駅を格納して実測した結果です。
-
-```csharp
-var distance = await db.Cities
-    .Where(c => c.Name == "大阪駅")
-    .Select(c => c.Location!.Distance(tokyo))
-    .SingleAsync();
-```
-
-```sql
--- SQL Server
-DECLARE @tokyo geography = 0xE6100000010C8104...;
-SELECT [c].[Location].STDistance(@tokyo)
-FROM [Cities] AS [c]
-WHERE [c].[Name] = N'大阪駅'
-```
-
-`Distance` は SQL Server の `STDistance` に翻訳され、**403,830.7** という値が返りました。単位はメートルなので、東京駅から大阪駅まで約 404 km ということです。
-
-> [!WARNING]
-> **同じ `Distance` でも、データベースで計算させるか .NET 側で計算するかで単位が変わります。** 公式ドキュメントは、**NTS は演算のときに SRID（座標系の識別子）を無視し、平面座標系を仮定する**と明記しています。そのため経度緯度をそのまま渡すと、距離・長さ・面積は**メートルではなく度**で返ります。
->
-> 実際に、いったんエンティティを読み込んでから .NET 側で `Distance` を呼ぶと **4.381917** になりました（実測で確認）。上のサーバー側計算の 403,830.7 メートルと同じ 2 点なのに、値がまったく違います。**度をメートルに換算する定数はありません**（緯度によって 1 度の長さが変わるため）。距離が必要なら、上の例のようにクエリの中で計算してデータベースに評価させてください。
-
-列の型は既定で `geography` になります。平面座標として扱いたい場合は `HasColumnType` で `geometry` に変更します。どちらになるかを `INFORMATION_SCHEMA.COLUMNS` で実測しました。
-
-| モデルの記述 | 生成された列型 |
-| --- | --- |
-| `public Point? Location { get; set; }` | `geography` |
-| `.Property(z => z.Shape).HasColumnType("geometry")` | `geometry` |
-
-`geography` を選んだ場合、SQL Server は多角形の頂点の並び順に制約を課します。公式ドキュメントは**外周は反時計回り、内側の穴は時計回り**でなければならず、**NTS がデータベースに送る前に検証する**と説明しています。実際に時計回りの多角形を保存しようとすると、次の例外になりました（実測で確認）。`geometry` 列では同じ多角形が問題なく保存できます。
-
-```text
-System.ArgumentException: When writing a SQL Server geography value,
-the shell of a polygon must be oriented counter-clockwise.
-```
-
-> [!NOTE]
-> **NTS では表現できない図形があります。** 公式ドキュメントは `CircularString`、`CompoundCurve`、`CurvePolygon`（曲線を含む型）が NTS で未対応であることを警告しています。SQL Server 側にこれらのデータがある場合は、`STCurveToLine` で折れ線に変換してから EF Core で扱ってください。また既存データベースからスキャフォールディングする場合は、**先に空間パッケージを追加しておく必要があります。** 後から追加すると、型マッピングが見つからないという警告とともに列がスキップされます。
-
 ### 継承のマッピング
 
 エンティティに継承関係がある場合、EF Core は 3 つのマッピング方法を提供します。既定は **TPH (table-per-hierarchy)** で、階層全体を 1 つのテーブルに格納し、行がどの型かを示す **識別子列 (discriminator)** を暗黙的に追加します。
@@ -1135,10 +1161,10 @@ modelBuilder.Entity<Animal>()
 - [値の比較子 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/value-comparers)
 - [継承 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/inheritance)
 - [Null 許容参照型の使用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/nullable-reference-types)
+- [リレーションシップのマッピング属性（データ注釈） | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/mapping-attributes)
+- [エンティティ型のコンストラクター | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/constructors)
 - [エンティティ型のコンストラクター | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/constructors)
 - [同じ DbContext 型で複数のモデルを切り替える | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/dynamic-model)
 - [カスケード削除 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/cascade-delete)
 - [外部キーと主キー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/foreign-and-principal-keys)
 - [高度なテーブルマッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/table-splitting)
-- [空間データ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/spatial)
-- [SQL Server プロバイダーの空間データ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/spatial)
