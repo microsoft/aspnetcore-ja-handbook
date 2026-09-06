@@ -675,7 +675,7 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 > [!NOTE]
 > **EF Core 10 では、分割クエリの並べ替えの一貫性が修正されました。** EF Core 9 以前は、2 本目以降のクエリに埋め込まれるサブクエリの `ORDER BY` から主キー列が欠落することがあり、**検出しにくいデータ破損につながる可能性がありました**。
 >
-> 次のクエリを EF Core 10 で実行して、実際に発行された 2 本の SQL を確認しました。
+> 次のクエリを EF Core 10 と SQL Server で実行して、実際に発行された 2 本の SQL を確認しました。
 >
 > ```csharp
 > var blogs = await context.Blogs
@@ -1253,7 +1253,7 @@ var summaries = await context.Database
 型はデータベースのどのテーブルとも一致している必要がありません。パラメーター付きコンストラクターや `[Column]` 属性といった、EF Core が対応するマッピング機構もそのまま使えます。結果は変更追跡されないため、実測でも `ChangeTracker.Entries()` は 0 件でした。
 
 > [!NOTE]
-> スカラーの `SqlQuery` と違い、`AS [Value]` は不要です。EF Core は指定した SQL をサブクエリとして包み、**プロパティ名と同じ名前の列**を参照するためです。そのまま LINQ を合成でき、実際に `Where` を続けたところ次の SQL が発行されました。
+> スカラーの `SqlQuery` と違い、`AS [Value]` は不要です。EF Core は指定した SQL をサブクエリとして包み、**プロパティ名と同じ名前の列**を参照するためです。そのまま LINQ を合成でき、実際に `Where` を続けたところ、SQL Server では次の SQL が発行されました。
 >
 > ```sql
 > SELECT [p].[BlogName], [p].[PostTitle], [p].[Rating]
