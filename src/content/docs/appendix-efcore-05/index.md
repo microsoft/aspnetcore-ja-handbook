@@ -28,6 +28,7 @@ description: "EF Core の計測と診断、インデックス設計、コンパ�
    - [パラメーター名が EF Core 10 で変わった](#パラメーター名が-ef-core-10-で変わった)
    - [ログとセキュリティ](#ログとセキュリティ)
    - [DbContext の構成と接続](#dbcontext-の構成と接続)
+   - [Singleton やバックグラウンドサービスから DbContext を使う](#singleton-やバックグラウンドサービスから-dbcontext-を使う)
 2. [クエリとモデルの最適化](#2-クエリとモデルの最適化)
    - [インデックスを正しく張る](#インデックスを正しく張る)
    - [コレクションのパラメーター化と IN 句の翻訳](#コレクションのパラメーター化と-in-句の翻訳)
@@ -570,6 +571,58 @@ System.MissingMethodException: Method not found:
 ```
 
 つまり **公式一覧だけでも NuGet だけでも判断せず、両方を確認してください。** サードパーティー製プロバイダーを使うプロジェクトでは、EF Core のバージョンをプロバイダーの対応状況に合わせて決めるのが安全です。
+
+### Singleton やバックグラウンドサービスから DbContext を使う
+
+Singleton サービスやバックグラウンドサービスから `DbContext` を使う場合は、`IServiceScopeFactory` でスコープを作るか、`IDbContextFactory<T>` を使います。
+
+公式ドキュメントは `BackgroundService` のようなホステッドサービスについて、**依存関係をコンストラクター注入せず、`IServiceScopeFactory` を注入してスコープを作り、そのスコープから解決する**よう案内しています。EF Core 側の公式ドキュメントも、複数のスレッドから使う場合の手段として `IServiceScopeFactory` によるスコープ作成を挙げています。
+
+```csharp
+public class ReportWorker(
+    IServiceScopeFactory scopeFactory,
+    ILogger<ReportWorker> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        // スコープを作り、その中から DbContext を解決する
+        using var scope = scopeFactory.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<BloggingContext>();
+
+        logger.LogInformation(
+            "ブログ件数={Count}",
+            await context.Blogs.CountAsync(stoppingToken));
+    }
+}
+```
+
+`DbContext` を直接コンストラクターで受け取る形と、この形の実測結果は次のとおりです。
+
+| 実装 | 環境 | 結果 |
+| --- | --- | --- |
+| `BackgroundService(BloggingContext ctx)` | Development | `AggregateException` → `Cannot consume scoped service 'BloggingContext' from singleton 'Microsoft.Extensions.Hosting.IHostedService'.` |
+| 同上 | Production | **例外なく起動してしまう** |
+| `IServiceScopeFactory` でスコープを作る | Development | 正常に動作し、クエリが実行された |
+
+```csharp
+builder.Services.AddDbContextFactory<BloggingContext>(options =>
+    options.UseSqlServer(connectionString));
+```
+
+> [!IMPORTANT]
+> `AddDbContextFactory` は、`IDbContextFactory<BloggingContext>` を **Singleton** として登録すると同時に、`BloggingContext` そのものも **Scoped** で登録します（実測で確認）。したがって、コントローラーで `BloggingContext` を直接受け取ることも、バックグラウンドサービスでファクトリーからインスタンスを作ることも、両方できます。ただし **ファクトリーで作ったインスタンスは DI コンテナーが破棄してくれない**ため、下の例のように `await using` で必ず自分で破棄してください。
+
+```csharp
+public class ReportGenerator(IDbContextFactory<BloggingContext> contextFactory)
+{
+    public async Task<int> CountBlogsAsync(CancellationToken cancellationToken)
+    {
+        // ファクトリで作成したインスタンスはアプリケーション側で破棄する
+        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken);
+        return await context.Blogs.CountAsync(cancellationToken);
+    }
+}
+```
 
 ## 2. クエリとモデルの最適化
 

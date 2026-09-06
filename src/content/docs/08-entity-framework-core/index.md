@@ -326,26 +326,6 @@ dotnet ef --version
 > [!TIP]
 > チーム開発では、グローバルツールの代わりに **ローカルツール** としてリポジトリに固定すると、開発者間でバージョンを揃えられます。`dotnet new tool-manifest` を実行してから `dotnet tool install dotnet-ef` を実行すると、ツールマニフェストファイルにバージョンが記録されます。このファイルをリポジトリにコミットしておけば、他の開発者は `dotnet tool restore` を実行するだけで同じバージョンを復元できます。実測では、マニフェストに `"version": "10.0.11"` が記録され、`dotnet tool restore` で復元できることを確認しました。
 
-<details>
-<summary>Visual Studio のパッケージマネージャーコンソールを使う場合</summary>
-
-Visual Studio では、`Microsoft.EntityFrameworkCore.Tools` パッケージを追加すると、パッケージマネージャーコンソールから PowerShell コマンドを使用できます。
-
-```powershell
-Install-Package Microsoft.EntityFrameworkCore.Tools
-```
-
-以降、本章で紹介する `dotnet ef` コマンドは、次のように読み替えられます。
-
-| .NET CLI | パッケージマネージャーコンソール |
-| --- | --- |
-| `dotnet ef migrations add <Name>` | `Add-Migration <Name>` |
-| `dotnet ef database update` | `Update-Database` |
-| `dotnet ef migrations script` | `Script-Migration` |
-| `dotnet ef migrations remove` | `Remove-Migration` |
-
-</details>
-
 ---
 
 ## 2. DbContext と ASP.NET Core への組み込み
@@ -404,27 +384,6 @@ public class Contributor
 
 > [!IMPORTANT]
 > プロジェクトで **null 許容参照型 (Nullable Reference Types)** が有効（`<Nullable>enable</Nullable>`。.NET 6 以降のテンプレートでは既定）になっていると、EF Core は `string` を NOT NULL 列、`string?` を NULL 許容列として扱います。意図しない NOT NULL 制約を避けるため、null を許す列は必ず `?` を付けます。
-
-> [!TIP]
-> **コード分析ルールとの衝突について。** プロジェクトで `<AnalysisLevel>latest-all</AnalysisLevel>` のように厳しいコード分析を有効にすると、上のエンティティ定義に対して次のような警告が出ます（実測で確認）。
->
-> | ルール | 内容 |
-> | --- | --- |
-> | `CA1002` | `List<Post>` ではなく `Collection<T>` を公開すべき |
-> | `CA2227` | コレクションプロパティのセッターを削除して読み取り専用にすべき |
-> | `CA1056` | `Url` プロパティは `string` ではなく `Uri` にすべき |
->
-> これらは汎用のライブラリ設計を想定したルールであり、**EF Core のエンティティには当てはまりません。** EF Core はコレクションナビゲーションの設定やリレーションシップの修正のためにセッターを利用しますし、`Uri` 型は標準では列にマッピングされません。エンティティを置いたフォルダーに対して、`.editorconfig` でこれらのルールを無効化するのが実務上の対応です。
->
-> ```ini
-> # プロジェクト直下の Models フォルダーを対象にする場合
-> [Models/*.cs]
-> dotnet_diagnostic.CA1002.severity = none
-> dotnet_diagnostic.CA2227.severity = none
-> dotnet_diagnostic.CA1056.severity = none
-> ```
->
-> パスは **`.editorconfig` を置いた場所からの相対パス** で解釈されます。`Models` がプロジェクト直下にあるとき、`[**/Models/*.cs]` と書くと**マッチせず抑制されません**（実測で確認）。意図したファイルに効いているかどうかは、ビルドして警告が消えることで必ず確かめてください。
 
 ### DbContext の定義
 
@@ -603,55 +562,7 @@ sequenceDiagram
 >
 > ASP.NET Core では、1 つのクライアント要求を実行するスレッドが常に 1 つで、要求ごとに別の DI スコープ（したがって別の `DbContext` インスタンス）が割り当てられるため、ほとんどのアプリケーションではこの問題から守られています。危険になるのは、1 つの要求の中で複数のクエリを `Task.WhenAll` で並列に走らせるような書き方をしたときです。並列にクエリを実行したい場合は、後述する `IDbContextFactory<T>` でインスタンスを分けます。
 
-Singleton サービスやバックグラウンドサービスから `DbContext` を使う場合は、`IServiceScopeFactory` でスコープを作るか、`IDbContextFactory<T>` を使います。
-
-公式ドキュメントは `BackgroundService` のようなホステッドサービスについて、**依存関係をコンストラクター注入せず、`IServiceScopeFactory` を注入してスコープを作り、そのスコープから解決する**よう案内しています。EF Core 側の公式ドキュメントも、複数のスレッドから使う場合の手段として `IServiceScopeFactory` によるスコープ作成を挙げています。
-
-```csharp
-public class ReportWorker(
-    IServiceScopeFactory scopeFactory,
-    ILogger<ReportWorker> logger) : BackgroundService
-{
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        // スコープを作り、その中から DbContext を解決する
-        using var scope = scopeFactory.CreateScope();
-        var context = scope.ServiceProvider.GetRequiredService<BloggingContext>();
-
-        logger.LogInformation(
-            "ブログ件数={Count}",
-            await context.Blogs.CountAsync(stoppingToken));
-    }
-}
-```
-
-`DbContext` を直接コンストラクターで受け取る形と、この形の実測結果は次のとおりです。
-
-| 実装 | 環境 | 結果 |
-| --- | --- | --- |
-| `BackgroundService(BloggingContext ctx)` | Development | `AggregateException` → `Cannot consume scoped service 'BloggingContext' from singleton 'Microsoft.Extensions.Hosting.IHostedService'.` |
-| 同上 | Production | **例外なく起動してしまう** |
-| `IServiceScopeFactory` でスコープを作る | Development | 正常に動作し、クエリが実行された |
-
-```csharp
-builder.Services.AddDbContextFactory<BloggingContext>(options =>
-    options.UseSqlServer(connectionString));
-```
-
-> [!IMPORTANT]
-> `AddDbContextFactory` は、`IDbContextFactory<BloggingContext>` を **Singleton** として登録すると同時に、`BloggingContext` そのものも **Scoped** で登録します（実測で確認）。したがって、コントローラーで `BloggingContext` を直接受け取ることも、バックグラウンドサービスでファクトリーからインスタンスを作ることも、両方できます。ただし **ファクトリーで作ったインスタンスは DI コンテナーが破棄してくれない**ため、下の例のように `await using` で必ず自分で破棄してください。
-
-```csharp
-public class ReportGenerator(IDbContextFactory<BloggingContext> contextFactory)
-{
-    public async Task<int> CountBlogsAsync(CancellationToken cancellationToken)
-    {
-        // ファクトリで作成したインスタンスはアプリケーション側で破棄する
-        await using var context = await contextFactory.CreateDbContextAsync(cancellationToken);
-        return await context.Blogs.CountAsync(cancellationToken);
-    }
-}
-```
+Singleton サービスやバックグラウンドサービスから `DbContext` を使う場合は、`IServiceScopeFactory` でスコープを作り、その中から解決します。1 つの要求の中で複数のクエリを並列に実行したい場合は、`AddDbContextFactory` で登録した `IDbContextFactory<T>` からインスタンスを個別に作ります。どちらの手順も [付録 EF Core 5](../appendix-efcore-05/index.md#singleton-やバックグラウンドサービスから-dbcontext-を使う) で扱います。
 
 > [!NOTE]
 > **Spring Boot** の `EntityManager` は `@PersistenceContext` によって注入されますが、そのスコープはリクエスト単位ではなく **トランザクションスコープ** です（Jakarta Persistence の仕様が「特に指定しなければトランザクションスコープの永続化コンテキストが使われる」と定めています）。EF Core の `DbContext` は明示的に Scoped として登録され、`SaveChangesAsync` の呼び出しが保存の契機になる点が異なります。**Django** の ORM は 1 つのスレッドが 1 つの接続を保持する形で暗黙的に接続を管理しますが、EF Core はインスタンスの寿命を DI コンテナーが管理します。
@@ -664,7 +575,7 @@ public class ReportGenerator(IDbContextFactory<BloggingContext> contextFactory)
 > **さらに詳しく**
 >
 > - [付録 EF Core 1：モデル定義（エンティティとリレーションシップ）](../appendix-efcore-01/index.md) — コンストラクターへのバインド、Null 許容参照型とスキーマ、規約・データ注釈・Fluent API、リレーションシップの詳細、値の変換・所有型・複合型、継承のマッピング
-> - [付録 EF Core 2：モデル定義（キー・採番・SQL Server 固有）](../appendix-efcore-02/index.md) — 代替キー、テーブル分割、キーなしエンティティ型、シャドウプロパティ、シーケンス、テンポラルテーブル、空間データ、hierarchyid、計算列、グローバルクエリフィルター
+> - [付録 EF Core 2：モデル定義（キー・採番・SQL Server 固有）](../appendix-efcore-02/index.md) — 代替キー、テーブル分割、キーなしエンティティ型、シャドウプロパティ、シーケンス、テンポラルテーブル、空間データ、hierarchyid、計算列、グローバルクエリフィルター、コード分析ルールとの衝突
 
 ## 3. クエリの基本
 
@@ -1191,20 +1102,6 @@ dotnet ef database update
 > **危険なのは、ツールが見ている開発用データベースには未適用でも、本番などの別のデータベースには適用済みという状況です。** この場合ツールは何の警告もなく削除できてしまい、本番側にだけ存在する変更が履歴から消えます。メッセージの後半が「他のデータベースに適用済みなら、打ち消す新しいマイグレーションを検討せよ」と述べているのはこのためです。実際に `dotnet ef database update 0` でロールバックしたあとであれば、`remove` は正常に完了します。
 
 
-> [!IMPORTANT]
-> EF Core 10 では、プロジェクトが `<TargetFramework>` ではなく **`<TargetFrameworks>`（複数形）で複数のフレームワークを対象にしている場合、`--framework` オプションの指定が必須** になりました。指定しないと `dotnet ef` は次のエラーで停止します（実測で確認済み）。
->
-> ```text
-> The project targets multiple frameworks. Use the --framework option to specify which target framework to use.
-> ```
->
-> ライブラリプロジェクトに `DbContext` を置いていて複数ターゲットにしている場合など、EF Core 9 から移行すると CI が突然失敗します。次のようにフレームワークを明示してください。
->
-> ```bash
-> dotnet ef migrations add AddPostPublishedAt --framework net10.0
-> dotnet ef database update --framework net10.0
-> ```
-
 ### 本番環境への適用戦略
 
 公式ドキュメントは、用途に応じて次の 4 つの戦略を挙げています。
@@ -1238,48 +1135,18 @@ dotnet ef database update
 
 ### SQL スクリプトとマイグレーションバンドル
 
-SQL スクリプトは、DBA によるレビューやアーカイブが必要な場合に適しています。
+SQL スクリプトは `dotnet ef migrations script` で生成します。`--idempotent` を付けると、各マイグレーションが未適用かどうかを確認してから実行するスクリプトになるため、適用状況が分からないデータベースにも安全に流せます。
+
+自動デプロイには **マイグレーションバンドル** が推奨されます。公式ドキュメントによれば、バンドルは CI で生成でき、実行時に .NET SDK も EF Core ツールもアプリケーションのソースコードも不要な単一の実行可能ファイルです。
 
 ```bash
-# 空のデータベースから最新までのスクリプトを生成
-dotnet ef migrations script
-
-# 冪等 (idempotent) なスクリプトをファイルに出力
 dotnet ef migrations script --idempotent --output artifacts/migrations.sql
-
-# 特定のマイグレーション間のスクリプトを生成
-dotnet ef migrations script AddNewTables AddAuditTable
-```
-
-`--idempotent` を付けると、各マイグレーションが未適用かどうかを確認してから実行するスクリプトが生成されるため、現在の適用状況が分からないデータベースにも安全に流せます。
-
-自動デプロイには **マイグレーションバンドル** が推奨されます。公式ドキュメントによれば、バンドルは CI で生成でき、実行時に .NET SDK も EF Core ツールもアプリケーションのソースコードも不要で、**自己完結型にすれば .NET ランタイムすら不要**な単一の実行可能ファイルです。EF Core のマイグレーションロックも機能します。
-
-```bash
-# .NET ランタイムがインストール済みの環境向け
 dotnet ef migrations bundle --output efbundle
-
-# .NET ランタイムごと同梱する（Linux x64 向け）
-dotnet ef migrations bundle --self-contained --target-runtime linux-x64 --output efbundle
-```
-
-生成したバンドルは、デプロイ先で実行可能ファイルとして起動します。
-
-```bash
-# デプロイ先で実行
 ./efbundle --connection "$CONNECTION_STRING"
 ```
 
 > [!NOTE]
-> 公式ドキュメントは、バンドルの制約として「SQL スクリプトと違い、実行される SQL を事前に確認したり、含まれるマイグレーションを一覧したりする手段が現時点ではない」と述べています。デプロイ前に SQL のレビューが必要な運用では、バンドルではなく `dotnet ef migrations script` でスクリプトを生成してください。
-
-> [!TIP]
-> EF Core 9 以降、マイグレーションの実行はデータベース全体のロックで保護されます（SQL スクリプトによる適用は除く）。これにより、複数のインスタンスが同時にマイグレーションを試みても、実行は 1 つに直列化されます。実際に SQL Server 2022 へ `dotnet ef database update` を実行すると、適用の前に次のメッセージが表示され、ロックの取得が行われていることが確認できます。
->
-> ```text
-> Acquiring an exclusive lock for migration application.
-> See https://aka.ms/efcore-docs-migrations-lock for more information if this takes too long.
-> ```
+> 公式ドキュメントは、バンドルの制約として「SQL スクリプトと違い、実行される SQL を事前に確認したり、含まれるマイグレーションを一覧したりする手段が現時点ではない」と述べています。デプロイ前に SQL のレビューが必要な運用では、`dotnet ef migrations script` を使ってください。
 
 ### 起動時マイグレーションの是非
 
@@ -1316,7 +1183,7 @@ app.Run();
 > [!TIP]
 > **さらに詳しく**
 >
-> - [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) — 生成されたマイグレーションの読み方、制約への命名、同時実行の抑止、初期データの投入、設計時 DbContext ファクトリ
+> - [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) — 生成されたマイグレーションの読み方、EF Core ツールの使い分け、SQL スクリプトとバンドル、制約への命名、同時実行の抑止、初期データの投入、設計時 DbContext ファクトリ
 > - [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md) — 計測と診断、インデックスの効き方、コンパイル済みクエリ、コンパイル済みモデル、NativeAOT
 
 ## 6. 本番運用とスケールアウト

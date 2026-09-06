@@ -23,6 +23,8 @@ description: "EF Core のマイグレーションの読み方と運用、単一�
 1. [マイグレーションの詳細](#1-マイグレーションの詳細)
    - [生成されたマイグレーションを読む](#生成されたマイグレーションを読む)
    - [既定値の制約に名前を付ける](#既定値の制約に名前を付ける)
+   - [EF Core ツールの使い分け](#ef-core-ツールの使い分け)
+   - [SQL スクリプトとマイグレーションバンドルを使い分ける](#sql-スクリプトとマイグレーションバンドルを使い分ける)
    - [マイグレーションバンドルの対象ランタイムを指定する](#マイグレーションバンドルの対象ランタイムを指定する)
    - [同時にマイグレーションが走らないようにする](#同時にマイグレーションが走らないようにする)
    - [初期データの投入（シード）](#初期データの投入シード)
@@ -149,6 +151,89 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 
 > [!WARNING]
 > 公式ドキュメントは「**既存のマイグレーションがある状態で `UseNamedDefaultConstraints()` を有効にすると、次に追加するマイグレーションでモデル内のすべての既定値制約がリネームされる**」と注意しています。稼働中のデータベースに対して有効化する場合は、生成されたマイグレーションの差分を必ず確認してください。
+
+### EF Core ツールの使い分け
+
+Visual Studio では、`dotnet ef` の代わりにパッケージマネージャーコンソールから PowerShell コマンドを使えます。また、複数のターゲットフレームワークを持つプロジェクトでは `--framework` の指定が必要です。
+
+<details>
+<summary>Visual Studio のパッケージマネージャーコンソールを使う場合</summary>
+
+Visual Studio では、`Microsoft.EntityFrameworkCore.Tools` パッケージを追加すると、パッケージマネージャーコンソールから PowerShell コマンドを使用できます。
+
+```powershell
+Install-Package Microsoft.EntityFrameworkCore.Tools
+```
+
+以降、本章で紹介する `dotnet ef` コマンドは、次のように読み替えられます。
+
+| .NET CLI | パッケージマネージャーコンソール |
+| --- | --- |
+| `dotnet ef migrations add <Name>` | `Add-Migration <Name>` |
+| `dotnet ef database update` | `Update-Database` |
+| `dotnet ef migrations script` | `Script-Migration` |
+| `dotnet ef migrations remove` | `Remove-Migration` |
+
+</details>
+
+> [!IMPORTANT]
+> EF Core 10 では、プロジェクトが `<TargetFramework>` ではなく **`<TargetFrameworks>`（複数形）で複数のフレームワークを対象にしている場合、`--framework` オプションの指定が必須** になりました。指定しないと `dotnet ef` は次のエラーで停止します（実測で確認済み）。
+>
+> ```text
+> The project targets multiple frameworks. Use the --framework option to specify which target framework to use.
+> ```
+>
+> ライブラリプロジェクトに `DbContext` を置いていて複数ターゲットにしている場合など、EF Core 9 から移行すると CI が突然失敗します。次のようにフレームワークを明示してください。
+>
+> ```bash
+> dotnet ef migrations add AddPostPublishedAt --framework net10.0
+> dotnet ef database update --framework net10.0
+> ```
+
+### SQL スクリプトとマイグレーションバンドルを使い分ける
+
+SQL スクリプトは、DBA によるレビューやアーカイブが必要な場合に適しています。
+
+```bash
+# 空のデータベースから最新までのスクリプトを生成
+dotnet ef migrations script
+
+# 冪等 (idempotent) なスクリプトをファイルに出力
+dotnet ef migrations script --idempotent --output artifacts/migrations.sql
+
+# 特定のマイグレーション間のスクリプトを生成
+dotnet ef migrations script AddNewTables AddAuditTable
+```
+
+`--idempotent` を付けると、各マイグレーションが未適用かどうかを確認してから実行するスクリプトが生成されるため、現在の適用状況が分からないデータベースにも安全に流せます。
+
+自動デプロイには **マイグレーションバンドル** が推奨されます。公式ドキュメントによれば、バンドルは CI で生成でき、実行時に .NET SDK も EF Core ツールもアプリケーションのソースコードも不要で、**自己完結型にすれば .NET ランタイムすら不要**な単一の実行可能ファイルです。EF Core のマイグレーションロックも機能します。
+
+```bash
+# .NET ランタイムがインストール済みの環境向け
+dotnet ef migrations bundle --output efbundle
+
+# .NET ランタイムごと同梱する（Linux x64 向け）
+dotnet ef migrations bundle --self-contained --target-runtime linux-x64 --output efbundle
+```
+
+生成したバンドルは、デプロイ先で実行可能ファイルとして起動します。
+
+```bash
+# デプロイ先で実行
+./efbundle --connection "$CONNECTION_STRING"
+```
+
+> [!NOTE]
+> 公式ドキュメントは、バンドルの制約として「SQL スクリプトと違い、実行される SQL を事前に確認したり、含まれるマイグレーションを一覧したりする手段が現時点ではない」と述べています。デプロイ前に SQL のレビューが必要な運用では、バンドルではなく `dotnet ef migrations script` でスクリプトを生成してください。
+
+> [!TIP]
+> EF Core 9 以降、マイグレーションの実行はデータベース全体のロックで保護されます（SQL スクリプトによる適用は除く）。これにより、複数のインスタンスが同時にマイグレーションを試みても、実行は 1 つに直列化されます。実際に SQL Server 2022 へ `dotnet ef database update` を実行すると、適用の前に次のメッセージが表示され、ロックの取得が行われていることが確認できます。
+>
+> ```text
+> Acquiring an exclusive lock for migration application.
+> See https://aka.ms/efcore-docs-migrations-lock for more information if this takes too long.
+> ```
 
 ### マイグレーションバンドルの対象ランタイムを指定する
 
