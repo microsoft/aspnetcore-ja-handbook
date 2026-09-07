@@ -16,7 +16,19 @@
  *
  * 常に適用すると広い画面でも列幅の配分は変わるが、
  * 影響は表の高さが数十ピクセル増減する程度で、横スクロールを強いるより読みやすい。
+ * セル内の通常テキストも同様である。日本語は文字単位で折り返せるが、
+ * 「EF Core プロジェクト (Microsoft)」のように英字の語が混ざると、
+ * その語がそのまま min-content 幅を押し上げる。実測では 320px 幅で
+ * 4 列・5 列の表が 18〜28px はみ出していた。このため code だけでなく
+ * セル全体にも指定する。
+ *
+ * なお overflow-wrap は継承プロパティだが、Starlight がセル内の code に
+ * 別の値を指定しているため、th/td への指定だけでは code に届かない。
+ * 片方だけにすると逆に悪化するので、両方を並べて指定している。
+ * 第8章と付録6ページで実測し、320px / 375px のいずれでも
+ * 横スクロールが必要な表が 0 件になることを確認済み。
  */
+.sl-markdown-content table:not(:where(.not-content *)) :is(th, td),
 .sl-markdown-content table:not(:where(.not-content *)) :is(th, td) code {
 	overflow-wrap: anywhere;
 }

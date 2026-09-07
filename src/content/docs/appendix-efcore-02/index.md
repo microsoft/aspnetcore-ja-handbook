@@ -36,6 +36,7 @@ description: "EF Core の代替キーとインデックス、シャドウプロ�
    - [SQL Server 固有の列オプション](#sql-server-固有の列オプション)
    - [計算列](#計算列)
    - [Azure SQL の価格レベルをマイグレーションで指定する](#azure-sql-の価格レベルをマイグレーションで指定する)
+   - [SQL Server の互換性レベルを明示する](#sql-server-の互換性レベルを明示する)
 4. [モデル全体にかかる構成](#4-モデル全体にかかる構成)
    - [コマンドのタイムアウト](#コマンドのタイムアウト)
    - [一括構成（規約前の構成）](#一括構成規約前の構成)
@@ -961,6 +962,54 @@ END
 
 > [!NOTE]
 > 公式ドキュメントは、Azure SQL に接続するときは `UseSqlServer` ではなく `UseAzureSql` を使うよう案内しています。理由は[付録 EF Core 4 の「接続の回復性とトランザクションの併用」](../appendix-efcore-04/index.md#接続の回復性とトランザクションの併用)で説明しているとおり、`UseAzureSql` なら Azure SQL に適した設定で再試行が自動的に構成されるためです。
+
+---
+
+### SQL Server の互換性レベルを明示する
+
+EF Core の SQL Server プロバイダーは、**接続先のバージョンを見に行くのではなく、構成された互換性レベルに基づいて SQL を生成します。** そして `UseSqlServer` の既定値は、接続先が SQL Server 2022 であっても最新にはなりません。
+
+```csharp
+options.UseSqlServer(connectionString, o => o.UseCompatibilityLevel(160));
+```
+
+公式ドキュメントは「互換性レベルを明示的に構成しなければ、**最新機能を活用しない妥当な既定値**が選ばれる。そのため**明示的に構成することを推奨する**」と述べています。EF Core 10 の既定値は次のとおりです。
+
+| メソッド | 既定の互換性レベル | 相当する製品 |
+| --- | --- | --- |
+| `UseSqlServer` | 150 | SQL Server 2019 |
+| `UseAzureSql` | 170 | Azure SQL Database |
+
+この差は生成される SQL を変えます。`Math.Max` / `Math.Min` は互換性レベル 160 以上で `GREATEST` / `LEAST` に翻訳されますが、**それ未満では翻訳自体ができず例外になります。** SQL Server 2022（データベース側の互換性レベルは 160）に対して、EF Core 側の設定だけを変えて実測した結果です。
+
+```csharp
+// Rating と Rating2 の大きいほうが 4 を超えるブログ
+var blogs = await db.Blogs.Where(b => Math.Max(b.Rating, b.Rating2) > 4).ToListAsync();
+```
+
+| EF Core 側の構成 | 結果 |
+| --- | --- |
+| 未指定（既定の 150） | `InvalidOperationException`（翻訳できない） |
+| `UseCompatibilityLevel(120)` 〜 `(150)` | 同上 |
+| `UseCompatibilityLevel(160)` | `GREATEST` に翻訳される |
+
+```sql
+-- SQL Server（互換性レベル 160 以上）
+SELECT [b].[Id], [b].[Name], [b].[Rating], [b].[Rating2]
+FROM [Blogs] AS [b]
+WHERE GREATEST([b].[Rating], [b].[Rating2]) > 4
+```
+
+> [!WARNING]
+> **SQL Server 2022 を使っていても、EF Core 側で互換性レベルを上げなければ新しい関数は使われません。** 上の例では、データベース側の `compatibility_level` が 160 であるにもかかわらず、EF Core が既定の 150 で動作したため翻訳に失敗しました。逆に、**データベースが古いのに EF Core 側だけ高いレベルを構成すると、生成された SQL をデータベースが実行できません。** 公式も「これは EF 自身の構成であり、実際のデータベースの互換性レベルには影響しない」と明記しています。両者を揃えてください。現在の値は次の SQL で確認できます。
+>
+> ```sql
+> -- SQL Server
+> SELECT name, compatibility_level FROM sys.databases WHERE name = DB_NAME();
+> ```
+
+> [!NOTE]
+> `GREATEST` と `LEAST` は SQL Server 2022 で追加された関数です。EF Core 11 では `UseSqlServer` の既定値が 160 に変わることが破壊的変更として予告されています。古い SQL Server に接続しているアプリケーションでは、そのときに `UseCompatibilityLevel(150)` の明示が必要になります。**いま明示しておけば、この破壊的変更の影響を受けません。**
 
 ---
 

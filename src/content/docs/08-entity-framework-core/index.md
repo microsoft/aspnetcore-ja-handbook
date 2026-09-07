@@ -10,8 +10,8 @@ EF Core は機能が非常に多いため、この章では **ASP.NET Core か�
 | 付録 | 扱う内容 |
 | --- | --- |
 | [付録 EF Core 1：モデル定義（エンティティとリレーションシップ）](../appendix-efcore-01/index.md) | エンティティの構成、リレーションシップ、値の変換・所有型・複合型、継承 |
-| [付録 EF Core 2：モデル定義（キー・採番・SQL Server 固有）](../appendix-efcore-02/index.md) | 代替キー、シャドウプロパティ、シーケンス、テンポラルテーブル、空間データ、hierarchyid、Azure SQL の価格レベル |
-| [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) | マイグレーションの読み方、履歴テーブルのカスタマイズ、分割クエリ、照合順序、生の SQL、ユーザー定義関数 |
+| [付録 EF Core 2：モデル定義（キー・採番・SQL Server 固有）](../appendix-efcore-02/index.md) | 代替キー、シャドウプロパティ、シーケンス、テンポラルテーブル、空間データ、hierarchyid、Azure SQL の価格レベル、互換性レベル |
+| [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) | マイグレーションの読み方、`dotnet ef` のサブコマンド、履歴テーブルのカスタマイズ、分割クエリ、照合順序、生の SQL、ユーザー定義関数 |
 | [付録 EF Core 4：更新・トランザクション・レプリカ](../appendix-efcore-04/index.md) | 切断されたエンティティ、同時実行制御、デッドロック、インターセプター、レプリカ |
 | [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md) | 計測と診断、インデックス、コンパイル済みクエリとモデル、NativeAOT、変更検出のコスト |
 | [付録 EF Core 6：テスト](../appendix-efcore-06/index.md) | 実データベースに対するテスト、製品コードがトランザクションを使うテスト、SQLite インメモリとその制限、WebApplicationFactory、リポジトリパターン |
@@ -587,7 +587,7 @@ Singleton サービスやバックグラウンドサービスから `DbContext` 
 > **さらに詳しく**
 >
 > - [付録 EF Core 1：モデル定義（エンティティとリレーションシップ）](../appendix-efcore-01/index.md) — コンストラクターへのバインド、Null 許容参照型とスキーマ、規約・データ注釈・Fluent API、`IEntityTypeConfiguration` による構成の分割、リレーションシップの詳細、エンティティの等価性、値の変換・所有型・複合型、継承のマッピング
-> - [付録 EF Core 2：モデル定義（キー・採番・SQL Server 固有）](../appendix-efcore-02/index.md) — 代替キー、テーブル分割、キーなしエンティティ型、シャドウプロパティ、シーケンス、主キーの採番方法の制御、テンポラルテーブル、空間データ、hierarchyid、計算列、SQL Server 固有の列オプション、Azure SQL の価格レベルの指定、コマンドのタイムアウト、一括構成、グローバルクエリフィルター、コード分析ルールとの衝突
+> - [付録 EF Core 2：モデル定義（キー・採番・SQL Server 固有）](../appendix-efcore-02/index.md) — 代替キー、テーブル分割、キーなしエンティティ型、シャドウプロパティ、シーケンス、主キーの採番方法の制御、テンポラルテーブル、空間データ、hierarchyid、計算列、SQL Server 固有の列オプション、Azure SQL の価格レベルの指定、[SQL Server の互換性レベルの明示](/appendix-efcore-02/#sql-server-の互換性レベルを明示する)、コマンドのタイムアウト、一括構成、グローバルクエリフィルター、コード分析ルールとの衝突
 
 ## 3. クエリの基本
 
@@ -625,6 +625,9 @@ var count = await context.Posts.CountAsync(p => p.BlogId == id, cancellationToke
 | `Single()` / `SingleOrDefault()` | `SingleAsync()` / `SingleOrDefaultAsync()` |
 | `Count()` / `Any()` | `CountAsync()` / `AnyAsync()` |
 | `SaveChanges()` | `SaveChangesAsync()` |
+
+> [!TIP]
+> 「1 件でもあるか」を調べるときは `Count() > 0` ではなく **`Any()`** を使ってください。EF Core は `Any()` を `EXISTS` に翻訳しますが、`Count()` メソッドを書くと `COUNT(*)` のまま残ります。書き方によって生成される SQL がどう変わるかを実測した比較は[付録3の「存在チェックは Count ではなく Any を使う」](/appendix-efcore-03/#存在チェックは-count-ではなく-any-を使う)にまとめています。
 
 > [!TIP]
 > 非同期メソッドには `CancellationToken` を渡してください。コントローラーのアクションメソッドや Minimal API のハンドラーは `CancellationToken` を引数に取れます。クライアントが接続を切ったときに、実行中のクエリを中断できます。
@@ -931,7 +934,7 @@ info: Microsoft.EntityFrameworkCore.Database.Command[20101]
 > **さらに詳しく**
 >
 > - [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) — マイグレーション履歴テーブルのカスタマイズ、単一クエリと分割クエリ、LeftJoin / RightJoin、照合順序と大文字小文字、キーセットページング、生の SQL、ユーザー定義関数とビュー
-> - [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md) — ログの出力形式、`CreateDbCommand()` による `DbCommand` の取得、ログとセキュリティ、メトリックの参照、クエリタグでログと LINQ を結びつける、コレクションのパラメーター化と IN 句、バッファリングとストリーミング
+> - [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md) — ログの出力形式、`CreateDbCommand()` による `DbCommand` の取得、[本番環境でコマンドログを出し続けない](/appendix-efcore-05/#本番環境でコマンドログを出し続けない)、ログとセキュリティ、メトリックの参照、クエリタグでログと LINQ を結びつける、コレクションのパラメーター化と IN 句、バッファリングとストリーミング
 > - [付録 EF Core 4：保存の応用とトランザクション](../appendix-efcore-04/index.md) — インターセプターで SQL に割り込む
 
 ## 4. 保存とトランザクションの基本
@@ -1225,7 +1228,7 @@ app.Run();
 > **さらに詳しく**
 >
 > - [付録 EF Core 3：マイグレーションの詳細とクエリ](../appendix-efcore-03/index.md) — 生成されたマイグレーションの読み方、EF Core ツールの使い分け、SQL スクリプトとバンドル、制約への命名、モデルとマイグレーションのずれの検出、同時実行の抑止、初期データの投入、設計時 DbContext ファクトリ
-> - [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md) — 計測と診断、インデックスの効き方、コンパイル済みクエリ、コンパイル済みモデル、NativeAOT
+> - [付録 EF Core 5：パフォーマンス](../appendix-efcore-05/index.md) — 計測と診断、インデックスの効き方、[実行プランはデータの量で変わる](/appendix-efcore-05/#実行プランはデータの量で変わる)、コンパイル済みクエリ、コンパイル済みモデル、NativeAOT
 
 ## 6. 本番運用とスケールアウト
 

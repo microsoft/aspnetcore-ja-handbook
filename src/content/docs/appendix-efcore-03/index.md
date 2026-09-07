@@ -39,6 +39,7 @@ description: "EF Core のマイグレーションの読み方と運用、単一�
    - [大文字小文字の区別は照合順序が決める](#大文字小文字の区別は照合順序が決める)
    - [複数の列で並べ替えるキーセットページング](#複数の列で並べ替えるキーセットページング)
    - [関連データを読み込まずに数える](#関連データを読み込まずに数える)
+   - [存在チェックは Count ではなく Any を使う](#存在チェックは-count-ではなく-any-を使う)
    - [常に Include する（AutoInclude）](#常に-include-するautoinclude)
    - [null の比較は C# と SQL で意味が違う](#null-の比較は-c-と-sql-で意味が違う)
    - [エンティティをそのまま JSON にすると循環参照で失敗する](#エンティティをそのまま-json-にすると循環参照で失敗する)
@@ -192,6 +193,30 @@ Install-Package Microsoft.EntityFrameworkCore.Tools
 | `dotnet ef migrations remove` | `Remove-Migration` |
 
 </details>
+
+マイグレーションを扱うコマンド以外にも、構成の確認やスキーマの出力に使えるサブコマンドがあります。
+
+| コマンド | 用途 |
+| --- | --- |
+| `dotnet ef dbcontext info` | `DbContext` の型、プロバイダー、接続先を表示する |
+| `dotnet ef dbcontext list` | プロジェクト内の `DbContext` を一覧表示する |
+| `dotnet ef dbcontext script` | **マイグレーションを介さず**、モデルから直接 SQL スクリプトを生成する |
+
+`dotnet ef dbcontext info` は、設計時にどの接続文字列が使われているかを確認したいときに便利です（実測で確認）。
+
+```text
+Type: Ctx
+Provider name: Microsoft.EntityFrameworkCore.Sqlite
+Database name: main
+Data source: cli.db
+Options: None
+```
+
+> [!TIP]
+> すべての `dotnet ef` コマンドは、既定でプロジェクトをビルドしてから実行します。直前にビルド済みであることが分かっている場合は **`--no-build`** を付けると待ち時間を減らせます。公式ドキュメントも「ビルドが最新である場合に使うことを想定している」と説明しています。ソースを変更したあとに付けると古いモデルで実行されるため、CI では付けないでください。
+
+> [!NOTE]
+> `dotnet ef dbcontext script` が出力するのは、**現在のモデルからスキーマを作るための SQL** です。マイグレーションの履歴を考慮しないため、既存のデータベースに対する差分にはなりません。マイグレーションを使わずに `EnsureCreated()` で運用しているプロジェクトで、生成される DDL を事前に確認したいときに使えます。マイグレーションを使っている場合は `dotnet ef migrations script` のほうを使ってください。
 
 > [!IMPORTANT]
 > EF Core 10 では、プロジェクトが `<TargetFramework>` ではなく **`<TargetFrameworks>`（複数形）で複数のフレームワークを対象にしている場合、`--framework` オプションの指定が必須** になりました。指定しないと `dotnet ef` は次のエラーで停止します（実測で確認済み）。
@@ -1107,6 +1132,32 @@ await context.Entry(post)
 > `Collection(...)` や `Reference(...)` が返すエントリーには `IsLoaded` プロパティがあります。公式リファレンスでは「そのナビゲーションが参照するエンティティが読み込まれていると**わかっている**かどうか」と説明されており、`Include` や `Load` / `LoadAsync` がこのフラグを立てます。フラグが立っている状態で再度 `LoadAsync` を呼んでも何も起きません (no-op)。
 >
 > 逆に、**関連エンティティがすべて読み込まれていても `IsLoaded` が `false` のままになることがあります**。読み込まれ方によっては「全部そろっている」と判断できないためです。実際、上の `Query().Where(...)` で読み込んだ場合、2 件が追跡された後も `IsLoaded` は `false` のままでした。確実にすべてを読み込みたいときは `LoadAsync` を呼びます。
+
+### 存在チェックは Count ではなく Any を使う
+
+「関連するレコードが 1 件でもあるか」を調べるとき、`Count` と `Any()` のどちらでも同じ結果が得られます。しかし**生成される SQL は違います。** EF Core 9 では、`Count` を使った存在チェックを `EXISTS` に最適化する改善が入りました。SQL Server 2022 に対して EF Core 10 で実測した結果です。
+
+| LINQ の書き方 | 生成される SQL の WHERE 句 |
+| --- | --- |
+| `b.Posts.Any()` | `EXISTS (SELECT 1 FROM [Posts] ...)` |
+| `b.Posts.Count > 0`（プロパティ） | `EXISTS (SELECT 1 FROM [Posts] ...)` |
+| `b.Posts.Count != 0`（プロパティ） | `EXISTS (SELECT 1 FROM [Posts] ...)` |
+| `b.Posts.Count() > 0`（**メソッド**） | `(SELECT COUNT(*) FROM [Posts] ...) > 0` |
+| `b.Posts.Count() != 0`（**メソッド**） | `(SELECT COUNT(*) ...) <> 0 OR (SELECT COUNT(*) ...) IS NULL` |
+
+`EXISTS` は最初の 1 件が見つかった時点で打ち切れますが、`COUNT(*)` は条件に合う行をすべて数えます。関連レコードが多いほど差が開きます。
+
+> [!WARNING]
+> **`Count` プロパティと `Count()` メソッドで結果が変わります。** 上の表のとおり、最適化が働くのは `ICollection<T>.Count` プロパティのほうだけで、LINQ の `Count()` メソッドを書くと `COUNT(*)` のままです。とくに `Count() != 0` は、同じサブクエリが 2 回現れるさらに冗長な SQL になりました。**迷ったら `Any()` を使ってください。** 意図が明確で、書き方によって SQL が変わることもありません。
+
+存在しないことを調べる場合は注意が必要です。`Count == 0` は `EXISTS` に変換されず `COUNT(*) = 0` のままでした。`!Any()` と書けば `NOT EXISTS` になります。
+
+```csharp
+// 良い例: NOT EXISTS になる
+var emptyBlogs = await db.Blogs.Where(b => !b.Posts.Any()).ToListAsync();
+```
+
+---
 
 ### 常に Include する（AutoInclude）
 
