@@ -66,6 +66,33 @@ description: "EF Core のマイグレーションの読み方と運用、単一�
 >
 > インデックスを定義できないのは機能不足ではありません。Azure Cosmos DB は**格納した項目をすべて自動でインデックス化する**ため、EF Core 側で個別に指定する必要がないからです。なお `HasIndex` は EF Core 8 までは無視されるだけでしたが、**EF Core 9 で例外を投げるように変更**されました。黙って無視されるより、書いた設定が効かないことにその場で気づけるほうが安全という判断です。
 
+> [!WARNING]
+> **Azure Cosmos DB では、`EnsureCreatedAsync()` は Microsoft Entra ID (RBAC) 認証では動きません。** 公式ドキュメントは「Azure Cosmos DB SDK は管理プレーンの操作について RBAC をサポートしていない。RBAC を使う場合は `EnsureCreatedAsync` ではなく Azure Management API を使うこと」と明記しています。
+>
+> 同じ Azure Cosmos DB アカウントに対して認証方式だけを変えて実測すると、次のようになりました。
+>
+> | 認証方式 | `EnsureCreatedAsync()` | 作成済みコンテナーへの読み書き |
+> | --- | --- | --- |
+> | `DefaultAzureCredential`（RBAC） | **`CosmosException` 403 Forbidden** | 成功 |
+> | 主キー（アカウントキー） | 成功。データベースとコンテナーが作成される | 成功 |
+>
+> RBAC 側の例外メッセージは次のとおりです。データプレーンの組み込みロール（Cosmos DB 組み込みデータ共同作成者）を割り当てていても発生します。**このロールはデータの読み書きだけを許可するもので、コンテナーの作成という管理プレーンの操作は含まれないためです。**
+>
+> ```text
+> CosmosException: Response status code does not indicate success: Forbidden (403); Substatus: 5302;
+> message : Request blocked by Auth <アカウント名> : Request for Read DatabaseAccount is blocked
+> because principal [<オブジェクト ID>] does not have required RBAC permissions
+> ```
+>
+> パスワードレス認証を採用しているなら、コンテナーの作成はアプリケーションから切り離し、Azure CLI や Bicep などのインフラ側で行ってください。Azure CLI なら次のコマンドで作成でき、その後は RBAC のままアプリケーションから読み書きできることを確認しました（実測）。
+>
+> ```bash
+> az cosmosdb sql container create -a <アカウント名> -g <リソースグループ> \
+>   -d <データベース名> -n <コンテナー名> --partition-key-path "/id" --throughput 400
+> ```
+>
+> なお認証方式にかかわらず、公式ドキュメントは `EnsureCreatedAsync` について「**デプロイ時にのみ呼ぶこと。通常の運用で呼ぶとパフォーマンスの問題を起こしうる**」とも注意しています。アプリケーションの起動処理に入れたままにしないでください。
+
 ### 生成されたマイグレーションを読む
 
 生成されるマイグレーションは通常の C# コードです。内容を確認し、必要なら手を入れられます。

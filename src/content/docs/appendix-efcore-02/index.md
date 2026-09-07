@@ -811,7 +811,20 @@ FROM [Nodes] AS [n]
 WHERE [n].[Path].IsDescendantOf(@devPath) = CAST(1 AS bit)
 ```
 
-結果は「開発部, 第一課」でした。**`IsDescendantOf` は自分自身も配下として含みます。** `GetLevel()` は深さを返し、実測では 全社=0 / 開発部=1 / 第一課=2 / 営業部=1 となりました。
+結果は「開発部, 第一課」でした。**`IsDescendantOf` は自分自身も配下として含みます。** 公式ドキュメントもこの挙動を明記しており、サンプルクエリでは自分自身を明示的に除外しています。「開発部より下だけ」がほしいなら、比較を 1 つ足します。
+
+```csharp
+var strictly = await db.Nodes
+    .Where(n => n.Path.IsDescendantOf(devPath) && n.Path != devPath)
+    .ToListAsync();
+```
+
+```sql
+-- SQL Server
+WHERE [n].[Path].IsDescendantOf(@devPath) = CAST(1 AS bit) AND [n].[Path] <> @devPath
+```
+
+こちらの結果は「第一課」だけになりました（実測）。`GetLevel()` は深さを返し、実測では 全社=0 / 開発部=1 / 第一課=2 / 営業部=1 となりました。
 
 > [!NOTE]
 > `HierarchyId` 型は `Microsoft.EntityFrameworkCore.SqlServer.Abstractions` パッケージで定義されており、こちらは他のパッケージへの参照を持ちません。エンティティを定義するプロジェクトだけが `Abstractions` を参照し、実際にクエリを実行するプロジェクトが `HierarchyId` パッケージを参照する、という分け方ができます。

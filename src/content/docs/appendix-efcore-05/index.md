@@ -607,6 +607,33 @@ System.MissingMethodException: Method not found:
 
 つまり **公式一覧だけでも NuGet だけでも判断せず、両方を確認してください。** サードパーティー製プロバイダーを使うプロジェクトでは、EF Core のバージョンをプロバイダーの対応状況に合わせて決めるのが安全です。
 
+#### 拡張ライブラリの対応バージョンは一覧より新しいことがある
+
+プロバイダーだけでなく、EF Core の**拡張ライブラリ**も公式ドキュメントに一覧があります。各項目には「対応する EF Core: 5-9」のような対応バージョンが併記されていますが、公式ドキュメント自身が「拡張はさまざまな提供元によって構築されており、EF Core プロジェクトの一部として保守されていない。品質・ライセンス・互換性・サポートなどが要件を満たすか評価すること。特に古いバージョン向けに作られた拡張は、最新バージョンで動かすには更新が必要な場合がある」と注意しています。
+
+ここで注意したいのは、**ズレは「一覧が新しすぎる」方向だけでなく「一覧が古すぎる」方向にも起きる**ことです。EF Core 10 のプロジェクトに実際に追加してみると、次のようになりました（実測）。
+
+| パッケージ | 公式一覧の記載 | 実際に復元されたバージョン |
+| --- | --- | --- |
+| `EFCore.CheckConstraints` | 5-9 | **10.0.0** |
+| `EFCore.NamingConventions` | 3-9 | **10.0.1** |
+| `EFCore.BulkExtensions` | 2-8 | **10.0.1** |
+
+3 つとも EF Core 10 に対応済みで、一覧の表記のほうが古い状態でした。実際に `UseSnakeCaseNamingConvention()` と `UseEnumCheckConstraints()` を併用して `GenerateCreateScript()` を実行したところ、期待どおりの DDL が生成されました（実測）。
+
+```sql
+-- SQL Server
+CREATE TABLE [products] (
+    [id] int NOT NULL IDENTITY,
+    [unit_count] int NOT NULL,
+    [kind] int NOT NULL,
+    CONSTRAINT [pk_products] PRIMARY KEY ([id]),
+    CONSTRAINT [CK_products_kind_Enum] CHECK ([kind] IN (0, 1))
+);
+```
+
+**一覧に「未対応」と書かれていても、それだけで諦めないでください。** 逆に一覧に載っていても、実際に復元して動かすまでは対応済みとみなさないでください。判断はどちらの方向でも NuGet と実行結果で確かめるのが確実です。
+
 ### Singleton やバックグラウンドサービスから DbContext を使う
 
 Singleton サービスやバックグラウンドサービスから `DbContext` を使う場合は、`IServiceScopeFactory` でスコープを作るか、`IDbContextFactory<T>` を使います。

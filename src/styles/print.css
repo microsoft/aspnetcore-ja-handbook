@@ -1,0 +1,25 @@
+/*
+ * 印刷時にコードブロックが用紙の右端で切れるのを防ぐ。
+ *
+ * 画面では pre が横スクロールできるため、長い行があっても読める。
+ * しかし紙には横スクロールがないので、はみ出した部分はそのまま欠落する。
+ * A4 幅（794px 相当）で印刷プレビューを実測したところ、
+ * 接続文字列や例外メッセージを載せたコードブロックが最大 334px 切れていた。
+ *
+ * Expressive Code は 1 行を .ec-line でラップし、その内側に .code を置く。
+ * pre だけに指定しても内側の要素が幅を確保してしまうため、両方に指定する。
+ * 折り返し位置を選べない識別子や URL があるので overflow-wrap も併せて指定する。
+ */
+@media print {
+	.sl-markdown-content :is(pre, pre code),
+	.expressive-code :is(pre, code, .ec-line, .ec-line .code) {
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		word-break: break-word;
+	}
+
+	/* 折り返した行が前の行と地続きに見えないよう、行間を少し広げる */
+	.expressive-code .ec-line {
+		line-height: 1.6;
+	}
+}

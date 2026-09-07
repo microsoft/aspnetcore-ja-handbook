@@ -1018,6 +1018,8 @@ CREATE TABLE [Docs] (
 > ```
 >
 > `SqlVector<T>` は `Microsoft.Data.SqlTypes` 名前空間にあります。Azure SQL Database に対して実際に動かしたところ、`vector(3)` 型の列が作られ、`VectorDistance("cosine", ...)` が距離を返して並べ替えが機能することを確認しました。
+>
+> ただし `VectorDistance` は**クエリベクトルとテーブルの全行との距離を計算します**。結果は完全に正確ですが、公式ドキュメントは「SQL Server が全行をスキャンして距離を計算するため、大きなデータセットでは遅くなりうる」と説明しています。これを避けるための近似最近傍探索 (approximate nearest neighbor: ANN) として `VECTOR_SEARCH()` とベクトルインデックスがありますが、公式ドキュメントは**これらが SQL Server の実験的機能であり変更されうること、EF Core 側の API も同様に変更されうること**を警告しています。本番で採用する前にこの点を確認してください。
 
 #### 日付と時刻の型は使い分ける
 
