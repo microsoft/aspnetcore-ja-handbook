@@ -463,6 +463,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -473,8 +474,10 @@ public class BloggingApiFactory : WebApplicationFactory<Program>
         builder.ConfigureServices(services =>
         {
             // 既定の DbContext 構成を取り除く
+            // IDbContextOptionsConfiguration<T> まで消さないとプロバイダーが重複する
             services.RemoveAll<DbContextOptions<BloggingContext>>();
             services.RemoveAll<DbContextOptions>();
+            services.RemoveAll<IDbContextOptionsConfiguration<BloggingContext>>();
 
             // 接続を開いたままにしてインメモリデータベースを保持する
             services.AddSingleton<DbConnection>(_ =>
@@ -515,6 +518,20 @@ public class BlogsApiTests(BloggingApiFactory factory) : IClassFixture<BloggingA
     }
 }
 ```
+
+> [!WARNING]
+> **`DbContextOptions` を `RemoveAll` しただけでは、既定のプロバイダーは外れません。** `AddDbContext` は `DbContextOptions<TContext>` と `DbContextOptions` のほかに `IDbContextOptionsConfiguration<TContext>` を登録します。オプションの組み立ては後者を通じて行われるため、前の 2 つだけを取り除いて `UseSqlite` を追加すると、**本番用のプロバイダーとテスト用のプロバイダーが両方登録された状態**になります。
+>
+> この状態で `DbContext` を解決すると、次の例外が発生します（実測では API 呼び出しが 500 になりました）。
+>
+> ```text
+> System.InvalidOperationException: Services for database providers
+> 'Microsoft.EntityFrameworkCore.SqlServer', 'Microsoft.EntityFrameworkCore.Sqlite'
+> have been registered in the service provider. Only a single database provider can be
+> registered in a service provider.
+> ```
+>
+> 上のコードのように `IDbContextOptionsConfiguration<BloggingContext>` も併せて取り除いてください。公式ドキュメントも「別のプロバイダーを構成しても以前のプロバイダー構成は削除されない。完全に置き換えるにはコンテキストの登録を取り除いて追加し直すか、新しいサービスコレクションを作る必要がある」と説明しています。
 
 > [!TIP]
 > `Program.cs` がトップレベルステートメントで書かれている場合、テストプロジェクトから `Program` クラスを参照するために、Web プロジェクト側に `public partial class Program { }` を追加するか、テストプロジェクトから `InternalsVisibleTo` を設定する必要があります。

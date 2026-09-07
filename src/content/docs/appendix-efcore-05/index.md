@@ -482,6 +482,39 @@ services.AddDbContext<BloggingContext>(o => o.UseSqlServer(second));
 > [!WARNING]
 > ライブラリが内部で `AddDbContext` を呼んでいる場合、アプリケーション側の登録順によって構成が入れ替わります。**ライブラリの登録より後にアプリケーション側の登録を書く**のが安全です。
 
+#### 複数の DbContext を登録するときは DbContextOptions<TContext> を受け取る
+
+`DbContext` のコンストラクターは、非ジェネリックの `DbContextOptions` も受け取れます。1 つしか `DbContext` を登録していないうちは問題なく動くため、そのまま書いてしまいがちです。しかし公式ドキュメントは、**ジェネリックの `DbContextOptions<TContext>` を使うこと**を求めています。複数の `DbContext` を登録したときに、その型に対応する正しいオプションが DI から解決されるようにするためです。
+
+```csharp
+// 推奨
+public class GoodContext(DbContextOptions<GoodContext> options) : DbContext(options);
+
+// 複数登録すると壊れる
+public class BadContext(DbContextOptions options) : DbContext(options);
+```
+
+厄介なのは、**壊れ方が登録順に依存する**ことです。2 つの `DbContext` を登録して実測すると、次のようになりました。
+
+| 登録順 | `GoodContext` の解決 | `BadContext` の解決 |
+| --- | --- | --- |
+| `GoodContext` → `BadContext` | 成功 | **たまたま成功** |
+| `BadContext` → `GoodContext` | 成功 | **失敗** |
+
+非ジェネリック版は「最後に登録された `DbContextOptions`」を拾うため、たまたま自分の登録が最後だったときだけ動いてしまいます。失敗する側では次の例外が出ました。
+
+```text
+System.InvalidOperationException: The DbContextOptions passed to the BadContext constructor
+must be a DbContextOptions<BadContext>. When registering multiple DbContext types, make sure
+that the constructor for each context type has a DbContextOptions<TContext> parameter rather
+than a non-generic DbContextOptions parameter.
+```
+
+「今は 1 つしかないから」と非ジェネリック版で書くと、2 つ目の `DbContext` を追加した日に、しかも登録順によっては別の開発者の環境でだけ壊れます。最初からジェネリック版で書いてください。
+
+> [!NOTE]
+> 例外は、その `DbContext` 型自体を継承させたい場合です。公式ドキュメントは、基底クラスには非ジェネリックの `DbContextOptions` を受け取る `protected` コンストラクターを公開し、派生クラス側でジェネリック版を受け取るよう案内しています。継承を想定しないのであれば、クラスを `sealed` にしておくのが安全です。
+
 #### 構成を後から足す（ConfigureDbContext）
 
 `AddDbContext` は「プロバイダーと接続文字列を決める」呼び出しです。これに対して、**ログや診断だけを後から足したい**ことがあります。テストで `EnableSensitiveDataLogging` を付けたい、共通ライブラリでインターセプターを差したい、といった場面です。

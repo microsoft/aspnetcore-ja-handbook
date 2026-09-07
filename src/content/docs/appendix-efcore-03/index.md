@@ -199,6 +199,17 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 
 ### EF Core ツールの使い分け
 
+公式ドキュメントは「**ツールパッケージのバージョンは、常にランタイムパッケージのメジャーバージョンに合わせて使用する**」と明記しています。バージョンがずれていても即座に失敗するとは限らないため、気づかないまま運用してしまいがちです。
+
+EF Core 10.0.11 のランタイムを参照するプロジェクトに対して、EF Core 9.0.0 の `dotnet-ef` で `migrations add` を実行したところ、**警告は出るもののマイグレーションの生成自体は成功しました**。
+
+```text
+The Entity Framework tools version '9.0.0' is older than that of the runtime '10.0.11'.
+Update the tools for the latest features and bug fixes.
+```
+
+「動いてしまう」ため放置されやすいのですが、古いツールは新しいバージョンで追加された機能や修正を知りません。この警告が出たら、そのままにせずツールを更新してください。
+
 Visual Studio では、`dotnet ef` の代わりにパッケージマネージャーコンソールから PowerShell コマンドを使えます。また、複数のターゲットフレームワークを持つプロジェクトでは `--framework` の指定が必要です。
 
 <details>
