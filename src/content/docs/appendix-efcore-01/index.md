@@ -27,6 +27,7 @@ description: "EF Core のエンティティ構成、リレーションシップ�
    - [IEntityTypeConfiguration による構成の分割](#ientitytypeconfiguration-による構成の分割)
    - [同じ DbContext 型から複数のモデルを作る](#同じ-dbcontext-型から複数のモデルを作る)
    - [エンティティの等価性はオーバーライドしない](#エンティティの等価性はオーバーライドしない)
+   - [組み上がったモデルを確認する](#組み上がったモデルを確認する)
 2. [リレーションシップ](#2-リレーションシップ)
    - [リレーションシップの定義](#リレーションシップの定義)
 3. [値の変換と型のマッピング](#3-値の変換と型のマッピング)
@@ -348,6 +349,66 @@ public ICollection<Post> Posts { get; set; }
 
 > [!NOTE]
 > 主キー・代替キー・外部キー、および一意インデックスに使う型は `IComparable<T>` と `IEquatable<T>` を実装している必要があります。キー値は等価比較だけでなく**順序付け**にも使われ、1 回の `SaveChanges` で複数のエンティティを更新するときにデッドロックを避けるために並べ替えられるためです。`int` や `Guid`、`string` など通常キーに使う型はすでに両方を実装しています。独自のキー型を作る場合は自分で実装してください。主キー以外の列を一意にする方法は[付録2の「代替キーと一意インデックス」](/appendix-efcore-02/#代替キーと一意インデックス)で扱います。
+
+### 組み上がったモデルを確認する
+
+規約・データ注釈・Fluent API が最終的にどう解釈されたのかは、**モデルのデバッグビュー**で確認できます。「設定したはずの `HasMaxLength` が効いていない」「規約が張ったインデックスがどれか分からない」といったときに、推測せずに済みます。
+
+```csharp
+Console.WriteLine(context.Model.ToDebugString());
+```
+
+`Blog` と `Post` の単純なモデルで出力すると、次のようになりました（実測）。
+
+```text
+Model:
+  EntityType: Blog
+    Properties:
+      Id (int) Required PK AfterSave:Throw ValueGenerated.OnAdd
+      Name (string) Required MaxLength(200)
+    Navigations:
+      Posts (List<Post>) Collection ToDependent Post Inverse: Blog
+    Keys:
+      Id PK
+  EntityType: Post
+    Properties:
+      Id (int) Required PK AfterSave:Throw ValueGenerated.OnAdd
+      BlogId (int) Required FK Index
+      Title (string) Required
+    Foreign keys:
+      Post {'BlogId'} -> Blog {'Id'} Required Cascade ToDependent: Posts ToPrincipal: Blog
+    Indexes:
+      BlogId
+```
+
+キー、外部キー、削除時の動作 (`Cascade`)、規約が自動で張ったインデックス (`BlogId`) まで一覧できます。
+
+プロバイダー固有のメタデータまで見たい場合は、長い形式を指定します。
+
+```csharp
+Console.WriteLine(context.Model.ToDebugString(MetadataDebugStringOptions.LongDefault));
+```
+
+こちらは注釈がすべて付きます。
+
+```text
+      Id (int) Required PK AfterSave:Throw ValueGenerated.OnAdd
+        Annotations:
+          SqlServer:ValueGenerationStrategy: IdentityColumn
+      Name (string) Required MaxLength(200)
+        Annotations:
+          MaxLength: 200
+          SqlServer:ValueGenerationStrategy: None
+    Annotations:
+      Relational:TableName: Blogs
+```
+
+`IdentityColumn` が選ばれていること、テーブル名が `Blogs` に決まっていることまで分かります。`MetadataDebugStringOptions` は `Microsoft.EntityFrameworkCore.Infrastructure` 名前空間にあります。
+
+> [!TIP]
+> このデバッグビューは、Visual Studio などの IDE のデバッガーからも参照できます。マイグレーションを生成する前にモデルを確認したいときにも使えます。実行時の**エンティティの状態**を見たい場合は、[付録4の `ChangeTracker.DebugView`](/appendix-efcore-04/#チェンジトラッカーの中身を見る) を使ってください。用途が異なります。
+
+---
 
 ## 2. リレーションシップ
 

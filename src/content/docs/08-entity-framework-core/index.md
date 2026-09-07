@@ -82,6 +82,8 @@ EF Core は大きく次の 3 つの役割を担います。
 
 ```mermaid
 flowchart LR
+    accTitle: EF Core の階層構造
+    accDescr: アプリケーションコードが DbContext を呼び、DbContext がデータベースプロバイダーを経由してデータベースにアクセスする。応答は逆順に返る。
     APP["アプリケーションコード<br>LINQ / SaveChanges"]
     CTX["DbContext<br>変更追跡・クエリパイプライン"]
     PROV["データベースプロバイダー<br>SqlServer / Npgsql / SQLite ..."]
@@ -103,6 +105,8 @@ flowchart LR
 
 ```mermaid
 erDiagram
+    accTitle: Blogs と Posts のテーブル構成
+    accDescr: Blogs テーブルと Posts テーブルが 1 対多で関連する。Blogs は Id・Name・Rating を、Posts は Id・Title・PublishedAt・外部キー BlogId を持つ。
     Blogs ||--o{ Posts : "1 対多"
 
     Blogs {
@@ -267,6 +271,8 @@ EF Core でモデルとデータベースを対応づけるアプローチは 2 
 
 ```mermaid
 flowchart TB
+    accTitle: Code First と Database First の流れ
+    accDescr: Code First は C# のエンティティクラスからマイグレーションを生成してデータベーススキーマを作る。Database First は既存のデータベースから scaffold でエンティティクラスと DbContext を生成する。
     subgraph CF["Code First（モデル駆動）"]
         direction TB
         C1["C# のエンティティクラスを書く"] --> C2["dotnet ef migrations add"]
@@ -536,6 +542,8 @@ SQL Server 2022 のコンテナーに対して実測したところ、次の 2 �
 
 ```mermaid
 sequenceDiagram
+    accTitle: HTTP リクエストと Scoped な DbContext の寿命
+    accDescr: リクエストごとに ASP.NET Core がスコープを作って DbContext を生成し、クエリと SaveChangesAsync を実行したあと Dispose してレスポンスを返す。
     participant C as クライアント
     participant M as ASP.NET Core
     participant CT as BloggingContext (Scoped)
@@ -945,6 +953,8 @@ EF Core の更新は、チェンジトラッカーが記録した状態をもと
 
 ```mermaid
 flowchart LR
+    accTitle: エンティティの状態と SaveChanges の関係
+    accDescr: 読み込み直後は Unchanged、変更すると Modified、Add で Added、Remove で Deleted になり、SaveChangesAsync がこれらを 1 つのトランザクションで INSERT・UPDATE・DELETE に変換する。
     Q["クエリで読み込み<br>(State = Unchanged)"] --> M["プロパティを変更<br>(State = Modified)"]
     A["context.Add<br>(State = Added)"] --> S
     M --> S["SaveChangesAsync"]
@@ -1071,6 +1081,8 @@ await using var transaction = await context.Database
 
 ```mermaid
 flowchart LR
+    accTitle: マイグレーションの生成と適用の流れ
+    accDescr: 現在のモデルとモデルスナップショットの差分からマイグレーションファイルが生成され、適用すると __EFMigrationsHistory に記録されてデータベースに反映される。
     M1["モデル<br>（現在の C# コード）"] --> DIFF{差分検出}
     SNAP["モデルスナップショット<br>〈DbContext 名〉ModelSnapshot.cs"] --> DIFF
     DIFF --> MIG["マイグレーションファイル<br>Up() / Down()"]
@@ -1308,6 +1320,8 @@ EF Core を使うコードのテストには、大きく 2 つのアプローチ
 
 ```mermaid
 flowchart TB
+    accTitle: EF Core を使うコードのテスト戦略
+    accDescr: テストはデータベースに対して行う方法とデータベースを使わない方法に分かれる。前者は本番と同じデータベースか SQLite インメモリ、後者はリポジトリをテストダブルに差し替える。
     START["EF Core を使うコードのテスト"]
     START --> A["データベースに対してテストする"]
     START --> B["データベースを使わずにテストする"]
@@ -1354,6 +1368,8 @@ ASP.NET Core の統合テストでは、`WebApplicationFactory<TEntryPoint>` で
 
 ```mermaid
 flowchart TB
+    accTitle: レイヤー構成の例
+    accDescr: プレゼンテーション層のコントローラーがアプリケーションサービスを呼び、サービスがドメイン層のリポジトリインターフェイスとエンティティを使う。インフラストラクチャ層のリポジトリ実装が DbContext を通じてデータベースにアクセスする。
     subgraph API["プレゼンテーション層（Web API プロジェクト）"]
         CTRL["コントローラー / Minimal API<br>DTO の入出力"]
     end
