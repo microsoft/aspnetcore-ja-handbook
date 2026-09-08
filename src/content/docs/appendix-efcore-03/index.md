@@ -239,6 +239,55 @@ Update the tools for the latest features and bug fixes.
 
 「動いてしまう」ため放置されやすいのですが、古いツールは新しいバージョンで追加された機能や修正を知りません。この警告が出たら、そのままにせずツールを更新してください。
 
+#### `database update <Name>` は「そこまで戻す」であって「1 つ戻す」ではない
+
+`dotnet ef database update` にマイグレーション名を渡すと、**コマンド完了後にデータベースがその状態になる**ように動きます。公式ドキュメントは「データベースが指定より新しいマイグレーションにある場合、コマンドは対象より新しいマイグレーションを**すべて** `Down` の実行によって取り消す。古いマイグレーションを 1 つだけ順序外に適用するのではない」と警告しています。
+
+`M1` / `M2` / `M3` を適用した状態で `M1` を指定したところ、次のように 2 件がまとめて取り消されました（SQL Server 2022 で実測）。
+
+```text
+Reverting migration '20260908035812_M3'.
+Reverting migration '20260908035806_M2'.
+Done.
+```
+
+```text
+20260908035800_M1
+20260908035806_M2 (Pending)
+20260908035812_M3 (Pending)
+```
+
+「1 つだけ戻すつもりで古い名前を指定したら、間のマイグレーションまで全部 `Down` が走った」という事故になり得ます。`Down` はデータを失う操作を含むことがあるため、本番環境では実行前に必ず `dotnet ef migrations list` で現在地を確認してください。
+
+---
+
+#### DbContext が複数あるときは `--context` が必須
+
+プロジェクトに `DbContext` を継承した型が 2 つ以上あると、`dotnet ef` はどれを対象にすればよいか判断できず、次のように停止します（実測）。
+
+```text
+More than one DbContext was found. Specify which one to use.
+Use the '-Context' parameter for PowerShell commands and the '--context' parameter for dotnet commands.
+```
+
+公式ドキュメントも `--context` の説明で「このオプションを省略すると EF Core がコンテキストクラスを探す。**コンテキストクラスが複数ある場合はこのオプションが必須**」と述べています。候補は `dotnet ef dbcontext list` で確認できます。
+
+```bash
+dotnet ef dbcontext list
+# Db
+# AuditDb
+```
+
+マイグレーションを追加するときは、`--context` に加えて `--output-dir` も指定してください。指定しないと、すべての `DbContext` のマイグレーションが同じ `Migrations` フォルダーに混在します。
+
+```bash
+dotnet ef migrations add InitialCreate --context AuditDb --output-dir AuditMigrations
+```
+
+`database update` や `migrations script` など、他のコマンドでも同様に `--context` が必要です。
+
+---
+
 Visual Studio では、`dotnet ef` の代わりにパッケージマネージャーコンソールから PowerShell コマンドを使えます。また、複数のターゲットフレームワークを持つプロジェクトでは `--framework` の指定が必要です。
 
 <details>
@@ -1874,3 +1923,4 @@ WHERE CONTAINS([a].[Contents], N'vegetables')
 - [SQLite プロバイダーの関数マッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sqlite/functions)
 - [SQL Server プロバイダーのその他の考慮事項 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/misc)
 - [Azure Cosmos DB プロバイダーの制限事項 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/limitations)
+- [.NET Core CLI での EF Core ツールのリファレンス | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/cli/dotnet)

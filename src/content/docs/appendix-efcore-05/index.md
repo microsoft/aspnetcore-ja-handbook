@@ -42,6 +42,7 @@ description: "EF Core の計測と診断、インデックス設計、コンパ�
    - [変更検出のコストを理解する](#変更検出のコストを理解する)
    - [バッファリングとストリーミング](#バッファリングとストリーミング)
    - [非同期 API を使う](#非同期-api-を使う)
+   - [プロバイダーを替えるとモデルの意味が変わる](#プロバイダーを替えるとモデルの意味が変わる)
    - [同時実行検出を無効にしてはいけない](#同時実行検出を無効にしてはいけない)
 4. [参考ドキュメント](#4-参考ドキュメント)
 
@@ -639,6 +640,36 @@ System.MissingMethodException: Method not found:
 ```
 
 つまり **公式一覧だけでも NuGet だけでも判断せず、両方を確認してください。** サードパーティー製プロバイダーを使うプロジェクトでは、EF Core のバージョンをプロバイダーの対応状況に合わせて決めるのが安全です。
+
+#### パッチ版の `Relational` は自分で直接参照する
+
+公式ドキュメントは、リレーショナルプロバイダーを使うときの注意として次を挙げています。EF Core のパッチリリースには `Microsoft.EntityFrameworkCore.Relational` の更新が含まれることが多い一方、**プロバイダーは EF Core とは独立してリリースされるため、新しいパッチ版に依存するよう更新されているとは限らない**、というものです。
+
+NuGet は推移的な依存関係について「条件を満たす最も低いバージョン」を選ぶため、プロバイダーが古いパッチ版を指していると、そのまま古い `Relational` が使われます。実測すると次のようになりました。
+
+```bash
+# SqlServer 10.0.0 だけを参照した状態
+Microsoft.EntityFrameworkCore.SqlServer      10.0.0   10.0.0
+Microsoft.EntityFrameworkCore.Relational              10.0.0   ← 推移的
+```
+
+`Relational` のパッチ版を直接参照すると、そちらが使われます。
+
+```bash
+dotnet add package Microsoft.EntityFrameworkCore.Relational --version 10.0.11
+```
+
+```bash
+Microsoft.EntityFrameworkCore.Relational     10.0.11  10.0.11  ← 直接参照
+Microsoft.EntityFrameworkCore.SqlServer      10.0.0   10.0.0
+```
+
+公式は「すべてのバグ修正を確実に受け取るために、`Microsoft.EntityFrameworkCore.Relational` のパッチ版をアプリケーションの**直接の依存関係として追加する**ことを推奨する」と述べています。プロバイダー側の更新を待たずにパッチを取り込めます。
+
+> [!NOTE]
+> 公式は、パッケージのバージョンについて「**NuGet はパッケージバージョンの一貫性を強制しない。参照しているパッケージのバージョンを `.csproj` で必ず注意深く確認すること**」とも警告しています。EF Core 関連のパッケージがすべて同じバージョンになっているかは、`dotnet list package --include-transitive` で確認できます。
+
+---
 
 #### プロバイダーの品質は仕様テストの実装状況で見当をつける
 
@@ -1407,6 +1438,35 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 >
 > EF Core 8 以前は内部で `.GetAwaiter().GetResult()` を呼んでブロックしていましたが、公式ドキュメントはこれを「sync over async」と呼び、**デッドロックを招きうる強く非推奨の手法**だと説明しています。SQL Server では同期版を使っても動作はする（遅くなるだけ）のに対し、Cosmos DB では最初から動きません。**プロバイダーを差し替える可能性があるなら、なおさら非同期版で統一しておくべきです。**
 
+### プロバイダーを替えるとモデルの意味が変わる
+
+プロバイダーの差し替えは「接続先が変わるだけ」ではありません。Azure Cosmos DB のようなドキュメントデータベースでは、**同じ C# のモデルが別の意味に解釈されます。**
+
+公式ドキュメントは「**関連するエンティティ型は既定で所有型 (owned) として構成される**。特定のエンティティ型でこれを防ぐには `ModelBuilder.Entity` を呼ぶ」と述べています。つまり、リレーショナルデータベースなら別テーブルになる子エンティティが、Azure Cosmos DB では**親ドキュメントの中に埋め込まれます。**
+
+`Blog` と `Post` のモデルを、構成を変えずに Azure Cosmos DB に対して実行して確かめました（実測）。
+
+| モデルの構成 | `Post.IsOwned()` | `Post` のコンテナー | `Include()` | `Include` なしで読んだ子 |
+| --- | --- | --- | --- | --- |
+| 既定（何も書かない） | `True` | なし（親に埋め込み） | 成功（そもそも不要） | **1 件** |
+| `b.Entity<Post>()` を書く | `False` | `Db` | **例外** | 0 件 |
+
+既定のままなら、`Include` を書かなくても子は一緒に読み込まれます。1 つのドキュメントとして格納されているためです。
+
+一方、`ModelBuilder.Entity<Post>()` を呼んで独立したエンティティ型にすると、`Include` は次の例外になります。
+
+```text
+InvalidOperationException: Including navigation 'Navigation: Blog.Posts (List<Post>)
+Collection ToDependent Post' is not supported as the navigation is not embedded in same resource.
+```
+
+公式ドキュメントも「Azure Cosmos DB プロバイダーは他のプロバイダーと同じ LINQ クエリを変換しない。たとえば **`Include()` 演算子は Azure Cosmos DB ではサポートされない。ドキュメント間のクエリがデータベースでサポートされていないため**」と明記しています。
+
+> [!WARNING]
+> リレーショナルデータベース向けに書いたモデルとクエリを、そのまま Azure Cosmos DB に載せ替えることはできません。**集約の単位をドキュメントの単位として設計し直す**必要があります。「プロバイダーを差し替えれば動く」という前提でアーキテクチャーを組むと、この段階で作り直しになります。
+
+---
+
 ### 同時実行検出を無効にしてはいけない
 
 1 つの `DbContext` インスタンスを複数のスレッドから同時に使うと `InvalidOperationException` になります。この例外を出しているのは EF Core の **同時実行検出 (concurrency detection)** という仕組みで、`DbContextOptionsBuilder.EnableThreadSafetyChecks(false)` で無効にできます。公式ドキュメントは「わずかな性能向上が得られるが、`DbContext` インスタンスが同時に使われた場合の **動作は未定義になり、プログラムは予測できない形で失敗する可能性がある**」と説明し、「性能向上が相当なものであることを確認し、アプリケーションを同時実行のバグについて十分にテストしたうえでのみ無効化すること」と釘を刺しています。
@@ -1434,5 +1494,9 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 - [EF Core のメトリック | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/metrics)
 - [インデックス | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/indexes)
 - [Azure Cosmos DB プロバイダーの制限事項 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/limitations)
+- [Azure Cosmos DB プロバイダーでのモデリング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/modeling)
+- [Azure Cosmos DB プロバイダーでのクエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/querying)
+- [データベースプロバイダー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/)
+- [EF Core の NuGet パッケージ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/nuget-packages)
 - [EF Core 9.0 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-9.0/breaking-changes)
 - [付加列を使用したインデックスの作成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/relational-databases/indexes/create-indexes-with-included-columns?view=sql-server-ver17)

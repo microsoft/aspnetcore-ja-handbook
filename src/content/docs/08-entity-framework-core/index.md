@@ -1132,7 +1132,7 @@ dotnet ef database update
 | `dotnet ef migrations remove` | 未適用の最新マイグレーションを取り消す |
 | `dotnet ef migrations list` | マイグレーションの一覧と適用状況を表示する |
 | `dotnet ef database update` | 最新まで適用する |
-| `dotnet ef database update <Name>` | 指定したマイグレーションの状態まで進める／戻す |
+| `dotnet ef database update <Name>` | 指定したマイグレーションの状態にする（間のものはまとめて適用／取り消し） |
 | `dotnet ef migrations script` | SQL スクリプトを生成する |
 | `dotnet ef migrations bundle` | マイグレーションバンドル（実行可能ファイル）を生成する |
 
