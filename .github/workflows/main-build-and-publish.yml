@@ -41,6 +41,9 @@ jobs:
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: ./dist
+          # v4 以降はドットファイルが既定で artifact から除外される。
+          # public/.nojekyll 由来の dist/.nojekyll が落ちるのを防ぐため明示的に含める。
+          include-hidden-files: true
 
   deploy:
     needs: build
