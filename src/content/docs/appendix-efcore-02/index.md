@@ -442,6 +442,25 @@ CREATE TABLE [Orders] (
 > [!WARNING]
 > `NEXT VALUE FOR` は SQL Server の構文です。公式ドキュメントも「シーケンスから値を生成する SQL はデータベース固有であり、上の例は SQL Server では動くが他のデータベースでは失敗する」と明記しています。PostgreSQL では `nextval('...')` のように書き換える必要があり、SQLite にはシーケンス自体がありません。
 
+#### HiLo では保存前に採番の問い合わせが発生する
+
+SQL Server の `UseHiLo` は、シーケンスから値のブロックを取得し、その範囲内でキーを割り当てます。使い切ったら次のブロックを要求します。通常の `Add` は追跡を始めるだけですが、公式の[Add と AddAsync の違い](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/miscellaneous#add-versus-addasync)は、HiLo の採番をデータベースアクセスが発生し得る例外として挙げています。HiLo は既定の採番方式ではありません。
+
+```csharp
+// OnModelCreating 内。SQL Server の検証用モデルの採番を構成する
+modelBuilder.UseHiLo("AuditHiLo");
+```
+
+EF Core 10.0.11 と SQL Server 2022 で、生成されたシーケンスの増分が 10 であることを確認し、新しいデータベースごとに 21 件を追加しました。`SaveChangesAsync()` より前に発行された `SELECT NEXT VALUE FOR [AuditHiLo]` の累計は次のとおりです。
+
+| 追加 API | 10 件追加後 | 11 件追加後 | 21 件追加後 | 採番 SQL の実行経路 |
+| --- | ---: | ---: | ---: | --- |
+| `Add` | 1 回 | 2 回 | 3 回 | 同期 |
+| `AddAsync` | 1 回 | 2 回 | 3 回 | 非同期 |
+| `AddRangeAsync` | 1 回 | 2 回 | 3 回 | 非同期 |
+
+保存前のテーブルは 0 行のままで、`SaveChangesAsync()` の後に 21 行になりました。**エンティティの INSERT がまだ行われていないことと、データベースへ一度もアクセスしていないことは別です。** この結果はブロックの補充を確認したものであり、並列実行や再起動後の欠番なしを保証するものではありません。
+
 ### 主キーの採番方法を細かく制御する
 
 整数の主キーは、規約により SQL Server では `IDENTITY(1, 1)`、SQLite では `AUTOINCREMENT` になります。ここでは、その既定を変えたい場面と、既定のままでは詰まる場面を扱います。
@@ -1254,6 +1273,8 @@ dotnet_diagnostic.CA1056.severity = none
 - [シャドウプロパティとインジケータープロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/shadow-properties)
 - [バッキングフィールド | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/backing-field)
 - [シーケンス | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/sequences)
+- [Add と AddAsync の違い | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/miscellaneous#add-versus-addasync)
+- [HiLoValueGenerator クラス | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.valuegeneration.hilovaluegenerator-1?view=efcore-10.0)
 - [生成されるプロパティ値 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/generated-properties)
 - [SQL Server / Azure SQL のテンポラルテーブル | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/temporal-tables)
 - [SQL Server プロバイダー固有の列機能 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/columns)

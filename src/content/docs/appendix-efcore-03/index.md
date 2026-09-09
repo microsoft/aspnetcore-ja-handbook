@@ -469,6 +469,27 @@ if (db.Database.HasPendingModelChanges())
 }
 ```
 
+#### 未適用マイグレーションとモデル差分を区別する
+
+`GetMigrations()` は構成されたマイグレーションアセンブリ内の一覧、`GetAppliedMigrationsAsync()` は対象データベースの適用済み一覧、`GetPendingMigrationsAsync()` はそのアセンブリ内で対象データベースへ未適用の一覧を返します。公式の[マイグレーションの一覧表示](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/migrations/managing#listing-migrations)には、コードから取得する例もあります。
+
+```csharp
+var allMigrations = db.Database.GetMigrations();
+var appliedMigrations = await db.Database.GetAppliedMigrationsAsync();
+var pendingMigrations = await db.Database.GetPendingMigrationsAsync();
+```
+
+EF Core 10.0.11 と SQL Server 2022 で、テーブル作成と列追加の 2 つのマイグレーションを用意して実測しました。
+
+| 状態 | 全件 | 適用済み | 未適用 | `HasPendingModelChanges()` |
+| --- | ---: | ---: | ---: | --- |
+| データベース未作成 | 2 | 0 | 2 | `false` |
+| 最初の 1 件だけ適用 | 2 | 1 | 1 | `false` |
+| 2 件とも適用 | 2 | 2 | 0 | `false` |
+| さらにモデルだけ変更し、マイグレーションは未追加 | 2 | 2 | 0 | `true` |
+
+**未適用が 0 件でも、マイグレーションの作成忘れがないとは限りません。** `GetPendingMigrationsAsync()` はまだマイグレーションになっていないモデル変更を検出しません。その判定には前述の `HasPendingModelChanges()` を使ってください。
+
 #### CI で検出する
 
 `dotnet ef migrations has-pending-model-changes` は、**保留中の変更があると終了コード 1 を返します**（実測）。ビルドパイプラインにそのまま組み込めます。
@@ -1277,7 +1298,7 @@ var emptyBlogs = await db.Blogs.Where(b => !b.Posts.Any()).ToListAsync();
 
 ### 常に Include する（AutoInclude）
 
-特定のナビゲーションを「いつ取得しても必ず一緒に読み込む」とモデル側で決められます。
+エンティティをクエリ結果として読み込むときに、特定のナビゲーションも自動的に読み込むようモデル側で構成できます。
 
 ```csharp
 protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -1313,7 +1334,9 @@ FROM [Blogs] AS [b]
 > **所有型へのナビゲーションは `IgnoreAutoIncludes()` では外れません。** 所有型は規約によって自動読み込みに構成されますが、公式ドキュメントは「`IgnoreAutoIncludes` API を使っても含まれることは止められず、クエリ結果に含まれ続ける」と明記しています。実際に所有型 `Address` を持つ `Blog` で試したところ、`IgnoreAutoIncludes()` を付けても `[b].[Address_City]` は SELECT に残りました。
 
 > [!NOTE]
-> `AutoInclude` は書き忘れを防げる一方で、**そのエンティティを取得するすべてのクエリに JOIN のコストを課します**。一覧表示のように関連データが不要な画面でも必ず JOIN が入るため、既定では設定せず、必要なクエリで `Include` を書くほうが挙動を追いやすくなります。
+> `AutoInclude` は書き忘れを防げる一方で、**エンティティを返すクエリでは、画面で使わない関連データも読み込むことがあります**。ただし、すべてのクエリに必ず JOIN が入るわけではありません。EF Core 10.0.11 と SQLite で、列だけを返す `Select(b => new { b.Id, b.Name })` と単純な `CountAsync()` を実行すると、自動読み込み用の JOIN はありませんでした。適用範囲は、公式の[ナビゲーションの自動読み込み](https://learn.microsoft.com/ja-jp/ef/core/querying/related-data/eager#model-configuration-for-auto-including-navigations)が説明する「結果にエンティティ型が返されるクエリ」です。
+>
+> また、コレクションの読み込みには[分割クエリ](https://learn.microsoft.com/ja-jp/ef/core/querying/single-split-queries)も適用できます。参照 `Theme` とコレクション `Posts` の両方を `AutoInclude` にした対照実測では、`AsSplitQuery()` で SQL が 2 本になり、参照側の JOIN は残りました。読み込みコストは「必ず 1 本の SQL に JOIN が追加される」と決めつけず、実際のクエリ形状で判断してください。
 
 ### null の比較は C# と SQL で意味が違う
 
@@ -1752,7 +1775,7 @@ EF Core の公式パフォーマンスガイダンスは、EF が生成しない
 
 #### スカラー関数
 
-戻り値が単一の値である**スカラー関数**は、シグネチャだけを合わせた CLR メソッドを定義し、`HasDbFunction` でマッピングします。メソッドの本体は呼び出されないため、例外を投げておいて構いません。
+戻り値が単一の値である**スカラー関数**は、シグネチャを合わせた CLR メソッドを定義し、`HasDbFunction` でマッピングします。**引数を含めて SQL に翻訳できる場合**は CLR メソッドの本体を実行せず、データベース関数を呼び出します。次の本体は、CLR 側で誤って実行された場合に例外を投げる実装です。
 
 ```csharp
 public class BloggingContext : DbContext
@@ -1781,6 +1804,11 @@ SELECT [b].[Name]
 FROM [Blogs] AS [b]
 WHERE [dbo].[PostCountForBlog]([b].[Id]) > 1
 ```
+
+> [!WARNING]
+> 「マッピングしたメソッドの本体は絶対に呼ばれない」とは限りません。公式の[UDF マッピング](https://learn.microsoft.com/ja-jp/ef/core/querying/user-defined-function-mapping)は、引数を翻訳できない場合を例外として挙げています。[クライアント評価](https://learn.microsoft.com/ja-jp/ef/core/querying/client-eval)が許される最終 `Select` では、CLR 本体が実行される場合があります。一方、`Where` 内の翻訳不能な式は実行時例外になります。上の `NotSupportedException` を投げる本体は、クライアント側でも同じ結果を計算する代替実装ではありません。
+>
+> EF Core 10.0.11 と SQLite の文字数関数にマップした検証用メソッドで 1 行を取得して対照実測すると、翻訳可能な引数では CLR 本体の呼び出しは 0 回、最終 `Select` に翻訳不能な引数を渡した場合は 1 回でした。同じ式を `Where` に置いた場合は SQL を発行する前に `InvalidOperationException` になりました。
 
 > [!NOTE]
 > NULL 許容の UDF では、引数に対する `PropagatesNullability()` の設定により、関数を再評価せず引数の `IS NULL` で判定できる場合があります。NULL と非 NULL の入力を持つ文字数関数で実測すると、関数呼び出しの `IS NULL` が入力列の `IS NULL` に置き換わり、結果は同じでした（EF Core 10.0.11、SQL Server 2022）。
@@ -1923,6 +1951,7 @@ WHERE CONTAINS([a].[Contents], N'vegetables')
 - [EF Core 9 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-9.0/breaking-changes)
 - [EF Core 8 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-8.0/breaking-changes)
 - [ユーザー定義関数のマッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/user-defined-function-mapping)
+- [クライアント評価とサーバー評価 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/client-eval)
 - [SQL Server プロバイダーの関数マッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/functions)
 - [SQL Server プロバイダーの全文検索 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/full-text-search)
 - [SQLite プロバイダーの関数マッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sqlite/functions)

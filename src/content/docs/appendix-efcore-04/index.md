@@ -124,6 +124,11 @@ key value is attached.
 
 実測でもこの例外が発生しました。公式ドキュメントは 2 つの対処を挙げています。**シリアル化の側で参照を保持する設定にする**か、**追跡しながら ID 解決 (identity resolution) を行う**かです。
 
+> [!NOTE]
+> 参照を保持する設定は、`System.Text.Json` では `ReferenceHandler.Preserve`、Json.NET では `JsonSerializerSettings.PreserveReferencesHandling = PreserveReferencesHandling.All` です。公式の[参照の保持](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/identity-resolution#preserve-references)には両方の例があります。Json.NET でも、同じ `Blog` を 2 回含み、`Post.Blog` がその `Blog` に戻るグラフを往復させ、同一インスタンスの復元とデータベースへの更新を確認しました（EF Core 10.0.11、SQLite）。
+>
+> これは**オブジェクト参照の保持**であり、EF Core の主キーを見て別インスタンスを統合する設定ではありません。シリアル化前から同じキーの別インスタンスが混在する負例では、復元後も別インスタンスのままで、追跡時に例外になりました。また、参照形式は `$id` / `$ref` / `$values` を含むため、通常の JSON と同じ形にはなりません。
+
 後者は `TrackGraph` で書けます。すでに同じキーが追跡されていれば、そのノードを追跡しないという判断をコールバックの中で下します。
 
 ```csharp
@@ -510,7 +515,7 @@ ReferenceEquals(first, second);                 // true
 
 #### リレーションシップ修正
 
-EF Core は、外部キーの値とナビゲーションプロパティを常に一致させます。これを **リレーションシップ修正 (relationship fixup)** と呼び、追跡中のエンティティに対して自動的に働きます。
+EF Core は、読み込み時や変更検出時に外部キーの値とナビゲーションプロパティの整合を取ります。これを **リレーションシップ修正 (relationship fixup)** と呼びます。追跡中のエンティティ同士では、別々のクエリで読み込んだ場合にも働きます。
 
 そのため、`Include` を書いていなくてもナビゲーションが埋まることがあります。
 
@@ -524,8 +529,11 @@ blog.Posts.Count;                    // 2 に増えている
 
 修正は双方向に働きます。実測では、`post.BlogId` を別の値に書き換えると `post.Blog` と両方のブログの `Posts` コレクションが追従し、逆に `post.Blog` に別のブログを代入すると `post.BlogId` が追従しました。
 
+> [!NOTE]
+> 既定のスナップショット追跡では、通常の CLR プロパティへの代入と同時に整合が取れるわけではありません。`post.BlogId` を直接変更した対照実測では、`DetectChanges()` の前はナビゲーションが元のブログを指し、呼び出した後に両方のブログのコレクションとともに更新されました。公式の[変更検出](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/change-detection)も、CLR プロパティを直接変更する場合と EF Core の API を介する場合を区別しています。
+
 > [!TIP]
-> この挙動は、テストで「`Include` を書き忘れているのに動いてしまう」原因になります。同じ `DbContext` でたまたま関連エンティティを読んでいるだけで、本番の経路では `null` になることがあります。関連データが必要な箇所では `Include` を明示してください。非追跡クエリではリレーションシップ修正が働かないため、`AsNoTracking()` を付けて確認するのも有効です。
+> この挙動は、テストで「`Include` を書き忘れているのに動いてしまう」原因になります。同じ `DbContext` でたまたま関連エンティティを読んでいるだけで、本番の経路では `null` になることがあります。関連データが必要な箇所では `Include` を明示してください。`AsNoTracking()` は**そのコンテキストがすでに追跡しているエンティティとの補完**を行わないため、付けて確認するのも有効です。ただし、同じ非追跡クエリで `Include` や `AutoInclude` により読み込んだ関連データまで無効になるわけではありません。
 
 ## 2. トランザクションと同時実行制御
 
@@ -851,6 +859,12 @@ await strategy.ExecuteAsync(async () =>
 > [!WARNING]
 > 再試行によってブロック全体が再実行されるため、その中の処理は **冪等 (idempotent)** である必要があります。ブロック内で外部 API の呼び出しやメール送信などの副作用を伴う処理を行わないでください。
 
+#### 接続を自前で扱う場合の開閉と所有権
+
+接続文字列を `SetConnectionString()` で変更する場合は、接続の開閉状態に注意してください。公式 API は、接続が開いていると変更できない場合があると説明しています。EF Core 10.0.11 と SQL Server 2022 で、開いた接続の `ApplicationName` を変更すると `InvalidOperationException` になり、閉じた後の同じ変更と SQL の実行は成功しました。
+
+また、外部で作った接続を `SetDbConnection(connection, contextOwnsConnection: false)` で渡す場合、**接続の所有者と破棄責任は呼び出し側に残ります**。実測でも、アプリ側で開いた `SqlConnection` は `DbContext.DisposeAsync()` の後も開いており、`SELECT 1` を実行できました。コンテキストを破棄すれば外部接続も必ず破棄されると考えず、呼び出し側の `using` / `await using` で寿命を管理してください。
+
 ### デッドロックへの対処
 
 複数のトランザクションが互いの保持するロックを待ち合う状態を **デッドロック (deadlock)** と呼びます。SQL Server はデッドロックを検出すると、片方を強制的に中止して **デッドロックの犠牲者 (deadlock victim)** に選び、もう片方を進めます。
@@ -1163,7 +1177,7 @@ public sealed class LoadStampInterceptor : IMaterializationInterceptor
 | `InitializingInstance` | プロパティ値を設定する直前（コンストラクターが設定した値はすでに入っている） |
 | `InitializedInstance` | プロパティ値の設定が完了した直後 |
 
-SQL Server 2022 から 2 件を読み込んで実際に呼び出し順序を出力したところ、エンティティ 1 件ごとにこの順で呼ばれ、`Ignore` でマッピングから外した `LoadedAt` に値が入ることを確認しました（実測で確認）。
+SQL Server 2022 から未追跡の 2 件を読み込み、4 つのメソッドを記録する検証用実装で呼び出し順序を出力したところ、新しく生成するエンティティ 1 件ごとにこの順で呼ばれ、`Ignore` でマッピングから外した `LoadedAt` に値が入ることを確認しました（実測で確認）。
 
 ```text
 CreatingInstance
@@ -1179,7 +1193,9 @@ InitializedInstance: Blog
 ```
 
 > [!WARNING]
-> `IMaterializationInterceptor` は **読み込んだエンティティ 1 件ごとに 4 回呼ばれます。** 数万件を読み込むクエリでは呼び出し回数がそのまま増えるため、ここに重い処理を書かないでください。
+> 4 つのコールバックは、[インスタンスの生成と初期化の各段階](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.diagnostics.imaterializationinterceptor?view=efcore-10.0)を対象とします。上の実装の `InitializedInstance` が、1 件につき 4 回呼ばれるわけではありません。また、[追跡済みインスタンスを再利用するクエリ](https://learn.microsoft.com/ja-jp/ef/core/querying/tracking#tracking-queries)では、新規インスタンスの生成が不要です。
+>
+> EF Core 10.0.11 と SQLite で全 4 コールバックを記録した対照実測では、初回に生成した `Blog` は計 4 回、同じ追跡済み `Blog` の再取得と列だけの投影はそれぞれ 0 回、`AsNoTracking()` で新しく生成した `Blog` は計 4 回でした。呼び出し回数を単純にクエリの結果件数の 4 倍と考えないでください。大量のインスタンスを生成する処理では実装したコールバックが繰り返し実行されるため、ここに重い処理を書かないでください。
 
 > [!NOTE]
 > **Hibernate** には同様の目的で `org.hibernate.Interceptor` があり、`onPersist` などで永続化操作に割り込めます（Hibernate 6 で `onSave` は非推奨になり、`onPersist` に置き換えられました）。また **Jakarta Persistence** の仕様には `@PrePersist` / `@PreUpdate` などの **ライフサイクルコールバック** が定義されており、エンティティ自身またはリスナークラスのメソッドとして作成日時・更新日時の設定を行えます。EF Core のインターセプターは、これらと違って `SaveChanges` だけでなく **コマンド・接続・トランザクション・マテリアライゼーション・LINQ 式ツリー** といった層ごとに用意されている点が特徴です。
@@ -1431,15 +1447,19 @@ public record CreateBlogRequest(string Name, string Url);
 - [チェンジトラッカーのデバッグ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/debug-views)
 - [変更の検出と通知 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/change-detection)
 - [ID 解決 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/identity-resolution)
+- [追跡クエリと非追跡クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/tracking)
 - [外部キーとナビゲーションの変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/relationship-changes)
 - [その他の変更追跡機能 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/miscellaneous)
 - [データの保存 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/)
 - [トランザクションの使用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/transactions)
 - [同時実行の競合の処理 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/concurrency)
 - [インターセプター | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/interceptors)
+- [IMaterializationInterceptor インターフェイス | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.diagnostics.imaterializationinterceptor?view=efcore-10.0)
 - [EF Core の .NET イベント | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/events)
 - [EF Core での診断リスナーの使用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/diagnostic-listeners)
 - [接続の回復性 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-resiliency)
+- [SetConnectionString メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.relationaldatabasefacadeextensions.setconnectionstring?view=efcore-10.0)
+- [SetDbConnection メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.relationaldatabasefacadeextensions.setdbconnection?view=efcore-10.0)
 - [読み取りスケール可用性グループの構成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/linux/business-continuity/availability-groups/configure-read-scale?view=sql-server-ver16)
 - [可用性グループの読み取り専用ルーティングの構成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/database-engine/availability-groups/windows/configure-read-only-routing-for-an-availability-group-sql-server?view=sql-server-ver16)
 - [EnableRetryOnFailure メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.infrastructure.sqlserverdbcontextoptionsbuilder.enableretryonfailure?view=efcore-10.0)
