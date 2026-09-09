@@ -5,7 +5,7 @@ description: "ASP.NET Core から EF Core 10 を使うための基本を解説�
 
 この章では、ASP.NET Core アプリケーションから Entity Framework Core (EF Core) を使ってデータベースにアクセスする方法を扱います。EF Core の基本的な考え方から、DI コンテナーへの登録、クエリと保存、マイグレーションの運用、テストまでを一通り説明します。
 
-EF Core は機能が非常に多いため、この章では **ASP.NET Core から使ううえで必要になる部分**に絞っています。個々の機能の詳細は 5 本の付録に分けました。
+EF Core は機能が非常に多いため、この章では **ASP.NET Core から使ううえで必要になる部分**に絞っています。個々の機能の詳細は 6 本の付録に分けました。
 
 | 付録 | 扱う内容 |
 | --- | --- |
@@ -980,7 +980,7 @@ await context.SaveChangesAsync(cancellationToken);
 ```
 
 > [!NOTE]
-> `DbSet` には `AddAsync` もありますが、**通常は同期の `Add` を使ってください。** `Add` はデータベースにアクセスせず、チェンジトラッカーに状態を登録するだけだからです。公式ドキュメントは `AddAsync` について「このメソッドが async なのは、SQL Server の `SequenceHiLo` のように**データベースへ非同期にアクセスする特殊な値ジェネレーター**を使えるようにするためだけであり、それ以外のすべてのケースでは非 async のメソッドを使うべき」と明記しています。`Update` / `Remove` / `Attach` には async 版そのものが存在しません。
+> `DbSet` には `AddAsync` もありますが、**通常は同期の `Add` を使ってください。** 通常の `Add` はデータベースにアクセスせず、チェンジトラッカーに状態を登録するだけだからです。ただし、**HiLo による採番では `Add` の時点でデータベースへアクセスする場合があります。** 公式ドキュメントは `AddAsync` について「このメソッドが async なのは、SQL Server の `SequenceHiLo` のように**データベースへ非同期にアクセスする特殊な値ジェネレーター**を使えるようにするためだけであり、それ以外のすべてのケースでは非 async のメソッドを使うべき」と明記しています。採番時の動作は[付録2の「シーケンスによる採番」](../appendix-efcore-02/index.md#シーケンスによる採番)で扱います。`Update` / `Remove` / `Attach` には async 版そのものが存在しません。
 
 関連エンティティを一緒に追加すると、EF Core が外部キーを解決して正しい順序で INSERT します。
 ```csharp
@@ -1003,15 +1003,15 @@ await context.SaveChangesAsync(cancellationToken);
 
 ```csharp
 var blog = new Blog { Id = id, Name = dto.Name, Url = dto.Url };
-context.Blogs.Update(blog); // すべてのプロパティが Modified になる
+context.Blogs.Update(blog); // この例では Name と Url が Modified になる
 await context.SaveChangesAsync(cancellationToken);
 ```
 
 > [!TIP]
-> `Update` はすべての列を UPDATE 文に含めます。一部の列だけを更新したい場合は、いったんデータベースから読み込んで必要なプロパティだけを変更するか、`context.Entry(blog).Property(b => b.Name).IsModified = true;` のように個別に指定します。
+> `Update` は、値が変わっていないプロパティも更新対象にします。この例では `Name` と `Url` の両方が `UPDATE` の `SET` 句に入り、主キーの `Id` は更新対象ではなく `WHERE` 句で行を特定するために使われます。公式の[既存エンティティの更新](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/explicit-tracking#updating-existing-entities)にも、キーと更新対象を区別した状態表示・SQL の例があります。一部の列だけを更新したい場合は、いったんデータベースから読み込んで必要なプロパティだけを変更するか、`Attach` で追跡を開始してから `context.Entry(blog).Property(b => b.Name).IsModified = true;` のように個別に指定します。
 
 > [!IMPORTANT]
-> 上の `Update` の例は、子コレクションを持たない単一のエンティティです。**Web API で「ブログとその投稿一覧」をまるごと受け取って保存する場合は、どの子が追加・更新・削除されたのかを EF Core が判断できず、そのまま `Update` を呼ぶと子が重複して挿入されます。** この切断されたエンティティのグラフをどう保存するかは、[付録4の「切断されたエンティティのグラフを保存する」](../appendix-efcore-04/index.md#切断されたエンティティのグラフを保存する)で扱います。
+> 上の `Update` の例は、子エンティティを渡していない単一のエンティティです。**Web API で「ブログとその投稿一覧」をまるごと受け取る場合、子のキーと削除の意図を正しく扱う必要があります。** この章のような自動生成キーでは、`Update` はキーがある子を更新、未設定の子を追加として扱います。既存の子のキーを DTO との変換で落とすと、新しい子として挿入されます。また、受け取った一覧にいない子が自動で削除されるわけではありません。公式の[切断されたエンティティ](https://learn.microsoft.com/ja-jp/ef/core/saving/disconnected-entities#working-with-graphs)と同様、追加・更新・削除を区別して保存する方法は、[付録4の「切断されたエンティティのグラフを保存する」](../appendix-efcore-04/index.md#切断されたエンティティのグラフを保存する)で扱います。
 
 ### SaveChanges の既定のトランザクション動作
 
