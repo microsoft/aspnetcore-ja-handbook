@@ -61,6 +61,7 @@ var graph = new Blog
 {
     Id = 1,
     Name = "更新後",
+    Url = "https://example.com",
     Posts =
     {
         new Post { Id = 1, Title = "既存 1" },
@@ -417,6 +418,28 @@ data may have been modified or deleted since entities were loaded.
 
 多数の行を更新・削除する場合、すべてのエンティティを読み込んで変更追跡させるのは非効率です。`ExecuteUpdateAsync` / `ExecuteDeleteAsync` は、エンティティを読み込まずに単一の SQL 文を発行します。
 
+この節は[付録1の「値の変換・所有型・複合型」](../appendix-efcore-01/index.md#値の変換所有型複合型)に掲載した `PostStatus` / `Post` / `Comment` / `Author` / `Address` を使います。本編の同名エンティティとは混ぜず、これらの型を同じ `PostStatusSample` 名前空間に配置してください。`BlogId` はこの検証モデルでは対象ブログの識別値として持ち、`Blog` ナビゲーションは定義しません。
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+
+namespace PostStatusSample;
+
+public class PostStatusContext(DbContextOptions<PostStatusContext> options) : DbContext(options)
+{
+    public DbSet<Post> Posts => Set<Post>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Post>()
+            .Property(p => p.Status).HasConversion<string>().HasMaxLength(20);
+        modelBuilder.Entity<Author>().OwnsOne(a => a.Address);
+    }
+}
+```
+
+以下の `context` は SQL Server を構成した `PostStatusContext`、`threshold` は `DateTimeOffset.UtcNow.AddYears(-1)`、`blogId` は対象ブログの ID です。
+
 ```csharp
 // 1 年以上前の下書きを一括削除
 var deleted = await context.Posts
@@ -521,10 +544,10 @@ EF Core は、読み込み時や変更検出時に外部キーの値とナビゲ
 
 ```csharp
 var blog = await context.Blogs.FirstAsync();
-blog.Posts.Count;                    // 0
+Console.WriteLine(blog.Posts.Count); // 0
 
 await context.Posts.ToListAsync();   // 別のクエリで Post を読む
-blog.Posts.Count;                    // 2 に増えている
+Console.WriteLine(blog.Posts.Count); // 2 に増えている
 ```
 
 修正は双方向に働きます。実測では、`post.BlogId` を別の値に書き換えると `post.Blog` と両方のブログの `Posts` コレクションが追従し、逆に `post.Blog` に別のブログを代入すると `post.BlogId` が追従しました。

@@ -726,13 +726,12 @@ var blogs = await context.Blogs
     .ToListAsync(cancellationToken);
 ```
 
-さらに深い階層は `ThenInclude` でたどります。
+さらに深い階層は `ThenInclude` でたどります。ここでは本編で定義済みの `Post` → `Blog` → `Contributors` を読み込みます。
 
 ```csharp
-var blogs = await context.Blogs
-    .Include(b => b.Posts)
-        .ThenInclude(p => p.Comments)
-            .ThenInclude(c => c.Author)
+var posts = await context.Posts
+    .Include(p => p.Blog)
+        .ThenInclude(b => b!.Contributors)
     .ToListAsync(cancellationToken);
 ```
 

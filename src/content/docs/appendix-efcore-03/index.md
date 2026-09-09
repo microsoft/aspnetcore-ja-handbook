@@ -460,8 +460,13 @@ Add a new migration before updating the database.
 
 `DatabaseFacade.HasPendingModelChanges()` で同じ判定をコードから行えます。公式は「マイグレーションの追加を忘れたときに失敗する単体テストを書くのに使える」と述べています。
 
+`connectionString` には本編で設定した SQL Server の接続文字列を渡します。本編の `BloggingContext` は引数なしでは作成できないため、`DbContextOptions<BloggingContext>` を明示して構成します。
+
 ```csharp
-using var db = new BloggingContext();
+var options = new DbContextOptionsBuilder<BloggingContext>()
+    .UseSqlServer(connectionString)
+    .Options;
+using var db = new BloggingContext(options);
 
 if (db.Database.HasPendingModelChanges())
 {
@@ -1019,8 +1024,12 @@ var count = await context.Customers.Where(c => c.Name == "john").CountAsync(canc
 EF Core は `==` を単に SQL の `=` に翻訳するだけで、大文字小文字の扱いを揃えようとはしません。これは意図的な設計です。そのため、`StringComparison` を受け取るオーバーロードは**翻訳できず例外になります。**
 
 ```csharp
-// InvalidOperationException: The LINQ expression ... could not be translated.
-context.Customers.Where(c => c.Name.Equals("john", StringComparison.OrdinalIgnoreCase))
+// C# としてはコンパイルできる。Where だけではまだ SQL に翻訳されない
+var query = context.Customers
+    .Where(c => c.Name.Equals("john", StringComparison.OrdinalIgnoreCase));
+
+// ここで SQL 翻訳が行われ、InvalidOperationException になる
+await query.ToListAsync(cancellationToken);
 ```
 
 クエリ単位で照合順序を指定したい場合は `EF.Functions.Collate` を使います。
@@ -1224,6 +1233,36 @@ var page = await context.Posts
 ### 関連データを読み込まずに数える
 
 本編で扱った明示的読み込み (`Collection(...).LoadAsync()`) は、関連データを**すべて**メモリに読み込みます。件数を数えたいだけの場合や、条件に合うものだけが欲しい場合は `Query()` を使います。`Query()` はそのナビゲーションに対応する `IQueryable` を返すので、後ろに LINQ を続けられます。
+
+この節の例は、本編とは別の **投稿に評価値を持つ検証用モデル**を使います。同名の型を本編のモデルへ混ぜず、次の `RatingQuerySample` 名前空間に配置してください。以下の `context` は、SQL Server の接続文字列を `UseSqlServer` に設定した `RatingContext` です。
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+
+namespace RatingQuerySample;
+
+public class Blog
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public List<Post> Posts { get; set; } = [];
+}
+
+public class Post
+{
+    public int Id { get; set; }
+    public string Title { get; set; } = "";
+    public int Rating { get; set; }
+    public int BlogId { get; set; }
+    public Blog? Blog { get; set; }
+}
+
+public class RatingContext(DbContextOptions<RatingContext> options) : DbContext(options)
+{
+    public DbSet<Blog> Blogs => Set<Blog>();
+    public DbSet<Post> Posts => Set<Post>();
+}
+```
 
 ```csharp
 var blog = await context.Blogs.SingleAsync(b => b.Id == id, cancellationToken);
@@ -1548,6 +1587,8 @@ var ids = await context.Database
 
 `SqlQuery` が扱えるのはスカラー値だけではありません。**EF Core のモデルに含まれていない任意の CLR 型**にも結果を詰められます（EF Core 8.0 で追加）。複数のテーブルを結合した結果や、列の部分集合をそのまま DTO に受け取れるため、生の SQL を書くときに `DbCommand` などの低レベルな API へ降りる必要がなくなります。
 
+この節の `Blog` / `Post` と `context` も、[「関連データを読み込まずに数える」の検証用モデル](#関連データを読み込まずに数える)（`RatingQuerySample.RatingContext`）を使います。`Rating` はこのモデルの `Post` に定義されています。本編の `BloggingContext` にそのまま貼り付ける例ではありません。
+
 ```csharp
 public class PostSummary
 {
@@ -1598,7 +1639,7 @@ var summaries = await context.Database
 ここまでの例は、生の SQL を書かずに LINQ の `Select` だけでも同じ結果が得られます。SQL を書く必要が本当にあるのかは、先に検討してください。
 
 ```csharp
-// 上と同じ結果を LINQ だけで得る
+// 上の Where を合成した SQL と同じ結果を LINQ だけで得る
 var summaries = await context.Posts
     .Select(p => new PostSummary
     {

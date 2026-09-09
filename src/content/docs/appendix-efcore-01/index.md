@@ -807,6 +807,8 @@ ON UPDATE NO ACTION, or modify other FOREIGN KEY constraints.
 
 列の型とプロパティの型が一致しない場合は **値の変換 (Value Conversion)** を使います。列挙型を文字列として保存する例です。
 
+この節の `Post` は、状態・コメントを扱う独立した検証用定義です。本編の `Post` への差分ではありません。[付録4の一括更新・一括削除](../appendix-efcore-04/index.md#一括更新一括削除)で使用する場合は、ここに示す型と後掲の `Author` / `Address` を `PostStatusSample` 名前空間へまとめます。
+
 ```csharp
 public enum PostStatus
 {
@@ -819,6 +821,7 @@ public class Post
 {
     public int Id { get; set; }
     public required string Title { get; set; }
+    public int BlogId { get; set; }
     public PostStatus Status { get; set; }
 
     // 一括更新・一括削除、関連データの読み込みで使う
@@ -841,7 +844,7 @@ public class Comment
 ```
 
 > [!NOTE]
-> 「エンティティクラスの定義」で示した `Post` に、`Status` と後続の節で使うプロパティを追加した形です。この付録では、説明する内容に応じてエンティティへプロパティを足しながら進めます。
+> 以降の例でプロパティを追加する場合は、この節の検証用 `Post` を基にしてください。本編のモデルとは区別し、所有型と複合型などの代替構成も同時には適用しません。
 
 `IEntityTypeConfiguration<Post>` の `Configure` メソッド（引数名 `builder`）の中で、次のように構成します。
 

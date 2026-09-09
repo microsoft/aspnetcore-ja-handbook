@@ -831,18 +831,35 @@ modelBuilder.Entity<Post>().HasIndex(p => p.Title).HasFilter("[Title] IS NOT NUL
 1. **複合インデックスの列順序には非対称性がある。** 公式ドキュメントは「A と B の列にインデックスを張ると、A と B での絞り込みも、**A だけでの絞り込みも**高速化されるが、**B だけでの絞り込みは高速化されない**」と説明しています。上の表はこの説明をそのまま再現しています。`(BlogId, Price)` のインデックスは `Price` 単独の検索には使えないため、`Price` だけで絞り込むクエリが多いなら別のインデックスが必要です。
 2. **列に式を適用すると単純なインデックスは使えなくなる。** `Price / 2 = 7` のように列を計算した結果で絞り込むと、`Price` にインデックスがあってもスキャンになります。公式の対処は、**永続化された計算列を定義してそこにインデックスを張る**ことです。
 
+この節と次の付加列の例には、本編とは別の `IndexQuerySample` モデルを使います。以下の `db` は SQL Server を構成した `IndexContext` です。`Price` / `HalfPrice` を本編の `Post` へ追加する必要はありません。
+
 ```csharp
+using Microsoft.EntityFrameworkCore;
+
+namespace IndexQuerySample;
+
 public class Post
 {
+    public int Id { get; set; }
+    public int BlogId { get; set; }
+    public string Title { get; set; } = "";
     public decimal Price { get; set; }
     public decimal HalfPrice { get; set; }
 }
 
-modelBuilder.Entity<Post>()
-    .Property(p => p.HalfPrice)
-    .HasComputedColumnSql("[Price] / 2", stored: true);
+public class IndexContext(DbContextOptions<IndexContext> options) : DbContext(options)
+{
+    public DbSet<Post> Posts => Set<Post>();
 
-modelBuilder.Entity<Post>().HasIndex(p => p.HalfPrice);
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Post>()
+            .Property(p => p.HalfPrice)
+            .HasComputedColumnSql("[Price] / 2", stored: true);
+
+        modelBuilder.Entity<Post>().HasIndex(p => p.HalfPrice);
+    }
+}
 ```
 
 同じ 20,000 行のテーブルでこの構成にして `WHERE [HalfPrice] = 7` を実行すると、物理演算子は **Index Seek** に変わりました。計算列については「[計算列](../appendix-efcore-02/index.md#計算列)」も参照してください。
@@ -850,6 +867,8 @@ modelBuilder.Entity<Post>().HasIndex(p => p.HalfPrice);
 #### インデックスに列を含める（付加列）
 
 絞り込みには使わないが取得はする列を、インデックスの**キーではない列**としてインデックスに持たせられます。公式ドキュメントは「クエリで使うすべての列がキー列か非キー列としてインデックスに含まれていれば、テーブル自体にアクセスする必要がなくなるため、クエリのパフォーマンスが大きく向上する」と説明しています。
+
+次の構成は、直前の `IndexContext.OnModelCreating` の末尾へ追加します。
 
 ```csharp
 modelBuilder.Entity<Post>()
@@ -866,7 +885,10 @@ CREATE INDEX [IX_Posts_Price] ON [Posts] ([Price]) INCLUDE ([Title]);
 効果を確かめるため、20,000 行の `Posts` テーブルに対して `Price` で絞り込み `Title` と `Price` を取得するクエリを、`INCLUDE` の有無だけを変えて `SET SHOWPLAN_ALL ON` で比較しました。
 
 ```csharp
-db.Posts.Where(p => p.Price == 7m).Select(p => new { p.Title, p.Price })
+var matches = await db.Posts
+    .Where(p => p.Price == 7m)
+    .Select(p => new { p.Title, p.Price })
+    .ToListAsync(cancellationToken);
 ```
 
 | インデックスの定義 | 実行プランに現れた物理演算子 |
@@ -1279,12 +1301,12 @@ EF Core の既定は **スナップショット変更追跡 (snapshot change tra
 > context.ChangeTracker.AutoDetectChangesEnabled = false;
 > blog.Name = "更新後";
 >
-> context.Entry(blog).State;            // Unchanged（実際は変更済み）
-> context.ChangeTracker.HasChanges();   // False（実際は変更あり）
+> Console.WriteLine(context.Entry(blog).State);            // Unchanged（実際は変更済み）
+> Console.WriteLine(context.ChangeTracker.HasChanges());   // False（実際は変更あり）
 >
 > context.ChangeTracker.DetectChanges();
-> context.Entry(blog).State;            // Modified
-> await context.SaveChangesAsync();     // ここで初めて 1 行が保存される
+> Console.WriteLine(context.Entry(blog).State);            // Modified
+> Console.WriteLine(await context.SaveChangesAsync());     // ここで初めて 1 行が保存される
 > ```
 >
 > 無効にする場合は、`try` / `finally` で必ず元に戻し、その区間でプロパティを書き換えないことを保証してください。

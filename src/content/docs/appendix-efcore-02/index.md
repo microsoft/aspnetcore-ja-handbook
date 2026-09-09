@@ -504,7 +504,7 @@ using var transaction = await context.Database.BeginTransactionAsync(cancellatio
 
 await context.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT dbo.Blogs ON", cancellationToken);
 
-context.Blogs.Add(new Blog { Id = 999, Name = "復元した行" });
+context.Blogs.Add(new Blog { Id = 999, Name = "復元した行", Url = "https://example.com" });
 await context.SaveChangesAsync(cancellationToken);
 
 await context.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT dbo.Blogs OFF", cancellationToken);
