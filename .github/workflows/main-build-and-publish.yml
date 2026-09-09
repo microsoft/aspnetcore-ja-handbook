@@ -42,7 +42,7 @@ jobs:
         with:
           path: ./dist
           # v4 以降はドットファイルが既定で artifact から除外される。
-          # public/.nojekyll が落ちるのを防ぐため明示的に含める。
+          # public/.nojekyll 由来の dist/.nojekyll が落ちるのを防ぐため明示的に含める。
           include-hidden-files: true
 
   deploy:
