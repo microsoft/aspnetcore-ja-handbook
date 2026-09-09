@@ -85,6 +85,7 @@ export default defineConfig({
 			components: {
 				Sidebar: './src/components/Sidebar.astro',
 				SocialIcons: './src/components/PanelToggles.astro',
+				MobileMenuToggle: './src/components/MobileMenuToggle.astro',
 			},
 			customCss: [
 				'./src/styles/panel-toggle.css',

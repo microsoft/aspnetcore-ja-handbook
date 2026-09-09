@@ -516,19 +516,22 @@ await transaction.CommitAsync(cancellationToken);
 > [!WARNING]
 > `SET IDENTITY_INSERT` は**同時に 1 つのテーブルにしか設定できません。** 複数テーブルへ明示的な ID で挿入する場合は、テーブルごとに `ON` と `OFF` を往復させる必要があります。
 
-#### `Guid` の主キーは連番になる
+#### SQL Server の `Guid` 主キーは順序を考慮して生成される
 
-主キーを `Guid` にすると、EF Core は値を**クライアント側で**生成します。このとき使われる `SequentialGuidValueGenerator` は、完全なランダム値ではなく **SQL Server の `uniqueidentifier` の並び順で単調増加する値**を作ります。実際に 5 件を連続して挿入したときの値は次のようになりました。
+SQL Server プロバイダーで `Guid` 主キーを既定の自動生成にすると、EF Core は値を**クライアント側で**生成します。[`SequentialGuidValueGenerator`](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.valuegeneration.sequentialguidvaluegenerator?view=efcore-10.0) は、SQL Server のクラスター化キーやインデックス向けに順序を考慮した GUID を作ります。同じコンテキスト・モデル・生成器を使って `Add` で逐次生成した値の先頭 5 件は、次のようになりました（EF Core 10.0.11）。
 
 ```text
-438d4606-b71f-460f-9fbd-08df0a6347c0
-5461ab70-518b-4de5-9fbe-08df0a6347c0
-f558d325-061a-4363-9fbf-08df0a6347c0
-a1dcee1b-8378-46a7-9fc0-08df0a6347c0
-6cc905b7-80ec-403e-9fc1-08df0a6347c0
+d0ed177a-06dc-467e-0c0b-08df0e98ef11
+ccf230bc-240f-4ca3-0c0c-08df0e98ef11
+8f2aac5c-4f85-4704-0c0d-08df0e98ef11
+0604f1c1-f7b3-4559-0c0e-08df0e98ef11
+8d9e01a3-6d16-44fd-0c0f-08df0e98ef11
 ```
 
-先頭は毎回変わりますが、末尾のブロックが共通で、その手前が `9fbd → 9fc1` と 1 ずつ増えています。この状態でデータベース側に `ORDER BY Id` で並べ替えさせると、挿入した順序どおりに返ってきました。クラスター化インデックスの断片化を避けるための設計です。
+先頭は毎回変わりますが、この 5 件では末尾のブロックが共通で、その手前が `0c0b → 0c0f` と増えています。同じ条件で 100,001 個を生成して観測用テーブルへ転送し、SQL Server 2022 の `uniqueidentifier` として比較すると、隣り合う 100,000 組に順序の逆転はなく、`ORDER BY Id` も生成順と一致しました。これは生成した値の順序を調べた試験であり、100,001 行を EF Core の `SaveChanges` で保存した試験や、インデックスの断片化率を測った試験ではありません。
+
+> [!WARNING]
+> **異なる生成器を混ぜた場合まで、生成順に単調増加するわけではありません。** [公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore/ValueGeneration/SequentialGuidValueGenerator.cs#L28-L43)では、カウンターを生成器のインスタンスごとに保持します。異なるモデルを使い、生成器の初期化の間に 30 ミリ秒の待機を入れてから交互に生成した 2,000 個では、混合した 1,999 組の隣接値のうち 999 組で SQL Server の順序が逆転しました。各生成器内の順序と、複数の生成源をまたぐ順序を区別してください。
 
 > [!NOTE]
 > 値がクライアントで生成されるため、`SaveChanges` の**前**に `entity.Id` を読めます。データベースへの往復を待たずに、その ID を使って他のエンティティを組み立てられるのが `IDENTITY` との大きな違いです。一方で、`NEWSEQUENTIALID()` のような**データベース側**の既定値は使われません。

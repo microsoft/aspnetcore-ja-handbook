@@ -1054,9 +1054,9 @@ modelBuilder.Entity<Customer>()
     .UseCollation("SQL_Latin1_General_CP1_CS_AS");
 ```
 
-#### null に対する ToString() は空文字になる
+#### bool?・int? の null を文字列に変換する
 
-クエリの中で `ToString()` を使うと、EF Core はそれをデータベース側の文字列変換に翻訳します。このとき**値が `null` だったらどうなるか**は、EF Core 9 で統一されました。以前はデータ型や書き方によって `null` を返したり `"True"` を返したりとばらばらでしたが、**現在はどの場合も空文字列を返します**。
+SQL Server プロバイダーで `bool?` や `int?` の列に対する `ToString()` をクエリ内で使うと、データベース側の文字列変換に翻訳され、**値が `null` なら空文字列を返します**。EF Core 9 の[変更内容](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-9.0/breaking-changes#tostring-method-now-returns-empty-string-for-null-instances)で説明されている、`Nullable<T>.ToString()` の C# での動作に合わせた扱いです。以下の `bool?` と `int?` は EF Core 10.0.11 でも実測しました。
 
 ```csharp
 var q = db.Things.Select(x => new { F = x.Flag.ToString(), N = x.Num.ToString() });
@@ -1077,6 +1077,9 @@ FROM [Things] AS [t]
 Flag='' (null? False)  Num='' (null? False)
 Flag='True'            Num='5'
 ```
+
+> [!WARNING]
+> **null 許容値型と `string?` を混同しないでください。** SQL Server と SQLite の両方で、`string?` の列に対する `ToString()` は列参照へ翻訳され、元の値が `null` なら結果も `null` のままでした。[SQL Server の公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.SqlServer/Query/Internal/Translators/SqlServerObjectToStringTranslator.cs#L75-L78)と[SQLite の公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.Sqlite.Core/Query/Internal/Translators/SqliteObjectToStringTranslator.cs#L68-L71)も、文字列型では式をそのまま返します。これを C# で直接実行する場合は別で、null の文字列参照への `ToString()` 呼び出しは `NullReferenceException` になります。
 
 **返ってくるのは `null` ではなく空文字列**である点に注意してください。`== null` での判定は成立しません。以前の動作に戻したい場合は、公式ドキュメントが示すとおりクエリを書き換えます。
 
@@ -1396,9 +1399,9 @@ options.UseSqlServer(connectionString, o => o.UseRelationalNulls(true));
 > [!TIP]
 > null 非許容の列どうしの比較がもっとも単純で高速です。可能な場合は列を null 非許容にすることを検討してください。
 
-#### null に ToString() を呼ぶと空文字になる
+#### SQLite の bool? の null も空文字になる
 
-`ToString()` は SQL に翻訳されます。値が `null` のときに何が返るかは EF Core 9 で整理され、**どのデータ型でも一貫して空文字を返す**ようになりました。以前は `bool?` のプロパティなら `null`、プロパティ以外の `bool?` 式なら `True`、列挙型なら空文字と、ばらばらでした。
+SQLite プロバイダーでも、`bool?` の列に対する `ToString()` は SQL に翻訳され、値が `null` なら空文字列を返します。これは `string?` などを含むすべての型への保証ではありません。[SQL Server の例と文字列型との対照](#boolint-の-null-を文字列に変換する)に続き、ここでは SQLite での `bool?` の射影を確認します。
 
 ```csharp
 var rows = await db.Items
@@ -1409,9 +1412,12 @@ var rows = await db.Items
 SQLite に対して実行すると、次の SQL に翻訳され、`Flag` が `NULL` の行では長さ 0 の文字列が返りました（実測）。
 
 ```sql
-SELECT "m"."Id",
-       CASE "m"."Flag" WHEN 0 THEN 'False' WHEN 1 THEN 'True' ELSE '' END AS "T"
-FROM "Ms" AS "m"
+SELECT "i"."Id", CASE "i"."Flag"
+    WHEN 0 THEN 'False'
+    WHEN 1 THEN 'True'
+    ELSE ''
+END AS "Text"
+FROM "Items" AS "i"
 ```
 
 これは `Nullable<T>.ToString()` が C# 側でも空文字を返す挙動に合わせたものです。以前の挙動に戻したい場合は、クエリを次のように書き換えます。

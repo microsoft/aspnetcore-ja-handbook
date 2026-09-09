@@ -163,6 +163,8 @@ EF Core はモデルを 3 段階で構成します。優先順位は下にある
 
 ```mermaid
 flowchart TB
+    accTitle: モデル構成の方法と優先順位
+    accDescr: 規約による推論、データ注釈、Fluent API の順に構成方法を示す。同じ設定が競合する場合は後の方法が優先される。
     A["1. 規約 (Conventions)<br>命名規則から自動的に推論"] --> B["2. データ注釈 (Data Annotations)<br>エンティティクラスに属性を付与"]
     B --> C["3. Fluent API<br>OnModelCreating で明示的に構成"]
 ```

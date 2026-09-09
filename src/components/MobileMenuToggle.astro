@@ -1,0 +1,22 @@
+---
+import Default from '@astrojs/starlight/components/MobileMenuToggle.astro';
+---
+
+<Default />
+
+<script>
+	for (const menu of document.querySelectorAll('starlight-menu-button')) {
+		const button = menu.querySelector('button');
+		if (!button) throw new Error('Mobile menu toggle button is missing.');
+
+		// Starlight 0.41.7 は親要素だけに開閉状態を反映するため、操作対象にも同期する。
+		const syncExpanded = () => {
+			button.setAttribute('aria-expanded', String(menu.getAttribute('aria-expanded') === 'true'));
+		};
+		new MutationObserver(syncExpanded).observe(menu, {
+			attributes: true,
+			attributeFilter: ['aria-expanded'],
+		});
+		syncExpanded();
+	}
+</script>

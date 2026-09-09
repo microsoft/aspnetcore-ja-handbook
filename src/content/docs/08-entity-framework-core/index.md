@@ -240,7 +240,7 @@ WHERE [Id] = @p1;
 | Dapper などのマイクロ O/R マッパー | SQL を自分で書き、結果をオブジェクトにマッピングするだけ | SQL を完全に制御したい、複雑な集計クエリ |
 | ADO.NET (`DbConnection` / `DbCommand`) | 最も低レベルな API | 特殊な最適化や、プロバイダー固有の機能を直接使う場合 |
 
-EF Core でも後述する `FromSql` によって生の SQL を書けるため、「基本は EF Core、一部のクエリだけ SQL を直接書く」という組み合わせが現実的な選択になります。
+EF Core でも[付録3の「生の SQL を使う」](../appendix-efcore-03/index.md#生の-sql-を使う)で扱う `FromSql` によって生の SQL を書けるため、「基本は EF Core、一部のクエリだけ SQL を直接書く」という組み合わせが現実的な選択になります。
 
 > [!NOTE]
 > 他言語の O/R マッパーと比較すると、EF Core は **Java の Spring Data JPA / Hibernate** に最も近い位置づけです。エンティティクラスの定義、変更追跡（Hibernate の永続化コンテキストに相当）、スキーマ生成といった考え方が共通しています。**Python の Django ORM** はモデルクラスとマイグレーションを備える点が似ていますが、Django ORM がモデルクラス自身にクエリ API を持たせる (`Blog.objects.filter(...)`) のに対し、EF Core は `DbContext` を経由します。**TypeScript の NestJS** では TypeORM や Prisma、**PHP の Laravel** では Eloquent、**Go の Gin / Echo** では GORM が同種の役割を担います。
@@ -568,7 +568,7 @@ sequenceDiagram
 > `DbContext` は **スレッドセーフではありません。** 公式ドキュメントは「EF Core は同じ `DbContext` インスタンス上で複数の並行操作が実行されることをサポートしない。これには非同期クエリの並列実行と、複数スレッドからの明示的な同時利用の両方が含まれる」と明記しています。`await` せずに 2 つの操作を同時に走らせると、実測でも例外になりました。
 >
 > ```csharp
-> // これは動かない
+> // 同じ DbContext で操作を並行に走らせない
 > await Task.WhenAll(context.SaveChangesAsync(), context.SaveChangesAsync());
 > ```
 >
@@ -580,7 +580,7 @@ sequenceDiagram
 >
 > さらに公式ドキュメントは「**並行アクセスが検出されなかった場合、未定義の動作、アプリケーションのクラッシュ、データの破損につながる可能性がある**」とも警告しています。例外が出ないことを「安全である証拠」と考えないでください。
 >
-> ASP.NET Core では、1 つのクライアント要求を実行するスレッドが常に 1 つで、要求ごとに別の DI スコープ（したがって別の `DbContext` インスタンス）が割り当てられるため、ほとんどのアプリケーションではこの問題から守られています。危険になるのは、1 つの要求の中で複数のクエリを `Task.WhenAll` で並列に走らせるような書き方をしたときです。並列にクエリを実行したい場合は、後述する `IDbContextFactory<T>` でインスタンスを分けます。
+> ASP.NET Core では、この章の `AddDbContext` の既定の Scoped 登録により、要求ごとに別の DI スコープと `DbContext` インスタンスが使われます。実測でも、要求内では `await` の前後で同じコンテキストが解決され、別の要求では別のインスタンスになりました。**安全に使うための条件は、要求が特定の物理スレッドに固定されることではなく、同じコンテキストの操作を重ねないことです。** 各操作を `await` してから次へ進んでください。1 つの要求内で `Task.WhenAll` による並列実行が必要なら、後述する `IDbContextFactory<T>` でインスタンスを分けます。公式の[DbContext のスレッド処理の問題を回避する方法](https://learn.microsoft.com/ja-jp/ef/core/dbcontext-configuration/#avoiding-dbcontext-threading-issues)も、既定の Scoped 登録と並行操作の禁止を区別して説明しています。
 
 Singleton サービスやバックグラウンドサービスから `DbContext` を使う場合は、`IServiceScopeFactory` でスコープを作り、その中から解決します。1 つの要求の中で複数のクエリを並列に実行したい場合は、`AddDbContextFactory` で登録した `IDbContextFactory<T>` からインスタンスを個別に作ります。どちらの手順も [付録 EF Core 5](../appendix-efcore-05/index.md#singleton-やバックグラウンドサービスから-dbcontext-を使う) で扱います。
 
@@ -638,7 +638,7 @@ var count = await context.Posts.CountAsync(p => p.BlogId == id, cancellationToke
 > 「1 件でもあるか」を調べるときは `Count() > 0` ではなく **`Any()`** を使ってください。EF Core は `Any()` を `EXISTS` に翻訳しますが、`Count()` メソッドを書くと `COUNT(*)` のまま残ります。書き方によって生成される SQL がどう変わるかを実測した比較は[付録3の「存在チェックは Count ではなく Any を使う」](../appendix-efcore-03/index.md#存在チェックは-count-ではなく-any-を使う)にまとめています。
 
 > [!TIP]
-> 非同期メソッドには `CancellationToken` を渡してください。コントローラーのアクションメソッドや Minimal API のハンドラーは `CancellationToken` を引数に取れます。クライアントが接続を切ったときに、実行中のクエリを中断できます。
+> 非同期メソッドには `CancellationToken` を渡してください。コントローラーのアクションメソッドや Minimal API のハンドラーは `CancellationToken` を引数に取れます。クライアントが接続を切ったときに、実行中のクエリの中断を要求できます。ただし、要求を受けて停止するかどうかはデータベースプロバイダーによります。実測した範囲と保存状態の確認は[付録5の「非同期 API を使う」](../appendix-efcore-05/index.md#非同期-api-を使う)を参照してください。
 
 > [!IMPORTANT]
 > LINQ は C# の意味論で書きますが、実行されるのは SQL です。**この 2 つで結果が食い違う条件が 2 つあります。** 1 つは上の `Contains("dotnet")` のような文字列比較で、**大文字小文字を区別するかどうかは C# 側ではなくデータベースの照合順序が決めます**。もう 1 つは `null` の比較で、SQL の三値論理により C# とは異なる結果になります。どちらも動くコードが書けてしまうぶん気付きにくいので、[付録3の「大文字小文字の区別は照合順序が決める」](../appendix-efcore-03/index.md#大文字小文字の区別は照合順序が決める)と[「null の比較は C# と SQL で意味が違う」](../appendix-efcore-03/index.md#null-の比較は-c-と-sql-で意味が違う)を先に読んでおくことをおすすめします。
@@ -999,16 +999,23 @@ context.Blogs.Add(blog);
 await context.SaveChangesAsync(cancellationToken);
 ```
 
-追跡されていないエンティティ（クライアントから受け取った DTO を変換したものなど）を更新する場合は、`Update` または `Attach` と状態設定を使います。
+追跡されていないエンティティ（クライアントから受け取った DTO を変換したものなど）を更新する場合は、`Update` または `Attach` と状態設定を使います。以下は全体更新の例で、`dto` が `Name`、`Url`、`Rating`、`CreatedAt` の全更新対象の値を持つ前提です。
 
 ```csharp
-var blog = new Blog { Id = id, Name = dto.Name, Url = dto.Url };
-context.Blogs.Update(blog); // この例では Name と Url が Modified になる
+var blog = new Blog
+{
+    Id = id,
+    Name = dto.Name,
+    Url = dto.Url,
+    Rating = dto.Rating,
+    CreatedAt = dto.CreatedAt
+};
+context.Blogs.Update(blog); // Id 以外のスカラープロパティが Modified になる
 await context.SaveChangesAsync(cancellationToken);
 ```
 
 > [!TIP]
-> `Update` は、値が変わっていないプロパティも更新対象にします。この例では `Name` と `Url` の両方が `UPDATE` の `SET` 句に入り、主キーの `Id` は更新対象ではなく `WHERE` 句で行を特定するために使われます。公式の[既存エンティティの更新](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/explicit-tracking#updating-existing-entities)にも、キーと更新対象を区別した状態表示・SQL の例があります。一部の列だけを更新したい場合は、いったんデータベースから読み込んで必要なプロパティだけを変更するか、`Attach` で追跡を開始してから `context.Entry(blog).Property(b => b.Name).IsModified = true;` のように個別に指定します。
+> `Update` は、値が変わっていないプロパティも更新対象にします。この章のモデルでは `Name`、`Url`、`Rating`、`CreatedAt` が `UPDATE` の `SET` 句に入り、主キーの `Id` は更新対象ではなく `WHERE` 句で行を特定するために使われます。**`Name` と `Url` だけを設定した新しい `Blog` を渡すと、`Rating` と `CreatedAt` も CLR の既定値で上書きされます。** 本章のモデルをそのまま使った EF Core 10 と SQLite の実測でも確認しました。公式の[既存エンティティの更新](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/explicit-tracking#updating-existing-entities)にも、キーと更新対象を区別した状態表示・SQL の例があります。一部の列だけを更新したい場合は、いったんデータベースから読み込んで必要なプロパティだけを変更するか、`Attach` で追跡を開始してから `context.Entry(blog).Property(b => b.Name).IsModified = true;` のように個別に指定します。
 
 > [!IMPORTANT]
 > 上の `Update` の例は、子エンティティを渡していない単一のエンティティです。**Web API で「ブログとその投稿一覧」をまるごと受け取る場合、子のキーと削除の意図を正しく扱う必要があります。** この章のような自動生成キーでは、`Update` はキーがある子を更新、未設定の子を追加として扱います。既存の子のキーを DTO との変換で落とすと、新しい子として挿入されます。また、受け取った一覧にいない子が自動で削除されるわけではありません。公式の[切断されたエンティティ](https://learn.microsoft.com/ja-jp/ef/core/saving/disconnected-entities#working-with-graphs)と同様、追加・更新・削除を区別して保存する方法は、[付録4の「切断されたエンティティのグラフを保存する」](../appendix-efcore-04/index.md#切断されたエンティティのグラフを保存する)で扱います。

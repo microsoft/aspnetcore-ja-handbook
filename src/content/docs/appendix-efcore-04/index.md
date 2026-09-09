@@ -880,12 +880,16 @@ await strategy.ExecuteAsync(async () =>
 
 また、外部で作った接続を `SetDbConnection(connection, contextOwnsConnection: false)` で渡す場合、**接続の所有者と破棄責任は呼び出し側に残ります**。実測でも、アプリ側で開いた `SqlConnection` は `DbContext.DisposeAsync()` の後も開いており、`SELECT 1` を実行できました。コンテキストを破棄すれば外部接続も必ず破棄されると考えず、呼び出し側の `using` / `await using` で寿命を管理してください。
 
+`contextOwnsConnection: true` では、[公式 API の契約](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.relationaldatabasefacadeextensions.setdbconnection?view=efcore-10.0)どおり EF Core に所有権を引き渡します。同じ条件で所有権だけを切り替えた対照では、`DbContext.DisposeAsync()` の後に接続は `Closed` となり、開き直さずに `SELECT 1` を実行することはできませんでした。**どちらの設定でも、破棄済みの `DbContext` 自体でクエリを実行することはできません。** 外部接続が開いていることと、コンテキストを引き続き使えることは別です。
+
 ### デッドロックへの対処
 
 複数のトランザクションが互いの保持するロックを待ち合う状態を **デッドロック (deadlock)** と呼びます。SQL Server はデッドロックを検出すると、片方を強制的に中止して **デッドロックの犠牲者 (deadlock victim)** に選び、もう片方を進めます。
 
 ```mermaid
 sequenceDiagram
+    accTitle: ロックの取得順序が逆転したデッドロックの例
+    accDescr: トランザクション1が行Aを、トランザクション2が行Bをロックする。次に互いが保持する行を更新しようとして待ち合い、SQL Server が片方を犠牲者として中止する。
     participant T1 as トランザクション 1
     participant R1 as 行 A
     participant R2 as 行 B
@@ -1230,6 +1234,8 @@ Azure SQL Database の **読み取りスケールアウト (Read Scale-Out)** �
 
 ```mermaid
 flowchart LR
+    accTitle: 書き込み用と読み取り用の接続経路
+    accDescr: アプリケーションは BloggingContext でプライマリへ書き込み、BloggingReadContext で読み取り専用レプリカへ問い合わせる。プライマリからレプリカへの複製は非同期で行われる。
     APP["ASP.NET Core アプリケーション"]
     subgraph W["書き込み系"]
         WC["BloggingContext<br>ApplicationIntent=ReadWrite"]
