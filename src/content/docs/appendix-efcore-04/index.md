@@ -800,7 +800,7 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 ```
 
 > [!WARNING]
-> 再試行はあらゆる接続エラーで働くわけではありません。EF Core の SQL Server プロバイダーは、SQL Server が返す**特定のエラー番号**（一時的エラーとして既知のもの）だけを再試行の対象にします。実際にコンテナーを再起動して接続を切断したところ、`EnableRetryOnFailure` を有効にしていても「ログイン前のハンドシェイク中にエラーが発生しました」という `SqlException` が再試行されずに即座に投げられました。このときメトリクス `microsoft.entityframeworkcore.execution_strategy_operation_failures` も 0 のままで、再試行戦略がそもそも起動していないことが確認できます。
+> 再試行はあらゆる接続エラーで働くわけではありません。EF Core の SQL Server プロバイダーは、SQL Server が返す**特定のエラー番号**や .NET の **`TimeoutException`** など、一時的と判定した例外を対象にします。後者は[EF Core 10.0.11 の公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.SqlServer/Storage/Internal/SqlServerTransientExceptionDetector.cs#L706)に明記されており、後述の障害注入でも再試行を確認しました。一方、実際にコンテナーを再起動して接続を切断したところ、`EnableRetryOnFailure` を有効にしていても「ログイン前のハンドシェイク中にエラーが発生しました」という `SqlException` が再試行されずに即座に投げられました。このときメトリクス `microsoft.entityframeworkcore.execution_strategy_operation_failures` も 0 のままで、このエラーでは再試行が観測されませんでした。
 >
 > 自社環境で固有のエラー番号を再試行対象に加えたい場合は、`errorNumbersToAdd` にエラー番号を渡してください。「再試行を有効にしたから接続断はすべて吸収される」と考えるのは危険で、アプリケーション側での例外処理は依然として必要です。
 
@@ -858,6 +858,21 @@ await strategy.ExecuteAsync(async () =>
 
 > [!WARNING]
 > 再試行によってブロック全体が再実行されるため、その中の処理は **冪等 (idempotent)** である必要があります。ブロック内で外部 API の呼び出しやメール送信などの副作用を伴う処理を行わないでください。
+
+> [!NOTE]
+> **コミット時に例外になっても、「保存されていない」とは限りません。** 公式の[コミット失敗と冪等性の問題](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-resiliency#transaction-commit-failure-and-the-idempotency-issue)は、成否不明のままデータベース生成キーで挿入を再実行すると、二重作成になり得ると説明しています。
+>
+> EF Core 10.0.11 と SQL Server 2022 で、実際のコミットの直前または直後に `DbTransactionInterceptor` から `TimeoutException` を 1 回だけ投げる対照試験を行いました。成功確認なしの構成は、試行ごとに新しいコンテキストと IDENTITY キーの行を作り、同じ論理データに一意制約を設けていません。成功確認ありの構成は、クライアントで生成した既知の GUID キーを使い、`ExecuteInTransactionAsync` の `verifySucceeded` で `AsNoTracking().AnyAsync()` による保存状態の確認を行います。
+>
+> | 障害の位置 | 成功確認なし：操作回数 / 最終行数 | 成功確認あり：操作回数 / 検証回数 / 最終行数 |
+> | --- | --- | --- |
+> | 障害なし | 1 回 / 1 行 | 1 回 / 0 回 / 1 行 |
+> | コミット前 | 2 回 / 1 行 | 2 回 / 1 回 / 1 行 |
+> | コミット後 | 2 回 / **2 行** | 1 回 / 1 回 / **1 行** |
+>
+> 成功確認ありでは、コミット前の失敗では検証が `false` となって再実行され、コミット後の失敗では `true` となって再挿入されませんでした。公式の[状態検証を追加する方法](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-resiliency#option-3---add-state-verification)にならい、保存時は `SaveChangesAsync(acceptAllChangesOnSuccess: false)` で追跡状態を残し、実行戦略が成功した後に `AcceptAllChanges()` で確定します。
+>
+> **これは実 SQL Server のコミット前後でクライアント側に障害を注入した試験です。** 実際に通信を切断して応答を失わせた試験や、成功確認クエリ自体が失敗した場合の復旧試験ではありません。
 
 #### 接続を自前で扱う場合の開閉と所有権
 
@@ -1023,7 +1038,7 @@ context.SaveChangesFailed += (s, e) =>
 `AcceptAllChangesOnSuccess` は公式 API リファレンスによると「`SaveChanges` または `SaveChangesAsync` に渡された値」、`EntitiesSavedCount` は「保存されたエンティティの数」です。実測では、成功時に `SavingChanges` → `SavedChanges`、失敗時に `SavingChanges` → `SaveChangesFailed` の順で発行され、`SaveChangesFailed` が発行されたケースでは `SavedChanges` は発行されませんでした。
 
 > [!NOTE]
-> **データベースへの保存成功と、変更追跡上の状態の確定は分けられます。** `SaveChangesAsync(acceptAllChangesOnSuccess: false)` を使った実測では、INSERT 済みでもエンティティは `Added` のままでした。`ChangeTracker.AcceptAllChanges()` の後は `Unchanged` になり、次の保存件数は 0 でした。公式の接続回復ガイドも、状態を残して成功確認後に確定する使い方を説明しています。通常の保存では既定の `true` を使い、`false` は保存結果の確認と状態の確定を自分で管理する場合に限定してください。この実測は、コミット時の通信切断からの復旧まで確認したものではありません。
+> **データベースへの保存成功と、変更追跡上の状態の確定は分けられます。** `SaveChangesAsync(acceptAllChangesOnSuccess: false)` を使った実測では、INSERT 済みでもエンティティは `Added` のままでした。`ChangeTracker.AcceptAllChanges()` の後は `Unchanged` になり、次の保存件数は 0 でした。公式の接続回復ガイドも、状態を残して成功確認後に確定する使い方を説明しています。通常の保存では既定の `true` を使い、`false` は保存結果の確認と状態の確定を自分で管理する場合に限定してください。[接続の回復性とトランザクションの併用](#接続の回復性とトランザクションの併用)では、コミット前後の障害注入でも同じ状態遷移を確認しています。ただし、実際の通信切断からの復旧まで確認したものではありません。
 
 > [!WARNING]
 > 公式ドキュメントは、イベントについて「インターセプターより単純で、登録の自由度が高い。ただし **同期専用なのでブロッキングしない非同期 I/O を実行できない**」と説明しています。イベントハンドラーの中でデータベースアクセスや HTTP 呼び出しを行いたい場合はインターセプターを使ってください。

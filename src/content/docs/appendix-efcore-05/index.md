@@ -1465,6 +1465,13 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 >
 > EF Core 8 以前は内部で `.GetAwaiter().GetResult()` を呼んでブロックしていましたが、公式ドキュメントはこれを「sync over async」と呼び、**デッドロックを招きうる強く非推奨の手法**だと説明しています。SQL Server では同期版を使っても動作はする（遅くなるだけ）のに対し、Cosmos DB では最初から動きません。**プロバイダーを差し替える可能性があるなら、なおさら非同期版で統一しておくべきです。**
 
+> [!NOTE]
+> **キャンセルトークンを渡すことと、処理の停止・保存状態の確認は別です。** EF Core は `CancellationToken` を下位のプロバイダーへ渡しますが、尊重されるかどうかはプロバイダーによると[公式の非同期ガイド](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/async)に明記されています。
+>
+> EF Core 10.0.11、Microsoft.Data.SqlClient 6.1.6、SQL Server 2022 で、`ExecuteSqlRawAsync` による 20 秒の `WAITFOR` を対象に、呼び出す前からキャンセル済みの場合と、サーバーで待機中と確認してからキャンセルする場合を試しました。どちらも待機時間より前に例外で終了しました。公式の[SqlClient の非同期キャンセル試験](https://github.com/dotnet/SqlClient/blob/v6.1.6/src/Microsoft.Data.SqlClient/tests/ManualTests/SQL/SqlCommand/SqlCommandCancelTest.cs#L534-L560)も、待機時間より前に例外終了することを確認しています。例外型や停止までの時間が、すべての呼び出し経路で同じとは仮定しないでください。
+>
+> この試験では、明示トランザクション内で先に 1 行を更新していました。対象操作の例外終了を待ち、キャンセル済みトークンではなく `CancellationToken.None` を使った `RollbackAsync` とトランザクションの破棄を完了してから、別の物理接続で元の値が残っていることを確認しました。**キャンセル要求だけでロールバックまで完了すると確認した結果ではありません。**
+
 ### プロバイダーを替えるとモデルの意味が変わる
 
 プロバイダーの差し替えは「接続先が変わるだけ」ではありません。Azure Cosmos DB のようなドキュメントデータベースでは、**同じ C# のモデルが別の意味に解釈されます。**
