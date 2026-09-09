@@ -43,6 +43,7 @@ description: "EF Core の計測と診断、インデックス設計、コンパ�
    - [バッファリングとストリーミング](#バッファリングとストリーミング)
    - [非同期 API を使う](#非同期-api-を使う)
    - [プロバイダーを替えるとモデルの意味が変わる](#プロバイダーを替えるとモデルの意味が変わる)
+   - [Cosmos DB の全文検索とベクトル検索](#cosmos-db-の全文検索とベクトル検索)
    - [同時実行検出を無効にしてはいけない](#同時実行検出を無効にしてはいけない)
 4. [参考ドキュメント](#4-参考ドキュメント)
 
@@ -51,7 +52,7 @@ description: "EF Core の計測と診断、インデックス設計、コンパ�
 ## 1. 計測と診断
 
 > [!NOTE]
-> **この付録に載せた実測値の測定条件について。** 以下に出てくる数値は、次の環境で測定したものです。数値そのものはハードウェア・データ量・ネットワークによって大きく変わるため、**傾向（どちらが速いか、桁がいくつ違うか）を読み取る材料**として扱い、自分のアプリケーションでは必ず自分で計測してください。
+> **この付録に載せた性能比較の測定条件について。** 基本の測定環境は次のとおりです。Cosmos DB やローカル SQL Server など、個別の実測で別の環境を明記している場合は、その条件を参照してください。数値そのものはハードウェア・データ量・ネットワークによって大きく変わるため、**傾向（どちらが速いか、桁がいくつ違うか）を読み取る材料**として扱い、自分のアプリケーションでは必ず自分で計測してください。
 >
 > | 項目 | 値 |
 > | --- | --- |
@@ -265,7 +266,7 @@ SQL Server のクエリストアや実行計画の分析ツールでは、この
 > **Hibernate** にも、クエリに注釈を付ける `setComment()` があり、`hibernate.use_sql_comments` を有効にすると SQL のコメントとして出力されます。EF Core のクエリタグは、追加の設定なしに `TagWith` を呼ぶだけで有効になる点と、`TagWithCallSite()` で呼び出し位置を自動的に埋め込める点が異なります。
 
 > [!TIP]
-> パフォーマンス問題の多くは、EF Core 自体ではなく「不要な列を取りすぎている」「N+1 が起きている」「インデックスがない」という設計上の問題に起因します。ここまでで説明した `AsNoTracking`、投影、`Include`、`AsSplitQuery`、ページングを先に見直してください。`AsSplitQuery` の判断基準は[付録3の「単一クエリと分割クエリ」](/appendix-efcore-03/#単一クエリと分割クエリ)にあります。
+> パフォーマンス問題の多くは、EF Core 自体ではなく「不要な列を取りすぎている」「N+1 が起きている」「インデックスがない」という設計上の問題に起因します。ここまでで説明した `AsNoTracking`、投影、`Include`、`AsSplitQuery`、ページングを先に見直してください。`AsSplitQuery` の判断基準は[付録3の「単一クエリと分割クエリ」](../appendix-efcore-03/index.md#単一クエリと分割クエリ)にあります。
 
 #### メトリクスで全体像をつかむ
 
@@ -290,14 +291,16 @@ SQL Server のクエリストアや実行計画の分析ツールでは、この
 | 同じ形の LINQ クエリを繰り返す | 98% |
 | `EF.Constant()` で値をインライン化する | 98% |
 | 条件式を実行時に付け外しして形を変える | 92% |
-| `FromSqlRaw` に文字列連結で SQL を組み立てる | **0%** |
+| `FromSqlRaw` に、値を直接埋め込んだ毎回異なる SQL を渡す | **0%** |
 
 > [!NOTE]
 > **`EF.Constant()` はこのキャッシュのヒット率を下げません。** EF Core のクエリキャッシュのキーは LINQ 式ツリーの形で決まり、値が SQL に埋め込まれるかどうかは関係しないためです。`EF.Constant()` が圧迫するのは EF Core 側ではなく **データベース側のプランキャッシュ** で、こちらは EF Core のメトリクスからは観測できません。
 >
 > ただしこれは EF Core 9 以降の挙動です。EF Core 8 の実装では `EF.Constant()` がクエリキャッシュより前の段階で定数ノードを埋め込んでいたため、値が変わるたびに EF Core 側でもキャッシュミスが発生していました。EF Core 9 でこの処理はパイプラインの後段へ移されています。
 >
-> 逆に、生の SQL を文字列連結で組み立てるとヒット率は 0% になります。SQL 文字列そのものがキャッシュキーの一部だからです。`compiled_query_cache_misses` が増え続けているなら、まず生 SQL の組み立て方と、条件を動的に付け外ししている箇所を疑ってください。パラメーター化を保ったまま生の SQL を書く方法は[付録3の「生の SQL を使う」](/appendix-efcore-03/#生の-sql-を使う)を参照してください。
+> 表の生 SQL の実測では、各回で SQL 文字列そのものを変えています。**文字列連結を使うだけで、必ずヒット率が 0% になるわけではありません。** EF Core 10.0.11 と SQLite で 50 回ずつ対照実測すると、同一の SQL 文字列を繰り返した場合とパラメーター化した場合のクエリコンパイルはそれぞれ 1 回、毎回異なる SQL では 50 回でした。[EF Core 10.0.11 の公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.Relational/Query/Internal/FromSqlQueryRootExpression.cs)でも、生 SQL のクエリ式の等価比較に SQL 文字列を含めることが確認できます。
+>
+> `compiled_query_cache_misses` が増え続けているなら、まず生 SQL の組み立て方と、条件を動的に付け外ししている箇所を疑ってください。パラメーター化を保ったまま生の SQL を書く方法は[付録3の「生の SQL を使う」](../appendix-efcore-03/index.md#生の-sql-を使う)を参照してください。
 
 `active_dbcontexts` が想定より多いままなら `DbContext` が破棄されずに残っている可能性があり、`optimistic_concurrency_failures` の増加は同時更新の競合が実際に起きていることを示します。これらは OpenTelemetry や Application Insights にそのまま送れます。
 
@@ -337,7 +340,7 @@ WHERE [b].[City] = @city
 
 名前が重複する場合にだけ数字が付きます。読みやすさの改善であり、ほとんどのアプリケーションには影響しませんが、次の 2 つは実害が出ます。
 
-- **SQL の文字列を比較するテスト。** `ToQueryString()` の結果や、インターセプターで受け取った `DbCommand.CommandText` を期待値と突き合わせているコードは、すべて書き換えが必要です。`DbParameter.ParameterName` を直接見ているコードも同様です（インターセプターの実装は[付録4の「インターセプターによる横断的な処理」](/appendix-efcore-04/#インターセプターによる横断的な処理)を参照）。
+- **SQL の文字列を比較するテスト。** `ToQueryString()` の結果や、インターセプターで受け取った `DbCommand.CommandText` を期待値と突き合わせているコードは、すべて書き換えが必要です。`DbParameter.ParameterName` を直接見ているコードも同様です（インターセプターの実装は[付録4の「インターセプターによる横断的な処理」](../appendix-efcore-04/index.md#インターセプターによる横断的な処理)を参照）。
 - **クエリプランのキャッシュ。** パラメーター名は SQL 文字列の一部なので、アップグレード直後は**ほぼすべてのプランが再コンパイルされます。** 公式も「大規模なシステムでは、配置直後に一時的なコンパイルのスパイクが起きることを見込んでおくべき」と述べています。負荷の高い時間帯を避けて配置してください。
 
 ### 本番環境でコマンドログを出し続けない
@@ -647,7 +650,7 @@ System.MissingMethodException: Method not found:
 
 NuGet は推移的な依存関係について「条件を満たす最も低いバージョン」を選ぶため、プロバイダーが古いパッチ版を指していると、そのまま古い `Relational` が使われます。実測すると次のようになりました。
 
-```bash
+```text
 # SqlServer 10.0.0 だけを参照した状態
 Microsoft.EntityFrameworkCore.SqlServer      10.0.0   10.0.0
 Microsoft.EntityFrameworkCore.Relational              10.0.0   ← 推移的
@@ -659,12 +662,14 @@ Microsoft.EntityFrameworkCore.Relational              10.0.0   ← 推移的
 dotnet add package Microsoft.EntityFrameworkCore.Relational --version 10.0.11
 ```
 
-```bash
+```text
 Microsoft.EntityFrameworkCore.Relational     10.0.11  10.0.11  ← 直接参照
 Microsoft.EntityFrameworkCore.SqlServer      10.0.0   10.0.0
 ```
 
-公式は「すべてのバグ修正を確実に受け取るために、`Microsoft.EntityFrameworkCore.Relational` のパッチ版をアプリケーションの**直接の依存関係として追加する**ことを推奨する」と述べています。プロバイダー側の更新を待たずにパッチを取り込めます。
+公式は、独立してリリースされるプロバイダーの依存指定が追いつかない場合に備え、`Microsoft.EntityFrameworkCore.Relational` のパッチ版をアプリケーションの**直接の依存関係として追加する**ことを推奨しています。ただし、上の混在例は NuGet の解決結果を示すもので、Microsoft 製パッケージを異なるバージョンで運用する推奨構成ではありません。
+
+**Microsoft が提供する `Microsoft.EntityFrameworkCore.*` パッケージは同じバージョンに揃えてください。** これは公式の NuGet パッケージ案内に明記されています。`SqlServer` 自体を 10.0.11 に更新して復元すると、直接参照していない `Relational` も 10.0.11 になりました。`Relational` だけの更新を、プロバイダー自身の修正まで取り込む方法と取り違えないでください。
 
 > [!NOTE]
 > 公式は、パッケージのバージョンについて「**NuGet はパッケージバージョンの一貫性を強制しない。参照しているパッケージのバージョンを `.csproj` で必ず注意深く確認すること**」とも警告しています。EF Core 関連のパッケージがすべて同じバージョンになっているかは、`dotnet list package --include-transitive` で確認できます。
@@ -889,6 +894,27 @@ CREATE NONCLUSTERED INDEX [IX_Posts_Price] ON [Posts] ([Price]) WITH (FILLFACTOR
 
 > [!NOTE]
 > クラスター化インデックスはテーブルごとに 1 つだけです。EF Core は主キーに対してクラスター化インデックスを既定で作成するため、別の列を `IsClustered()` にする場合は主キー側を `IsClustered(false)` にする必要があります。
+
+オンラインで作成する場合は、`HasIndex(...).IsCreatedOnline()` を指定します。SQL Server 2022 Developer Edition で実測したモデルからは、次の DDL が生成され、実際の作成も成功しました。
+
+```sql
+-- SQL Server
+CREATE INDEX [IX_OnlineItems_Name]
+ON [OnlineItems] ([Name]) WITH (ONLINE = ON);
+```
+
+> [!WARNING]
+> **`ONLINE = ON` は、ロックも待機も発生しないという意味ではありません。** 別トランザクションにスキーマロックを保持させた実測では、オンライン作成も待機し、ロックタイムアウトで SQL エラー 1222 になりました。ロックを解放すると同じ DDL が成功しました。公式も、オンライン操作の終盤には共有ロックやスキーマ変更ロックを保持すると説明しています。利用可否は SQL Server のエディションにも依存するため、Developer Edition の結果をすべての運用環境へ当てはめないでください。
+
+同じインデックス設定に `SortInTempDb()` と `UseDataCompression(DataCompressionType.Page)` を追加すると、DDL は次のようになります。この組み合わせも SQL Server 2022 Developer Edition で作成と読み書きを実測しました。
+
+```sql
+-- SQL Server
+CREATE INDEX [IX_OnlineItems_Name] ON [OnlineItems] ([Name])
+WITH (ONLINE = ON, SORT_IN_TEMPDB = ON, DATA_COMPRESSION = PAGE);
+```
+
+`DataCompressionType.None` / `Row` / `Page` の 3 条件で、`sys.partitions.data_compression_desc` はそれぞれ `NONE` / `ROW` / `PAGE` になりました。これは**設定が反映されたことの確認**であり、圧縮率や tempdb 使用量、性能改善を測定したものではありません。
 
 ### 実行プランはデータの量で変わる
 
@@ -1467,9 +1493,96 @@ Collection ToDependent Post' is not supported as the navigation is not embedded 
 
 ---
 
+### Cosmos DB の全文検索とベクトル検索
+
+Cosmos DB 用の EF Core 10 は、**全文検索、ベクトル検索、および両方の順位を組み合わせるハイブリッド検索**をサポートします。SQL Server の `Contains` / `FreeText` や `SqlVector<T>` とは別の API です。ここでは `Microsoft.EntityFrameworkCore.Cosmos` 10.0.11 と、ベクトル検索を有効にした実 Azure アカウントで確認した例を示します。
+
+#### モデルに検索ポリシーと索引を設定する
+
+以下はこの節専用のエンティティと、`UseCosmos` で接続先を設定したコンテキストの `OnModelCreating` 内の抜粋です。`DistanceFunction` と `VectorIndexType` は `Microsoft.Azure.Cosmos` 名前空間の型です。
+
+```csharp
+public class Blog
+{
+    public string Id { get; set; } = "";
+    public string Partition { get; set; } = "p";
+    public string Contents { get; set; } = "";
+    public float[] Vector { get; set; } = [];
+}
+```
+
+```csharp
+modelBuilder.Entity<Blog>(b =>
+{
+    b.ToContainer("basic");
+    b.HasPartitionKey(x => x.Partition);
+    b.HasManualThroughput(400);
+    b.Property(x => x.Contents).EnableFullTextSearch();
+    b.HasIndex(x => x.Contents).IsFullTextIndex();
+    b.Property(x => x.Vector)
+        .IsVectorProperty(Microsoft.Azure.Cosmos.DistanceFunction.Cosine, dimensions: 3);
+    b.HasIndex(x => x.Vector)
+        .IsVectorIndex(Microsoft.Azure.Cosmos.VectorIndexType.Flat);
+});
+```
+
+新しいコンテナーを作成し、`SaveChangesAsync()` で本文と 3 次元の `float[]` を持つ 6 文書を保存して、検索と再取得を確認しました。これは通常のインデックス指定とは異なる、全文検索用とベクトル検索用の設定です。既存コンテナーのポリシーを自動更新する手順ではありません。コンテナー作成時の認証上の注意は[付録3のマイグレーションの制限](../appendix-efcore-03/index.md#1-マイグレーションの詳細)を参照してください。
+
+> [!WARNING]
+> **`Flat` ベクトル索引の上限は 505 次元です。** 公式サービスガイドに明記されており、実測でも 505 次元は成功、506 次元と 1536 次元はコンテナー作成時に HTTP 400 になりました。EF の公式ページにある「1536 次元 + `Flat`」の組み合わせをそのまま使わないでください。`QuantizedFlat` の 1536 次元では作成と検索が成功しましたが、6 文書の結果から索引の性能や近似検索の利用まで判断することはできません。
+
+#### 全文検索と関連度による順位付け
+
+| API | 用途 | 6 文書での実測例 |
+| --- | --- | --- |
+| `FullTextContains` | キーワードやフレーズで絞り込む | `database` が 3 件に一致 |
+| `FullTextContainsAll` | 指定した全キーワードを含む | `database` と `cosmos` が 2 件に一致 |
+| `FullTextContainsAny` | いずれかのキーワードを含む | `cosmos` または `bicycle` が 4 件に一致 |
+| `FullTextScore` | BM25 による関連度順に並べる | `OrderBy` と `Take` で取得 |
+
+```csharp
+string[] keywords = ["database", "cosmos"];
+var textResults = await db.Blogs
+    .OrderBy(x => EF.Functions.FullTextScore(x.Contents, keywords))
+    .Take(5)
+    .ToListAsync();
+```
+
+`FullTextScore` は通常の数値計算メソッドとして使うものではありません。**公式は並べ替えでの利用に限定**しており、`Select` に投影したり `Where` の条件に直接使ったりすると、実測でも HTTP 400 になりました。
+
+既定言語は `en-US` です。プロパティごとの `EnableFullTextSearch("de-DE")`、およびモデル全体の `modelBuilder.HasDefaultFullTextLanguage("de-DE")` も実測しました。**既定言語の設定先は `EntityTypeBuilder` ではなく `ModelBuilder`**です。多言語対応のプレビュー・リージョン条件は Azure 側の公式ガイドを確認してください。今回のドイツ語での成功を、全言語・全リージョンでの利用保証にはできません。
+
+#### ベクトル検索とハイブリッド検索
+
+```csharp
+float[] queryVector = [1, 0, 0];
+var vectorResults = await db.Blogs
+    .OrderBy(x => EF.Functions.VectorDistance(x.Vector, queryVector))
+    .Take(5)
+    .ToListAsync();
+
+var hybridResults = await db.Blogs
+    .OrderBy(x => EF.Functions.Rrf(
+        new[]
+        {
+            EF.Functions.FullTextScore(x.Contents, "database"),
+            EF.Functions.VectorDistance(x.Vector, queryVector)
+        },
+        weights: new double[] { 1, 2 }))
+    .Take(5)
+    .ToListAsync();
+```
+
+**RRF (Reciprocal Rank Fusion)** は、複数の検索結果の順位を統合する方法です。全文検索とベクトル検索を別々に実行してアプリケーション側で結合するのではなく、上の式を Cosmos DB の検索へ変換できます。重みを変えた実測では、全文検索を優先する場合とベクトル検索を優先する場合で上位の文書が変わりました。
+
+> [!NOTE]
+> **重みには `double[]` を渡してください。** `new[] { 1, 2 }` は `int[]` と推論され、コンパイルエラーになります。公式 API リファレンスの引数型も `double[]` です。また、全文検索得点だけ、ベクトル検索得点だけ、3 つの得点関数を使った RRF も実行できました。ただし、ここで確認したのは設定と問い合わせの動作であり、AI の回答精度や大規模データでの性能向上ではありません。
+
+---
+
 ### 同時実行検出を無効にしてはいけない
 
-1 つの `DbContext` インスタンスを複数のスレッドから同時に使うと `InvalidOperationException` になります。この例外を出しているのは EF Core の **同時実行検出 (concurrency detection)** という仕組みで、`DbContextOptionsBuilder.EnableThreadSafetyChecks(false)` で無効にできます。公式ドキュメントは「わずかな性能向上が得られるが、`DbContext` インスタンスが同時に使われた場合の **動作は未定義になり、プログラムは予測できない形で失敗する可能性がある**」と説明し、「性能向上が相当なものであることを確認し、アプリケーションを同時実行のバグについて十分にテストしたうえでのみ無効化すること」と釘を刺しています。
+1 つの `DbContext` インスタンスで操作が重複すると、EF Core の **同時実行検出 (concurrency detection)** によって `InvalidOperationException` が発生することがあります。未検出なら安全という意味ではありません。この検出は `DbContextOptionsBuilder.EnableThreadSafetyChecks(false)` で無効にできます。公式ドキュメントは「わずかな性能向上が得られるが、`DbContext` インスタンスが同時に使われた場合の **動作は未定義になり、プログラムは予測できない形で失敗する可能性がある**」と説明し、「性能向上が相当なものであることを確認し、アプリケーションを同時実行のバグについて十分にテストしたうえでのみ無効化すること」と釘を刺しています。
 
 実際に SQL Server 2022 に対して、同じ `DbContext` インスタンスから 2 本のクエリを `Task.Run` で並行実行する処理を、検出の有無を変えて 3 回ずつ試したところ、次の結果になりました（実測で確認）。
 
@@ -1493,9 +1606,22 @@ Collection ToDependent Post' is not supported as the navigation is not embedded 
 - [RelationalQueryableExtensions.CreateDbCommand メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.relationalqueryableextensions.createdbcommand?view=efcore-10.0)
 - [EF Core のメトリック | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/metrics)
 - [インデックス | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/indexes)
+- [SQL Server プロバイダーのインデックス | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/indexes)
+- [オンラインインデックス操作のガイドライン | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/relational-databases/indexes/guidelines-for-online-index-operations?view=sql-server-ver16)
+- [オンラインでのインデックス操作 | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/relational-databases/indexes/perform-index-operations-online?view=sql-server-ver16)
+- [SortInTempDb メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.sqlserverindexbuilderextensions.sortintempdb?view=efcore-10.0)
+- [UseDataCompression メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.sqlserverindexbuilderextensions.usedatacompression?view=efcore-10.0)
+- [DataCompressionType 列挙型 | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.datacompressiontype?view=efcore-10.0)
 - [Azure Cosmos DB プロバイダーの制限事項 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/limitations)
 - [Azure Cosmos DB プロバイダーでのモデリング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/modeling)
 - [Azure Cosmos DB プロバイダーでのクエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/querying)
+- [Azure Cosmos DB プロバイダーの全文検索 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/full-text-search)
+- [Azure Cosmos DB プロバイダーのベクトル検索 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/vector-search)
+- [Azure Cosmos DB の全文検索 | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/cosmos-db/gen-ai/full-text-search)
+- [Azure Cosmos DB のベクトル検索 | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/cosmos-db/vector-search)
+- [FullTextScore | Microsoft Learn](https://learn.microsoft.com/ja-jp/cosmos-db/query/fulltextscore)
+- [HasDefaultFullTextLanguage メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.cosmosmodelbuilderextensions.hasdefaultfulltextlanguage?view=efcore-10.0)
+- [Rrf メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.cosmosdbfunctionsextensions.rrf?view=efcore-10.0)
 - [データベースプロバイダー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/)
 - [EF Core の NuGet パッケージ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/nuget-packages)
 - [EF Core 9.0 の破壊的変更 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-9.0/breaking-changes)

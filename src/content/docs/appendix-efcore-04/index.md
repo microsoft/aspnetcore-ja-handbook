@@ -85,7 +85,7 @@ Post {Id: 2} Modified FK {BlogId: 1}
 >
 > 公式ドキュメントも「削除は扱いが難しい。エンティティが存在しないことが削除を意味することが多いためだ」と述べ、次の 2 つを挙げています。
 >
-> - **論理削除 (soft delete)** にして、削除を更新として扱う（[付録2の「グローバルクエリフィルターと名前付きクエリフィルター」](/appendix-efcore-02/#グローバルクエリフィルターと名前付きクエリフィルター)と組み合わせる）
+> - **論理削除 (soft delete)** にして、削除を更新として扱う（[付録2の「グローバルクエリフィルターと名前付きクエリフィルター」](../appendix-efcore-02/index.md#グローバルクエリフィルターと名前付きクエリフィルター)と組み合わせる）
 > - データベースを読み込んでグラフの差分を取り、消えている子に `Remove` を呼ぶ
 >
 > エンティティを削除するには `Deleted` 状態で追跡されている必要があります。「送られてこなかった」という情報だけで EF Core が削除を判断することはありません。
@@ -445,7 +445,7 @@ await context.Posts
     cancellationToken);
 ```
 
-EF Core 10 では、**JSON 列にマッピングされた複合型のプロパティも `ExecuteUpdateAsync` で更新できる** ようになりました。EF Core 9 以前は JSON 列を一括更新できず、エンティティを読み込んで `SaveChangesAsync` するしかありませんでした。複合型と所有型の違いは[付録1の「値の変換・所有型・複合型」](/appendix-efcore-01/#値の変換所有型複合型)で扱います。
+EF Core 10 では、**JSON 列にマッピングされた複合型のプロパティも `ExecuteUpdateAsync` で更新できる** ようになりました。EF Core 9 以前は JSON 列を一括更新できず、エンティティを読み込んで `SaveChangesAsync` するしかありませんでした。複合型と所有型の違いは[付録1の「値の変換・所有型・複合型」](../appendix-efcore-01/index.md#値の変換所有型複合型)で扱います。
 
 ```csharp
 modelBuilder.Entity<Blog>().ComplexProperty(b => b.Details, bd => bd.ToJson());
@@ -1008,6 +1008,9 @@ context.SaveChangesFailed += (s, e) =>
 
 `AcceptAllChangesOnSuccess` は公式 API リファレンスによると「`SaveChanges` または `SaveChangesAsync` に渡された値」、`EntitiesSavedCount` は「保存されたエンティティの数」です。実測では、成功時に `SavingChanges` → `SavedChanges`、失敗時に `SavingChanges` → `SaveChangesFailed` の順で発行され、`SaveChangesFailed` が発行されたケースでは `SavedChanges` は発行されませんでした。
 
+> [!NOTE]
+> **データベースへの保存成功と、変更追跡上の状態の確定は分けられます。** `SaveChangesAsync(acceptAllChangesOnSuccess: false)` を使った実測では、INSERT 済みでもエンティティは `Added` のままでした。`ChangeTracker.AcceptAllChanges()` の後は `Unchanged` になり、次の保存件数は 0 でした。公式の接続回復ガイドも、状態を残して成功確認後に確定する使い方を説明しています。通常の保存では既定の `true` を使い、`false` は保存結果の確認と状態の確定を自分で管理する場合に限定してください。この実測は、コミット時の通信切断からの復旧まで確認したものではありません。
+
 > [!WARNING]
 > 公式ドキュメントは、イベントについて「インターセプターより単純で、登録の自由度が高い。ただし **同期専用なのでブロッキングしない非同期 I/O を実行できない**」と説明しています。イベントハンドラーの中でデータベースアクセスや HTTP 呼び出しを行いたい場合はインターセプターを使ってください。
 
@@ -1252,9 +1255,19 @@ Azure SQL Database の Business Critical（2 vCore）に対して実際に接続
 > [!NOTE]
 > オンプレミスの SQL Server では Always On 可用性グループの読み取り可能セカンダリと読み取り専用ルーティング、PostgreSQL ではストリーミングレプリケーションのホットスタンバイ、MySQL ではリードレプリカが同様の役割を果たします。いずれの場合も、アプリケーション側から見れば「別の接続文字列で読み取り専用のエンドポイントに接続する」という点は共通です。
 
+> [!NOTE]
+> **Always On の読み取り専用ルーティングと手動切替も、Azure 上で実測しました。** 1 台の x64 VM 上に SQL Server 2022 の 2 インスタンスを置き、Linux の `CLUSTER_TYPE=NONE` の読み取りスケール用可用性グループへ EF Core 10.0.8 から接続しました。同じリスナーに対して `ApplicationIntent` を変えると、プライマリと読み取り可能セカンダリへ振り分けられ、後者への書き込みは拒否されました。手動で役割を切り替えた後も、読み取りと書き込みの接続先を確認できました。
+>
+> ただし、公式が説明するように、**`CLUSTER_TYPE=NONE` は高可用性を提供する構成ではありません。** この試験も単一ホスト上の機能確認であり、独立した 2 台のホスト障害や Windows WSFC、自動フェールオーバーの検証ではありません。
+
+> [!WARNING]
+> **`EnableRetryOnFailure()` だけで手動切替の問題がすべて解決するわけではありません。** 上の試験では、旧プライマリをオフラインにしたときの SQL エラー 983 は標準設定で再試行されませんでした。これは[EF Core 10.0.8 の公式実装](https://github.com/dotnet/efcore/blob/v10.0.8/src/EFCore.SqlServer/Storage/Internal/SqlServerTransientExceptionDetector.cs)の対象エラー一覧とも一致します。追加の再試行対象を設定し、リスナーの再構成、クライアント側の名前解決先の手動更新、データ移動の再開を行うと、読み取り操作が回復しました。
+>
+> この試験では接続プールと SqlClient の接続再試行を無効にして、EF の再試行とインフラ側の操作を区別しています。**EF はリスナーや名前解決、レプリカの同期状態を自動修復しません。** 上の結果を、既定の接続設定で透過的に切り替わるという保証には使わないでください。
+
 ### データ整合性と遅延の制約
 
-レプリケーションは非同期に行われるため、レプリカのデータはプライマリより遅れます。
+ここでは Azure SQL Database の読み取りスケールアウトに戻って説明します。読み取り側へのデータ反映は即時とは限らず、レプリカのデータはプライマリより遅れることがあります。
 
 > [!WARNING]
 > レプリカへの反映遅延には上限の保証がありません。公式ドキュメントも「一般的な反映遅延は数十ミリ秒から 1 桁秒の範囲だが、**反映遅延に固定の上限はない**」「レプリカのリソース使用率が高いなどの状況では遅延が大幅に増加することがある」と明記しています。「書き込んだ直後に自分の変更を読み返す」処理をレプリカに向けると、古いデータが返る可能性があります。また、複数のレプリカがある構成では、連続したリクエストが別々のレプリカに振り分けられ、時間が巻き戻ったように見えることもあります。公式も「セッション間で保証された整合性が必要な場合や、コミット済みのデータをすぐに読める必要がある場合はプライマリレプリカを使うこと」としています。
@@ -1427,6 +1440,9 @@ public record CreateBlogRequest(string Name, string Url);
 - [EF Core の .NET イベント | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/events)
 - [EF Core での診断リスナーの使用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/diagnostic-listeners)
 - [接続の回復性 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-resiliency)
+- [読み取りスケール可用性グループの構成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/linux/business-continuity/availability-groups/configure-read-scale?view=sql-server-ver16)
+- [可用性グループの読み取り専用ルーティングの構成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/database-engine/availability-groups/windows/configure-read-only-routing-for-an-availability-group-sql-server?view=sql-server-ver16)
+- [EnableRetryOnFailure メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.infrastructure.sqlserverdbcontextoptionsbuilder.enableretryonfailure?view=efcore-10.0)
 - [効率的な更新 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/performance/efficient-updating)
 - [レプリカからのクエリ読み取り | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/azure-sql/database/read-scale-out?view=azuresql)
 - [アクティブ geo レプリケーション | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/azure-sql/database/active-geo-replication-overview?view=azuresql)

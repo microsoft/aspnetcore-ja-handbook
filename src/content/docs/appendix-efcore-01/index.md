@@ -348,7 +348,7 @@ public ICollection<Post> Posts { get; set; }
 同じ条件で比較子だけを差し替えて実測すると、`Posts.Count` は 2、保存された行も 2 件になりました。
 
 > [!NOTE]
-> 主キー・代替キー・外部キー、および一意インデックスに使う型は `IComparable<T>` と `IEquatable<T>` を実装している必要があります。キー値は等価比較だけでなく**順序付け**にも使われ、1 回の `SaveChanges` で複数のエンティティを更新するときにデッドロックを避けるために並べ替えられるためです。`int` や `Guid`、`string` など通常キーに使う型はすでに両方を実装しています。独自のキー型を作る場合は自分で実装してください。主キー以外の列を一意にする方法は[付録2の「代替キーと一意インデックス」](/appendix-efcore-02/#代替キーと一意インデックス)で扱います。
+> 主キー・代替キー・外部キー、および一意インデックスに使う型は `IComparable<T>` と `IEquatable<T>` を実装している必要があります。キー値は等価比較だけでなく**順序付け**にも使われ、1 回の `SaveChanges` で複数のエンティティを更新するときにデッドロックを避けるために並べ替えられるためです。`int` や `Guid`、`string` など通常キーに使う型はすでに両方を実装しています。独自のキー型を作る場合は自分で実装してください。主キー以外の列を一意にする方法は[付録2の「代替キーと一意インデックス」](../appendix-efcore-02/index.md#代替キーと一意インデックス)で扱います。
 
 ### 組み上がったモデルを確認する
 
@@ -406,7 +406,7 @@ Console.WriteLine(context.Model.ToDebugString(MetadataDebugStringOptions.LongDef
 `IdentityColumn` が選ばれていること、テーブル名が `Blogs` に決まっていることまで分かります。`MetadataDebugStringOptions` は `Microsoft.EntityFrameworkCore.Infrastructure` 名前空間にあります。
 
 > [!TIP]
-> このデバッグビューは、Visual Studio などの IDE のデバッガーからも参照できます。マイグレーションを生成する前にモデルを確認したいときにも使えます。実行時の**エンティティの状態**を見たい場合は、[付録4の `ChangeTracker.DebugView`](/appendix-efcore-04/#チェンジトラッカーの中身を見る) を使ってください。用途が異なります。
+> このデバッグビューは、Visual Studio などの IDE のデバッガーからも参照できます。マイグレーションを生成する前にモデルを確認したいときにも使えます。実行時の**エンティティの状態**を見たい場合は、[付録4の `ChangeTracker.DebugView`](../appendix-efcore-04/index.md#チェンジトラッカーの中身を見る) を使ってください。用途が異なります。
 
 ---
 
@@ -500,7 +500,7 @@ CREATE TABLE [PostTag] (
 ```
 
 > [!WARNING]
-> 結合エンティティのプロパティ名が外部キーの規約に合っていないと、EF Core は **その名前のシャドウプロパティ (shadow property) を別に作り、自分が定義したプロパティはただのデータ列になります。** 型名 `Article` に対して `PostId` というプロパティを定義したところ、`ArticlesId` というシャドウの外部キー列が追加で生成され、`PostId` は外部キーではない列として残りました。シャドウプロパティそのものの詳細は[付録2の「シャドウプロパティとバッキングフィールド」](/appendix-efcore-02/#シャドウプロパティとバッキングフィールド)を参照してください。この状態で保存しようとすると次の例外になります。
+> 結合エンティティのプロパティ名が外部キーの規約に合っていないと、EF Core は **その名前のシャドウプロパティ (shadow property) を別に作り、自分が定義したプロパティはただのデータ列になります。** 型名 `Article` に対して `PostId` というプロパティを定義したところ、`ArticlesId` というシャドウの外部キー列が追加で生成され、`PostId` は外部キーではない列として残りました。シャドウプロパティそのものの詳細は[付録2の「シャドウプロパティとバッキングフィールド」](../appendix-efcore-02/index.md#シャドウプロパティとバッキングフィールド)を参照してください。この状態で保存しようとすると次の例外になります。
 >
 > ```text
 > InvalidOperationException: The value of 'ArticleTag.ArticlesId' is unknown when attempting
@@ -1136,6 +1136,9 @@ CREATE TABLE [Payments] (
 
 派生型だけが持つ列は自動的に NULL 許容になります。公式ドキュメントにも「TPH マッピングを使う場合、データベースの列は必要に応じて自動的に NULL 許容になる」と記載されています。
 
+> [!NOTE]
+> **識別子列に、モデルが知らない値が入っている場合に注意してください。** 既定の基底型クエリはその行も読み込み、対応する型を決められず例外になることがあります。テーブルの一部の型だけをモデル化する設計なら、`HasDiscriminator(...).IsComplete(false)` で不完全なマッピングであると指定できます。公式の継承ガイドが説明するように、基底型へのクエリにも識別子のフィルターが加わります。既知の `Cat` と未登録の `Dog` を含む表で実測すると、既定では例外、`IsComplete(false)` では既知の 1 行だけが返りました（EF Core 10.0.11、SQL Server 2022）。意図せず混入したデータを隠すためではなく、モデルの対象範囲を限定する場合に使ってください。
+
 `UseTptMappingStrategy()` を指定すると **TPT (table-per-type)** になり、基底型と派生型がそれぞれのテーブルに分かれます。派生テーブルの主キーは基底テーブルへの外部キーを兼ねます。SQL Server での DDL は次のとおりです。
 
 ```csharp
@@ -1159,7 +1162,7 @@ CREATE TABLE [CreditCardPayments] (
 );
 ```
 
-`UseTpcMappingStrategy()` による **TPC (table-per-concrete-type)** では、具象型ごとに独立したテーブルを作り、それぞれが基底型の列も持ちます。主キーが階層全体で一意になるよう、EF Core は共有シーケンスを作成します（シーケンスの構成方法は[付録2の「シーケンスによる採番」](/appendix-efcore-02/#シーケンスによる採番)を参照）。SQL Server での DDL は次のとおりです。
+`UseTpcMappingStrategy()` による **TPC (table-per-concrete-type)** では、具象型ごとに独立したテーブルを作り、それぞれが基底型の列も持ちます。主キーが階層全体で一意になるよう、EF Core は共有シーケンスを作成します（シーケンスの構成方法は[付録2の「シーケンスによる採番」](../appendix-efcore-02/index.md#シーケンスによる採番)を参照）。SQL Server での DDL は次のとおりです。
 
 ```sql
 CREATE SEQUENCE [PaymentSequence] START WITH 1 INCREMENT BY 1 NO CYCLE;
@@ -1237,7 +1240,6 @@ modelBuilder.Entity<Animal>()
 - [継承 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/inheritance)
 - [Null 許容参照型の使用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/nullable-reference-types)
 - [リレーションシップのマッピング属性（データ注釈） | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/mapping-attributes)
-- [エンティティ型のコンストラクター | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/constructors)
 - [エンティティ型のコンストラクター | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/constructors)
 - [同じ DbContext 型で複数のモデルを切り替える | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/dynamic-model)
 - [カスケード削除 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/cascade-delete)

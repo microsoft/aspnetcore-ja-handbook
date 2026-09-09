@@ -237,7 +237,7 @@ Only entity types with a primary key may be tracked.
 > - **規約によって検出されることがない。** 必ず `HasNoKey()` か `[Keyless]` で明示的に構成する必要があります
 > - **通常のエンティティ型からキーなしエンティティ型へのナビゲーションプロパティを持てない。** 実際に書いてみると、モデル構築の時点で `Unable to determine the relationship represented by navigation 'NavBlog.Counts' of type 'BlogPostCount'.` という例外になりました
 > - リレーションシップの主体側になれない
-> - 継承階層は作れるが、TPH としてしかマップできない（継承の 3 つの方式は[付録1の「継承のマッピング」](/appendix-efcore-01/#継承のマッピング)を参照）
+> - 継承階層は作れるが、TPH としてしかマップできない（継承の 3 つの方式は[付録1の「継承のマッピング」](../appendix-efcore-01/index.md#継承のマッピング)を参照）
 > - テーブル分割・エンティティ分割は使えない
 
 ### チェック制約で不正な値をデータベース側で弾く
@@ -588,9 +588,9 @@ modelBuilder
 > 期間列に入るのは **SQL Server が生成した UTC 時刻** です。公式ドキュメントも「テンポラルテーブルに関わるすべての操作で UTC を使う」と明記しています。後述するクエリ演算子に渡す時刻も UTC で指定してください。
 
 > [!WARNING]
-> **期間プロパティに自分で値を設定してはいけません。** 公式ドキュメントは「期間プロパティは自動的に `ValueGenerated.OnAddOrUpdate` で構成されるため、値は常に SQL Server が生成する。エンティティの挿入や更新のときに値を設定する必要はなく、**設定すべきでもない**」と述べています。
+> **期間列の値は SQL Server に管理させてください。** 公式ドキュメントの「テンポラルテーブルの構成」節は、期間列をシャドウプロパティにマップすることと、格納される UTC 時刻を SQL Server が生成することを説明しています。ここで扱う EF Core 10 の構成も、このシャドウプロパティを使用します。
 >
-> 問題は、設定しても**例外にならず黙って無視される**ことです。シャドウプロパティ経由で `PeriodStart` に `2000-01-01` を設定して保存したところ、保存自体は成功し、実際に格納された値は SQL Server が生成した現在時刻でした（実測）。
+> 新規エンティティのシャドウプロパティ経由で `PeriodStart` に `2000-01-01` を設定して保存したところ、保存自体は成功しても、**指定値は格納されませんでした。** 実際に格納された値は SQL Server が生成した時刻です（EF Core 10.0.11 で実測）。
 >
 > ```text
 > PeriodStart: ValueGenerated=OnAddOrUpdate
@@ -600,7 +600,7 @@ modelBuilder
 > 実際の値:   2026-09-08 04:13:30
 > ```
 >
-> 「過去のデータを履歴として流し込む」といった用途に、EF Core 経由のテンポラルテーブルは使えません。
+> 通常の列を更新すると同時に期間値を指定する場合も実測し、期間列は INSERT / UPDATE の書き込み対象から除外されることを確認しました。**この標準構成で、期間プロパティに過去時刻を代入して `SaveChanges` する方法では、履歴の時刻を指定できません。** 過去データの移行全般の可否とは分けて考えてください。
 
 #### 履歴を読む 5 つの演算子
 
@@ -842,13 +842,18 @@ WHERE [n].[Path].IsDescendantOf(@devPath) = CAST(1 AS bit) AND [n].[Path] <> @de
 こちらの結果は「第一課」だけになりました（実測）。`GetLevel()` は深さを返し、実測では 全社=0 / 開発部=1 / 第一課=2 / 営業部=1 となりました。
 
 > [!NOTE]
-> `HierarchyId` 型は `Microsoft.EntityFrameworkCore.SqlServer.Abstractions` パッケージで定義されており、こちらは他のパッケージへの参照を持ちません。エンティティを定義するプロジェクトだけが `Abstractions` を参照し、実際にクエリを実行するプロジェクトが `HierarchyId` パッケージを参照する、という分け方ができます。
+> `HierarchyId` 型は `Microsoft.EntityFrameworkCore.SqlServer.Abstractions` パッケージで定義されています。**EF Core 本体には依存しませんが、依存パッケージがないわけではありません。** 10.0.11 の[公式パッケージ定義](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.SqlServer.Abstractions/EFCore.SqlServer.Abstractions.csproj)と復元結果を照合すると、`Microsoft.SqlServer.Types` などへの依存が確認できます。エンティティ定義用のプロジェクトが `Abstractions` を参照し、クエリ実行側が `HierarchyId` パッケージを参照する、という分離は可能です。
+
+> [!WARNING]
+> **`hierarchyid` は、ツリーの整合性まで自動で保証する型ではありません。** 公式の SQL Server 階層データガイドにも、パスの一意性や親の存在を自動で強制しないと明記されています。別の主キーを持つ表では、同じパスの 2 行も、親のパスに対応する行がない子も保存できました。パスを主キーにした別の表では重複が拒否されました（実測）。必要な一意制約と親子の整合性維持は、別途設計してください。
+>
+> また、**部分木の移動は親のパスを書き換えるだけでは完了しません。** 公式の更新例は、対象の子孫も列挙して各行に `GetReparentedValue` を適用しています。実測でも親だけを更新すると子孫は元のパスに残り、親子孫の 3 行を更新すると部分木全体が移動しました。
 
 ### SQL Server 固有の列オプション
 
 #### スパース列
 
-**スパース列 (sparse column)** は、`NULL` の格納を最適化する代わりに、`NULL` でない値の取得コストが上がる列です。TPH 継承（[付録1の「継承のマッピング」](/appendix-efcore-01/#継承のマッピング)）のように「一部の型にしか存在しない列」がテーブルの大半で `NULL` になるケースで効きます。
+**スパース列 (sparse column)** は、`NULL` の格納を最適化する代わりに、`NULL` でない値の取得コストが上がる列です。TPH 継承（[付録1の「継承のマッピング」](../appendix-efcore-01/index.md#継承のマッピング)）のように「一部の型にしか存在しない列」がテーブルの大半で `NULL` になるケースで効きます。
 
 ```csharp
 modelBuilder.Entity<SpecialPost>()
@@ -858,7 +863,7 @@ modelBuilder.Entity<SpecialPost>()
 
 #### UTF-8 の照合順序
 
-SQL Server 2019 以降は `char` / `varchar` 列に UTF-8 の照合順序を指定でき、Unicode を `nvarchar` より小さく格納できる場合があります。EF Core からは、列の型を `varchar` にしたうえで `_UTF8` で終わる照合順序を指定し、あわせて `IsUnicode()` を呼びます。照合順序がクエリの結果そのものを変える点は[付録3の「大文字小文字の区別は照合順序が決める」](/appendix-efcore-03/#大文字小文字の区別は照合順序が決める)で扱います。
+SQL Server 2019 以降は `char` / `varchar` 列に UTF-8 の照合順序を指定でき、Unicode を `nvarchar` より小さく格納できる場合があります。EF Core からは、列の型を `varchar` にしたうえで `_UTF8` で終わる照合順序を指定し、あわせて `IsUnicode()` を呼びます。照合順序がクエリの結果そのものを変える点は[付録3の「大文字小文字の区別は照合順序が決める」](../appendix-efcore-03/index.md#大文字小文字の区別は照合順序が決める)で扱います。
 
 ```csharp
 modelBuilder.Entity<SpecialPost>()
@@ -1253,6 +1258,7 @@ dotnet_diagnostic.CA1056.severity = none
 - [SQL Server / Azure SQL のテンポラルテーブル | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/temporal-tables)
 - [SQL Server プロバイダー固有の列機能 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/columns)
 - [SQL Server の HierarchyId | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/hierarchyid)
+- [階層データ | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/relational-databases/hierarchical-data-sql-server?view=sql-server-ver16)
 - [SQL Server のメモリ最適化テーブルのサポート | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/memory-optimized-tables)
 - [SQL Server プロバイダーの値生成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/value-generation)
 - [空間データ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/spatial)

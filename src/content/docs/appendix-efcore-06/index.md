@@ -354,10 +354,20 @@ public sealed class SqliteContextFactory : IDisposable
 | `HasSequence<int>()` | `NotSupportedException: SQLite does not support sequences.` |
 | `IsRowVersion()` | 例外にならず `"RowVersion" BLOB NOT NULL` が作られる |
 
-危険なのは表の下 3 行です。**例外が出ないため、テストは通ってしまいます。**
+特に、スキーマ指定と `IsRowVersion()` は、**テーブルを作成できたことだけでは本番と同じ動作を確認できません。** `HasSequence<int>()` は非対応の例外になるため、区別してください。
 
 - スキーマ指定は静かに捨てられるので、SQL Server で `sales.Items` と `dbo.Items` を使い分けている設計は SQLite 上では区別されません。
-- `IsRowVersion()` は列こそ作られますが、SQLite はデータベース側で値を生成しないため、**同時実行制御が働きません。** 公式は「データベースが生成する同時実行トークンは未サポート」と明記しています。楽観的同時実行の失敗を再現するテストは、SQLite では書けないと考えてください。仕組みそのものは[付録4の「楽観的同時実行制御」](/appendix-efcore-04/#楽観的同時実行制御)で扱います。
+- `IsRowVersion()` で列は作れますが、SQLite は SQL Server の `rowversion` のようにトークンを自動生成・更新しません。**SQL Server の自動生成まで含めた同時実行制御の代用にはなりません。** `BLOB NOT NULL` の列を作り、既定値やトリガーを用意せずに挿入すると、実測では `NOT NULL constraint failed` を内部例外とする `DbUpdateException` になりました。
+
+一方、**アプリケーション側でトークンを管理する楽観的同時実行制御は SQLite でもテストできます。** 公式ドキュメントも、SQLite のように自動更新型を持たないデータベースでこの方式を使えると明記しています。`Guid` のプロパティに `IsConcurrencyToken()` を設定し、保存時にアプリケーションで新しい値を割り当てた実測では、次の結果になりました（EF Core 10.0.11、SQLite のインメモリデータベース）。
+
+| 先に保存する側の処理 | 古いトークンを持つ側の処理 | 結果 |
+| --- | --- | --- |
+| データとトークンを更新 | 更新して保存 | `DbUpdateConcurrencyException` |
+| データとトークンを更新 | 削除して保存 | `DbUpdateConcurrencyException` |
+| データだけ更新し、トークンは変更しない | 更新して保存 | 競合を検出せず、後の値で上書き |
+
+2 つの `DbContext` で同じ行を読んでから順に保存し、先行更新後の古いトークンでの保存を確認しています。**トークンの再生成はアプリケーションの責任です。** 本番が `rowversion` を使うなら、その自動更新の検証は SQL Server で行ってください。トークンの設定と競合解決は[付録4の「楽観的同時実行制御」](../appendix-efcore-04/index.md#楽観的同時実行制御)で扱います。
 
 > [!NOTE]
 > `decimal` の扱いは EF Core 10 で改善されました。以前は大小比較と並べ替えがクライアント評価を必要としましたが、EF Core 10 は `ef_compare()` という独自関数と `EF_DECIMAL` という独自の照合順序を接続に登録し、データベース側で処理します。ただし `TEXT` 格納であることは変わらないため、SQL Server の `decimal(18, 2)` と厳密に同じ丸めになるとは限りません。
@@ -464,9 +474,11 @@ Generating idempotent scripts for migrations is not currently supported for SQLi
 ```
 
 > [!WARNING]
-> **同じ `DbContext` インスタンスの並行利用も、SQLite では表面化しないことがあります。** SQLite のように同期的な I/O を行うプロバイダーでは、`Task.WhenAll(context.Blogs.ToListAsync(), context.Posts.ToListAsync())` のような書き方をしても各クエリが順番に完了してしまい、[同時実行検出](/appendix-efcore-05/#同時実行検出を無効にしてはいけない)の例外が発生しないことがあります（実際に 20 回試行して 1 度も発生しませんでした）。一方、`Task.Run` で明確に別スレッドから実行すると確実に例外になります。
+> **同じ `DbContext` インスタンスの並行利用も、SQLite では表面化しないことがあります。** SQLite のように同期的な I/O を行うプロバイダーでは、`Task.WhenAll(context.Blogs.ToListAsync(), context.Posts.ToListAsync())` のような書き方をしても各クエリが順番に完了してしまい、[同時実行検出](../appendix-efcore-05/index.md#同時実行検出を無効にしてはいけない)の例外が発生しないことがあります（実際に 20 回試行して 1 度も発生しませんでした）。
 >
-> つまり **SQLite を使った単体テストでは問題が表面化せず、本番の SQL Server で初めて落ちる**、ということが起こり得ます。「テストが通ったから安全」と考えず、1 つの `DbContext` インスタンスを複数の処理で共有しない設計を徹底してください。
+> **`Task.Run` を使えば必ず例外になるわけでもありません。** 2 回の `Task.Run` をそれぞれ直ちに `await` した場合は成功し、先のクエリを実行中に待機させて別のクエリを重ねた場合は `InvalidOperationException` になりました（EF Core 10.0.11 で実測）。公式が禁止しているのは同じコンテキストでの**操作の重複**であり、未検出の場合も未定義の動作やデータ破損の可能性があると明記しています。例外の有無を安全性の判定に使わないでください。
+>
+> つまり **SQLite を使った単体テストでは問題が表面化せず、本番の SQL Server で初めて落ちる**、ということが起こり得ます。「テストが通ったから安全」と考えず、1 つの `DbContext` インスタンスを複数の処理で並行利用しない設計を徹底してください。
 
 > [!TIP]
 > 制限を回避しつつテストを速く保つ現実的な折衷案は、**単体テストは SQLite、スキーマや同時実行が絡むテストは本番と同じデータベースエンジン**、と使い分けることです。SQL Server なら [Testcontainers](https://dotnet.testcontainers.org/) や開発者向けのコンテナーイメージで、テスト実行時に本物を立てられます。
@@ -628,4 +640,6 @@ public class FakeBlogRepository : IBlogRepository
 - [運用データベースシステムを使用しないテスト | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/testing/testing-without-the-database)
 - [SQLite プロバイダーの制限 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sqlite/limitations)
 - [SQLite プロバイダーの値生成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sqlite/value-generation)
+- [同時実行の競合の処理 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/concurrency)
+- [DbContext の構成とスレッドの問題の回避 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/dbcontext-configuration/#avoiding-dbcontext-threading-issues)
 - [ASP.NET Core の統合テスト | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/test/integration-tests?view=aspnetcore-10.0)

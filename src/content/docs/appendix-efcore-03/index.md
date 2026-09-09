@@ -64,7 +64,7 @@ description: "EF Core のマイグレーションの読み方と運用、単一�
 > | `db.Database.EnsureCreatedAsync()` | 成功。データベースとコンテナーが作成される |
 > | `HasIndex(o => o.Customer)` | `InvalidOperationException: The entity type 'Order' has an index defined over properties 'Customer'. The Azure Cosmos DB provider for EF Core currently does not support index definitions.` |
 >
-> インデックスを定義できないのは機能不足ではありません。Azure Cosmos DB は**格納した項目をすべて自動でインデックス化する**ため、EF Core 側で個別に指定する必要がないからです。なお `HasIndex` は EF Core 8 までは無視されるだけでしたが、**EF Core 9 で例外を投げるように変更**されました。黙って無視されるより、書いた設定が効かないことにその場で気づけるほうが安全という判断です。
+> この制限は、リレーショナルデータベースのような**通常の `HasIndex` 定義**についてのものです。Azure Cosmos DB は既定のポリシーで項目を自動的にインデックス化します。一方、EF Core 10 では `IsFullTextIndex()` や `IsVectorIndex()` による**検索専用の索引設定は可能**で、実コンテナーの作成も成功しました。[付録5の「Cosmos DB の全文検索とベクトル検索」](../appendix-efcore-05/index.md#cosmos-db-の全文検索とベクトル検索)を参照してください。通常の索引定義は EF Core 8 までは無視され、EF Core 9 以降は例外になるため、検索専用の設定と区別してください。
 
 > [!WARNING]
 > **Azure Cosmos DB では、`EnsureCreatedAsync()` は Microsoft Entra ID (RBAC) 認証では動きません。** 公式ドキュメントは「Azure Cosmos DB SDK は管理プレーンの操作について RBAC をサポートしていない。RBAC を使う場合は `EnsureCreatedAsync` ではなく Azure Management API を使うこと」と明記しています。
@@ -895,7 +895,7 @@ public virtual ICollection<Enrollment> Enrollments { get; set; } = new List<Enro
 
 ### 単一クエリと分割クエリ
 
-複数のコレクションナビゲーションを `Include` すると、EF Core は既定で 1 つの SQL に JOIN してまとめます。このとき、結果セットに同じ行が繰り返し現れる **カルテシアン爆発 (Cartesian Explosion)** が起こります。転送量そのものを減らす手段は[付録5の「インデックスを正しく張る」](/appendix-efcore-05/#インデックスを正しく張る)ではなく投影であり、判断の順序は[付録5の「まず計測する」](/appendix-efcore-05/#まず計測する)に従ってください。
+複数のコレクションナビゲーションを `Include` すると、EF Core は既定で 1 つの SQL に JOIN してまとめます。このとき、結果セットに同じ行が繰り返し現れる **カルテシアン爆発 (Cartesian Explosion)** が起こります。転送量そのものを減らす手段は[付録5の「インデックスを正しく張る」](../appendix-efcore-05/index.md#インデックスを正しく張る)ではなく投影であり、判断の順序は[付録5の「まず計測する」](../appendix-efcore-05/index.md#まず計測する)に従ってください。
 
 ```csharp
 var blogs = await context.Blogs
@@ -1435,13 +1435,13 @@ builder.Services.ConfigureHttpJsonOptions(
 > `ReferenceHandler.Preserve` は **JSON の形自体を変えます**。上の実測結果のとおり、配列だった `Posts` が `$id` と `$values` を持つオブジェクトになりました。クライアント側も参照形式を解釈できる必要があるため、公開 API のレスポンスに使うと互換性の問題を起こします。
 
 > [!TIP]
-> そもそも API のレスポンスにエンティティを直接使わず、DTO に投影すれば循環は発生しません。詳しくは[第8章の投影による最適化](/08-entity-framework-core/#投影-projection-による最適化)を参照してください。
+> そもそも API のレスポンスにエンティティを直接使わず、DTO に投影すれば循環は発生しません。詳しくは[第8章の投影による最適化](../08-entity-framework-core/index.md#投影-projection-による最適化)を参照してください。
 
 ## 3. SQL を直接扱う
 
 ### 生の SQL を使う
 
-LINQ で表現できないクエリや、ストアドプロシージャの呼び出しには生の SQL を使います。生の SQL と `SaveChanges` を 1 つのトランザクションにまとめる場合は[付録4の「セーブポイント」](/appendix-efcore-04/#セーブポイント)と[「接続の回復性とトランザクションの併用」](/appendix-efcore-04/#接続の回復性とトランザクションの併用)もあわせて確認してください。
+LINQ で表現できないクエリや、ストアドプロシージャの呼び出しには生の SQL を使います。生の SQL と `SaveChanges` を 1 つのトランザクションにまとめる場合は[付録4の「セーブポイント」](../appendix-efcore-04/index.md#セーブポイント)と[「接続の回復性とトランザクションの併用」](../appendix-efcore-04/index.md#接続の回復性とトランザクションの併用)もあわせて確認してください。
 
 ```csharp
 var blogs = await context.Blogs
@@ -1748,7 +1748,7 @@ var affected = await context.Database
 
 ### ユーザー定義関数とビューをマッピングする
 
-EF Core の公式パフォーマンスガイダンスは、EF が生成しない最適な SQL を使いたい場合の手段を **3 つ**挙げています。1 つ目が前節の `FromSql` で、残りの 2 つが**ユーザー定義関数 (User-Defined Function: UDF)** と**データベースビュー**です。`FromSql` は「その 1 か所でしか使わない SQL」に向く一方、複数のクエリから再利用したいロジックは関数やビューにするほうが管理しやすくなります。ビューや集計結果を主キーのない型として読む方法は[付録2の「キーなしエンティティ型でビューや集計結果を読む」](/appendix-efcore-02/#キーなしエンティティ型でビューや集計結果を読む)で扱います。
+EF Core の公式パフォーマンスガイダンスは、EF が生成しない最適な SQL を使いたい場合の手段を **3 つ**挙げています。1 つ目が前節の `FromSql` で、残りの 2 つが**ユーザー定義関数 (User-Defined Function: UDF)** と**データベースビュー**です。`FromSql` は「その 1 か所でしか使わない SQL」に向く一方、複数のクエリから再利用したいロジックは関数やビューにするほうが管理しやすくなります。ビューや集計結果を主キーのない型として読む方法は[付録2の「キーなしエンティティ型でビューや集計結果を読む」](../appendix-efcore-02/index.md#キーなしエンティティ型でビューや集計結果を読む)で扱います。
 
 #### スカラー関数
 
@@ -1781,6 +1781,11 @@ SELECT [b].[Name]
 FROM [Blogs] AS [b]
 WHERE [dbo].[PostCountForBlog]([b].[Id]) > 1
 ```
+
+> [!NOTE]
+> NULL 許容の UDF では、引数に対する `PropagatesNullability()` の設定により、関数を再評価せず引数の `IS NULL` で判定できる場合があります。NULL と非 NULL の入力を持つ文字数関数で実測すると、関数呼び出しの `IS NULL` が入力列の `IS NULL` に置き換わり、結果は同じでした（EF Core 10.0.11、SQL Server 2022）。
+>
+> **設定した引数が NULL であることだけが、関数が NULL を返す原因である場合に限って使ってください。** これは公式 UDF ガイドの注意事項です。「NULL を返すことがある関数」すべてに付ける設定ではありません。
 
 #### テーブル値関数 (TVF)
 
