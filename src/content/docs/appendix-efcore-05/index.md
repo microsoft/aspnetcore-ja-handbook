@@ -43,6 +43,7 @@ description: "EF Core の計測と診断、インデックス設計、コンパ�
    - [バッファリングとストリーミング](#バッファリングとストリーミング)
    - [非同期 API を使う](#非同期-api-を使う)
    - [プロバイダーを替えるとモデルの意味が変わる](#プロバイダーを替えるとモデルの意味が変わる)
+   - [Cosmos DB の接続と保存で注意すること](#cosmos-db-の接続と保存で注意すること)
    - [Cosmos DB の全文検索とベクトル検索](#cosmos-db-の全文検索とベクトル検索)
    - [同時実行検出を無効にしてはいけない](#同時実行検出を無効にしてはいけない)
 4. [参考ドキュメント](#4-参考ドキュメント)
@@ -1493,6 +1494,53 @@ Collection ToDependent Post' is not supported as the navigation is not embedded 
 
 ---
 
+### Cosmos DB の接続と保存で注意すること
+
+以下は `Microsoft.EntityFrameworkCore.Cosmos` 10.0.11、依存する Cosmos SDK 3.61.0 と、実 Azure の NoSQL アカウントで確認した内容です。SQL Server 向けの接続設定や同時実行制御をそのまま当てはめないでください。
+
+#### DI 登録の引数と接続モード
+
+`AddCosmos<TContext>(connectionString, databaseName)` の 2 つの文字列は、**接続文字列とデータベース名**です。エンドポイントとキーではありません。実測では、正しい組み合わせで Scoped のコンテキスト解決と読み取りに成功し、エンドポイントを接続文字列の位置へ渡す誤用は `ArgumentException` になりました。エンドポイントとキーを個別に渡す場合は、`AddDbContext` 内で対応する `UseCosmos(endpoint, key, databaseName)` を使います。接続値をソースコードへ埋め込まないでください。
+
+公式の[Cosmos DB プロバイダーの接続オプション](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/#azure-cosmos-db-options)には、一覧中のオプションを**すべて同時に使う意図ではない**と注意があります。
+
+| 構成 | 実測結果と注意 |
+| --- | --- |
+| Gateway に Direct 専用の TCP 設定を指定 | `MaxRequestsPerTcpConnection` などの指定で `ArgumentException`。接続モードに適した設定だけを使う |
+| `HttpClientFactory` と `GatewayModeMaxConnectionLimit` を併用 | 明示的な上限指定との併用で `ArgumentException`。ファクトリを使う場合の上限は `HttpClientHandler.MaxConnectionsPerServer` で構成する |
+| Direct の `IdleTcpConnectionTimeout` を 1 分に設定 | 設定値の読み返しは成功しても、初回の入出力で `ArgumentOutOfRangeException`。公式下限の 10 分に直すと読み取りに成功 |
+
+Gateway と Direct の両方で実通信を確認しましたが、接続数の上限まで負荷をかけたり、アイドル接続の回収時刻を測定したりした結果ではありません。**設定値を読み返せることだけを、通信まで成功する証拠にしないでください。**
+
+#### コンテナーとパーティションキー
+
+`HasDefaultContainer` はモデルの既定コンテナー、`ToContainer` はエンティティごとの保存先、`ToJsonProperty` は保存する JSON 名を指定します。実測では既定・個別の保存先と、変更した JSON 名を実ドキュメントで確認しました。
+
+Cosmos DB では、異なるパーティションなら同じ `id` の文書を保存できます。単一パーティションキーのモデルで同じ `id` の文書を別々のパーティションへ保存し、`FindAsync` に **id とパーティションキーの両方**を渡して識別できることを確認しました。`WithPartitionKey` による検索先の限定も、[公式のクエリガイド](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/querying)と実測結果が一致しています。
+
+階層パーティションキーは、`HasPartitionKey(x => new { x.TenantId, x.UserId, x.SessionId })` のように構成します。`string` / `Guid` / `int` の 3 階層を構成し、同じ id の 4 文書を保存した実測では、id と全階層のキーを渡した `FindAsync` が目的の 1 件をポイント読み取りしました。
+
+また、LINQ の等値条件を **先頭から連続するキー**に指定すると、その値は SQL の条件から取り出され、実行ログの `Partition` に現れました。先頭 1 個・先頭 2 個・全 3 個でこの動作を確認しました。一方、中間だけ・末尾だけ・中間と末尾の条件は SQL 側に残り、同じパーティション指定にはなりませんでした。先頭キーの有無を無視して、同じ検索先に限定できると考えないでください。
+
+#### ETag と SDK 経由の更新
+
+`UseETagConcurrency()` はシャドウ状態の `_etag` を同時実行トークンにし、`IsETagConcurrency()` は ETag を CLR プロパティへマッピングする場合に使います。両方式とも、別の `DbContext` が先に同じ文書を更新すると、古い ETag で保存した側は HTTP 412 に基づく `DbUpdateConcurrencyException` になりました。[公式の ETag による楽観的同時実行制御](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/modeling#optimistic-concurrency-with-etags)に対応する挙動です。
+
+また、`Database.GetCosmosClient()` から取得した SDK で文書を更新しても、**コンテキストが追跡済みの値は自動更新されません**。実測では追跡値が古いまま、新しい `DbContext` は更新後の値を読みました。SDK 経由の更新を EF Core の変更追跡に通知する仕組みと考えないでください。
+
+#### 有効期限とスループットの構成
+
+**TTL (Time to Live)** は最終更新からの有効期間を秒数で指定します。`HasDefaultTimeToLive` によるコンテナーの既定値と、JSON の `ttl` にマッピングした項目ごとの値を分けて扱います。既定 8 秒、個別 4 秒、個別 `-1` の 3 条件で保存すると、11 秒待機後の読み取りは前の 2 条件が HTTP 404、`-1` の項目は取得可能でした。`-1` は有効期限を無効にする指定です。この実測は、物理削除の完了時刻を測定したものではありません。
+
+スループットも、データベース共有とコンテナー専用では構成する対象が異なります。新規作成時の実測では、`ModelBuilder` の `HasManualThroughput(400)` と `HasAutoscaleThroughput(1000)` で、それぞれデータベースの手動 400 RU/s と自動スケール最大 1000 RU/s の設定を確認しました。エンティティ側の `HasManualThroughput(500)` ではコンテナー専用の手動 500 RU/s を確認しました。これは構成値の確認であり、負荷に応じたスケール動作や応答性能の測定ではありません。
+
+#### トリガーは全クライアントに強制されない
+
+EF Core 10 の Cosmos DB プロバイダーでは、作成済みのトリガーを `HasTrigger` で Pre / Post と操作種別に対応付けられます。実測では、Pre の Create / Replace が文書を書き換え、Post の Delete で例外を発生させると削除がロールバックしました。
+
+> [!WARNING]
+> **トリガーを認証や監査の強制機構にしないでください。** SDK からトリガーを指定せず実行した操作は成功しました。公式の[データベーストリガー](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/modeling#database-triggers)も、直接アクセスするクライアントはトリガーを省略できるため、セキュリティ関連機能の強制に使わないよう注意しています。SQL Server のトリガーと同じ強制力を想定しないでください。
+
 ### Cosmos DB の全文検索とベクトル検索
 
 Cosmos DB 用の EF Core 10 は、**全文検索、ベクトル検索、および両方の順位を組み合わせるハイブリッド検索**をサポートします。SQL Server の `Contains` / `FreeText` や `SqlVector<T>` とは別の API です。ここでは `Microsoft.EntityFrameworkCore.Cosmos` 10.0.11 と、ベクトル検索を有効にした実 Azure アカウントで確認した例を示します。
@@ -1613,6 +1661,13 @@ var hybridResults = await db.Blogs
 - [UseDataCompression メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.sqlserverindexbuilderextensions.usedatacompression?view=efcore-10.0)
 - [DataCompressionType 列挙型 | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.datacompressiontype?view=efcore-10.0)
 - [Azure Cosmos DB プロバイダーの制限事項 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/limitations)
+- [Azure Cosmos DB プロバイダー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/)
+- [AddCosmos メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.extensions.dependencyinjection.cosmosservicecollectionextensions.addcosmos?view=efcore-10.0)
+- [Cosmos SDK の HttpClientFactory | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.azure.cosmos.cosmosclientoptions.httpclientfactory?view=azure-dotnet)
+- [Cosmos SDK の IdleTcpConnectionTimeout | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.azure.cosmos.cosmosclientoptions.idletcpconnectiontimeout?view=azure-dotnet)
+- [Cosmos DB の有効期限 | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/cosmos-db/time-to-live)
+- [Cosmos DB プロバイダーの非構造化データ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/unstructured-data)
+- [ID 解決 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/identity-resolution)
 - [Azure Cosmos DB プロバイダーでのモデリング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/modeling)
 - [Azure Cosmos DB プロバイダーでのクエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/querying)
 - [Azure Cosmos DB プロバイダーの全文検索 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/full-text-search)
