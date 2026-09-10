@@ -1012,7 +1012,7 @@ MAXSIZE = 10 GB, EDITION = ''GeneralPurpose'', SERVICE_OBJECTIVE = ''GP_S_Gen5_1
 END
 ```
 
-`MAXSIZE = 10 GB` を含むこの SQL の生成と、Azure SQL Database を対象にした `dotnet ef database update` による `Initial` の適用完了を確認しました。これは生成 SQL と適用コマンドの結果であり、適用前後の最大サイズを照会して比較した結果とは区別しています。
+Azure SQL Database の `GP_S_Gen5_1` を対象に、EF Core 10.0.11 を指定したプロジェクトの `Initial` マイグレーションを適用して確認しました。Azure CLI での作成応答では最大サイズが **1,073,741,824 バイト（1 GB）** でしたが、`dotnet ef database update` の完了後に `az sql db show` で確認すると、[`maxSizeBytes`（最大サイズをバイト単位で表す設定）](https://learn.microsoft.com/ja-jp/rest/api/sql/databases/get?view=rest-sql-2023-08-01#database) は **10,737,418,240 バイト（10 GB）** になっていました。サービス目標名は前後とも `GP_S_Gen5_1` でした。確認したのは容量上限の設定値であり、使用済み容量や処理性能の比較ではありません。
 
 > [!WARNING]
 > `ALTER DATABASE` はトランザクションの中で実行できません。実測では適用時に次の警告が出ました。
