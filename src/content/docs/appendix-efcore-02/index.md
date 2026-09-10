@@ -524,7 +524,7 @@ await transaction.CommitAsync(cancellationToken);
 この手順で `Id = 999` の行が挿入できることを SQL Server 2022 で確認しました。
 
 > [!WARNING]
-> `SET IDENTITY_INSERT` は**同時に 1 つのテーブルにしか設定できません。** 複数テーブルへ明示的な ID で挿入する場合は、テーブルごとに `ON` と `OFF` を往復させる必要があります。
+> `SET IDENTITY_INSERT` を `ON` にできるのは、**同一セッション内で同時に 1 つのテーブルだけ**です。同じ接続を使って複数テーブルへ明示的な ID で挿入する場合は、テーブルごとに `ON` と `OFF` を切り替えます。
 
 #### SQL Server の `Guid` 主キーは順序を考慮して生成される
 

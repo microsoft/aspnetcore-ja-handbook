@@ -1478,7 +1478,7 @@ var oldBehavior = db.Items.Select(x => x.Flag == null ? null : x.Flag.ToString()
 
 EF Core はナビゲーションプロパティを自動的に補完 (fix-up) するため、**オブジェクトグラフに循環ができます**。`Blog` を `Include` で読み込むと `Blog.Posts` に `Post` が入り、その `Post.Blog` が元の `Blog` を指すためです。公式ドキュメントは、この循環をシリアル化フレームワークが扱えない場合があると明記しています。
 
-実際に ASP.NET Core 10 の最小 API から、`Include` した `Blog` をそのまま `System.Text.Json` でシリアル化したところ、次の例外が発生しました。
+SQLite から `Include` で読み込んだ `Blog` を、.NET 10 の `JsonSerializer.Serialize` に既定の設定で渡して確認すると、次の例外が発生しました（メッセージとパスは一部省略）。
 
 ```text
 System.Text.Json.JsonException: A possible object cycle was detected. This can either be
@@ -1499,20 +1499,22 @@ builder.Services.ConfigureHttpJsonOptions(
 {"id":1,"name":"A","posts":[{"id":1,"title":"P1","blogId":1,"blog":null}]}
 ```
 
-2 つ目は `ReferenceHandler.Preserve` です。こちらは循環を `$id` と `$ref` の参照に置き換えます。
+2 つ目は `ReferenceHandler.Preserve` です。こちらは循環を `$id` と `$ref` の参照に置き換えます。次の JSON は、上の例と同じプロパティ・値を持つグラフを `JsonSerializer.Serialize` に渡し、`new JsonSerializerOptions { ReferenceHandler = ReferenceHandler.Preserve }` を指定して再現したものです。最小 API の応答とは異なり、プロパティ名は `Id`・`Posts` などの元の表記を保ちます。
 
 ```json
 {"$id":"1","Id":1,"Name":"A","Posts":{"$id":"2","$values":[
   {"$id":"3","Id":1,"Title":"P1","BlogId":1,"Blog":{"$ref":"1"}}]}}
 ```
 
+最小 API で前述の `ConfigureHttpJsonOptions` の指定を `ReferenceHandler.Preserve` に変更した場合も、参照情報は保持されます。ただし、[Web 用の既定設定は camelCase](https://learn.microsoft.com/ja-jp/dotnet/standard/serialization/system-text-json/configure-options#web-defaults-for-jsonserializeroptions)なので、応答のキーは `id`・`posts` になります。この経路も ASP.NET Core 10 と SQLite の同じデータで確認しました。`Preserve` 自体がキー名の大小文字を切り替えるわけではありません。
+
 3 つ目は、循環の原因になっているナビゲーションプロパティに `System.Text.Json.Serialization` 名前空間の `[JsonIgnore]` を付けて、シリアル化の対象から外す方法です。
 
 > [!WARNING]
-> `ReferenceHandler.Preserve` は **JSON の形自体を変えます**。上の実測結果のとおり、配列だった `Posts` が `$id` と `$values` を持つオブジェクトになりました。クライアント側も参照形式を解釈できる必要があるため、公開 API のレスポンスに使うと互換性の問題を起こします。
+> `ReferenceHandler.Preserve` は **JSON の形自体を変えます**。上の実測結果のとおり、配列だった `Posts` が `$id` と `$values` を持つオブジェクトになりました。従来の配列形式を前提にしたクライアントでは、互換性の問題を起こすことがあります。参照形式を採用する場合は、クライアント側も `$id`・`$values`・`$ref` を扱える契約にそろえてください。
 
 > [!TIP]
-> そもそも API のレスポンスにエンティティを直接使わず、DTO に投影すれば循環は発生しません。詳しくは[第8章の投影による最適化](../08-entity-framework-core/index.md#投影-projection-による最適化)を参照してください。
+> API のレスポンスにエンティティを直接使わず、親への戻り参照を含めない DTO に投影すれば、この循環を避けられます。詳しくは[第8章の投影による最適化](../08-entity-framework-core/index.md#投影-projection-による最適化)を参照してください。
 
 ## 3. SQL を直接扱う
 
