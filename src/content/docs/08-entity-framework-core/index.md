@@ -780,7 +780,10 @@ await context.Entry(blog)
 
 ### 遅延読み込みと N+1 問題
 
-`Microsoft.EntityFrameworkCore.Proxies` パッケージと `UseLazyLoadingProxies()` を使うと、ナビゲーションプロパティに初めてアクセスしたタイミングで自動的にクエリが発行される **遅延読み込み (Lazy Loading)** を有効にできます。
+`Microsoft.EntityFrameworkCore.Proxies` パッケージを追加し、`UseLazyLoadingProxies()` を呼ぶと、まだ読み込まれていない関連データをナビゲーションプロパティへのアクセス時に自動的に取得する **遅延読み込み (Lazy Loading)** を有効にできます。パッケージの追加だけでは有効になりません。
+
+> [!IMPORTANT]
+> 遅延読み込みプロキシには、継承可能なエンティティクラスと、オーバーライド可能な `virtual` のナビゲーションプロパティが必要です。この章のエンティティ定義で有効化する場合は、`Blog.Posts`、`Blog.Contributors`、`Post.Blog`、`Contributor.Blog` を `virtual` に変更してください。変更せずに有効化した SQLite / EF Core 10.0.11 の対照では、モデルの初期化時に `InvalidOperationException` が発生し、クエリは実行されませんでした。
 
 しかし、これは典型的な **N+1 問題** を引き起こします。
 
@@ -1299,10 +1302,15 @@ Azure SQL Database はサービスレベルと計算サイズごとにセッシ�
 プールされた接続がすべて使用中で、プール サイズの制限値に達した可能性があります。
 ```
 
-上の 3 レプリカ・`Max Pool Size=10` の実測では、投げた 300 件の同時クエリのうち成功は 60 件で、**残り 240 件がこの例外で失敗** しました。
+上の 3 レプリカ・`Max Pool Size=10` の実測では、投げた 300 件の同時クエリのうち成功は 60 件で、**残り 240 件がタイムアウトと集計されました**。この集計だけでは、240 件それぞれの例外型やエラー番号までは区別していません。
 
 > [!TIP]
-> インスタンス数を増やす予定があるなら、**「1 インスタンスあたりのプール上限 × 想定インスタンス数」がデータベース側の上限を超えないか** を先に計算してください。接続数はドライバー側の設定なので、EF Core ではなく接続文字列（`Max Pool Size` など）で調整します。
+> この例のように各インスタンスが 1 つの接続プールを使う構成では、**「1 インスタンスあたりのプール上限 × 想定インスタンス数」がデータベース側のセッション数の上限を超えないか** を先に計算してください。接続数はドライバー側の設定なので、EF Core ではなく接続文字列（`Max Pool Size` など）で調整します。
+
+> [!NOTE]
+> **接続数（セッション）とワーカー数は別の上限です。** SqlClient 6.1.6 から専用の Azure SQL Database (Basic) に接続する対照を行いました。Basic の上限はセッション 300・ワーカー 30 です。接続を返さず 301 回逐次取得する対照では、`Max Pool Size=299` は 299 接続を保持して残り 2 回がプール取得待ちのタイムアウトになり、`Max Pool Size=301` は 300 接続を保持して次の取得が `SqlException`（エラー番号 `10928`、`Resource ID: 2`）で拒否されました。
+>
+> 別のワーカー対照では、1 接続に 1 コマンドを割り当て、60 秒の `WAITFOR` を行う 36 要求を用意しました。`Max Pool Size=1` は 1 要求が成功し、35 要求がプール取得待ちで失敗しました。`Max Pool Size=40` で事前に 36 接続を取得してから同時実行すると、30 要求が成功し、6 要求はコマンド実行時に `SqlException`（`10928`、`Resource ID: 1`）で拒否されました。いずれも各対照の終了まで接続を保持した条件での結果であり、一般的なクエリの同時実行数や性能を保証する数値ではありません。
 
 ### 起動時マイグレーションの同時実行
 
@@ -1457,10 +1465,14 @@ flowchart TB
 - [EntityFrameworkQueryableExtensions.ToQueryString メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.entityframeworkqueryableextensions.toquerystring?view=efcore-10.0)
 - [追跡クエリと非追跡クエリ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/tracking)
 - [関連データの読み込み | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/related-data/)
+- [遅延読み込み | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/related-data/lazy)
 - [ページネーション | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/querying/pagination)
 - [データの保存 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/)
 - [トランザクションの使用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/transactions)
 - [高度なパフォーマンストピック | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/performance/advanced-performance-topics)
 - [Azure SQL Database の論理サーバーのリソース制限 | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/azure-sql/database/resource-limits-logical-server?view=azuresql)
+- [単一データベースの DTU リソース制限 | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/azure-sql/database/resource-limits-dtu-single-databases?view=azuresql)
+- [Azure SQL Database のリソース管理エラー | Microsoft Learn](https://learn.microsoft.com/ja-jp/azure/azure-sql/database/troubleshoot-common-errors-issues?view=azuresql#table-of-resource-governance-error-messages)
+- [SQL Server の接続プール | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/connect/ado-net/sql-server-connection-pooling?view=sql-server-ver17)
 - [EF Core アプリケーションのテスト | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/testing/)
 - [ASP.NET Core での統合テスト | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/test/integration-tests?view=aspnetcore-10.0)

@@ -276,6 +276,11 @@ CREATE TABLE [Products] (
 >
 > チェック制約は「アプリケーションのバグや別経路からの書き込みでも不正なデータが入らない」という最後の砦です。利用者に見せるバリデーションは、アプリケーション側でも別途実装してください。
 
+> [!NOTE]
+> 「保存前に検証しない」は、任意の数値をそのまま保存できるという意味ではありません。上の `decimal(18,2)` 列を使った Azure SQL / EF Core 10.0.11 / Microsoft.Data.SqlClient 6.1.6 の対照では、正の値でも `Price = 0.004m` はチェック制約違反になり、`Price = 0.005m` は `0.01` として保存されました。SqlClient の公式実装では、既定でパラメーターのスケールに合わせて数値を丸めます。元の入力値の小数桁数の検証と、保存される値に対するチェック制約は区別してください。
+>
+> 桁数の上限も別です。`decimal(18,2)` の整数部は最大 16 桁で、同じ対照では `9999999999999999.99` を保存できましたが、`10000000000000000` は保存できませんでした。後者の `DbUpdateException` の内部例外は、チェック制約違反の `SqlException` ではなく、SqlClient のパラメーター値域検査による `ArgumentException` でした。
+
 > [!TIP]
 > よく使われるチェック制約の一部は、コミュニティパッケージの [EFCore.CheckConstraints](https://github.com/efcore/EFCore.CheckConstraints) で構成できます。EF Core の公式[チェック制約の説明](https://learn.microsoft.com/ja-jp/ef/core/modeling/indexes#check-constraints)も、このパッケージを紹介しています。
 
@@ -1284,6 +1289,9 @@ dotnet_diagnostic.CA1056.severity = none
 
 ## 5. 参考ドキュメント
 
+- [エンティティのプロパティ：有効桁数と小数点以下桁数 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/entity-properties#precision-and-scale)
+- [decimal と numeric | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/t-sql/data-types/decimal-and-numeric-transact-sql?view=sql-server-ver17)
+- [SqlClient 6.1.6 の decimal パラメーター処理 | GitHub](https://github.com/dotnet/SqlClient/blob/v6.1.6/src/Microsoft.Data.SqlClient/netcore/src/Microsoft/Data/SqlClient/TdsParser.cs#L9737-L9777)
 - [外部キーと主キー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/foreign-and-principal-keys)
 - [キー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/keys)
 - [キーなしエンティティ型 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/keyless-entity-types)
