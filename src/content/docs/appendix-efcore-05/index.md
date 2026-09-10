@@ -1036,7 +1036,7 @@ WHERE [b].[Id] IN (1, 2, 3)
 ```
 
 > [!NOTE]
-> EF Core 10.0.11 でクエリ単位に使える指定は `EF.Parameter` と `EF.Constant` で、公開 API に `EF.MultipleParameters` はありません。個別パラメーター方式を基本にするなら全体設定を `MultipleParameters` のままにし、一部のクエリだけ `EF.Parameter` または `EF.Constant` で変更すると、Context の設定をクエリごとに切り替えずに済みます。
+> EF Core 10.0.11 には `EF.Parameter`、`EF.Constant` に加えて、リレーショナル側の `EFExtensions` が C# 14 の静的拡張メソッドとして提供する `EF.MultipleParameters` もあります（[公式ソースの宣言](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.Relational/EFExtensions.cs#L15-L35)）。個別パラメーター方式を基本にするなら全体設定を `MultipleParameters` のままにし、一部のクエリだけ `EF.Parameter` または `EF.Constant` で変更すると、Context の設定をクエリごとに切り替えずに済みます。
 
 | `ParameterTranslationMode` | 動作 |
 | --- | --- |
