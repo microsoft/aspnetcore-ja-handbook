@@ -314,7 +314,7 @@ SELECT [Id] ...
 > 多くのテーブルにトリガーがある場合は、`IModelFinalizingConvention` を実装したモデル構築規約で全テーブルにまとめて適用する方法が公式に案内されています。
 
 > [!TIP]
-> SQLite にも同種の制限があります。EF Core は `RETURNING` 句を使うため、**AFTER トリガーを持つテーブルや仮想テーブル**では同じ構成が必要です。こちらも EF Core 7 の破壊的変更として影響度 High で挙げられています。
+> SQLite では `RETURNING` 句の制限に注意が必要です。**AFTER トリガーが変更した値を保存時に読み戻す場合や、仮想テーブルを更新する場合**は、テーブルに `UseSqlReturningClause(false)` を設定する方法が公式に案内されています。EF Core 10.0.11 / SQLite の対照では、AFTER トリガー後の保存値は `after` でも、既定の読み戻し値は `before` でした。また、FTS5 仮想テーブルの更新は `RETURNING` を含む既定の SQL では失敗しました。`UseSqlReturningClause(false)` を設定すると、それぞれ保存後の値の読み戻しと更新が成功しました。
 
 ### 保存をストアドプロシージャに割り当てる
 
@@ -499,7 +499,7 @@ FROM [Blogs] AS [b]
 > [!NOTE]
 > この機能は **複合型 (`ComplexProperty`) としてマッピングした場合にのみ動作します。** 公式ドキュメントは「所有型 (owned entity type) としてマッピングした場合は動作しない」と明記しています。既存のコードで `OwnsOne(...).ToJson()` を使っている場合は、複合型への移行が必要です。
 >
-> なお、生成される SQL はデータベースのバージョンによって変わります。ネイティブの `json` 型が使える SQL Server 2025 では、上の `JSON_MODIFY` ではなく、より効率的な `modify` 関数が使われます。
+> ネイティブの `json` 型に対応する SQL Server 2025 では、EF Core は `JSON_MODIFY` ではなく `modify` メソッドを使って更新できます。EF Core 10.0.11 / SQL Server 2025 17.0.4085.5 の x64 環境では、プロバイダーに `UseCompatibilityLevel(170)` を指定し、実際の列型が `json` であること、生成された SQL が `.modify(...)` を使うこと、`Views` が 10 から 11 に更新されることを確認しました。この測定は SQL Server 2022 の `JSON_MODIFY` の記録とは別です。なお、確認した[公式ドキュメント](https://learn.microsoft.com/ja-jp/sql/t-sql/data-types/json-data-type?view=sql-server-ver17#the-modify-method)では、SQL Server 2025 の `json` 型と `modify` メソッドはプレビューとされています。この機能確認だけで、他の構成に対する性能差までは判断できません。
 
 > [!IMPORTANT]
 > `ExecuteUpdateAsync` / `ExecuteDeleteAsync` はチェンジトラッカーを経由しません。そのため、`DbContext` がすでに追跡しているエンティティの状態は更新されず、`SaveChangesAsync` によるカスケード削除や監査ログ（`SaveChangesAsync` のオーバーライド）も動作しません。実行後は `ChangeTracker.Clear()` を呼ぶか、新しい `DbContext` を使って読み直してください。
@@ -1413,7 +1413,7 @@ Azure SQL Database の Business Critical（2 vCore）へ `Microsoft.Data.SqlClie
 | `ReadOnly` | `READ_ONLY` |
 
 > [!NOTE]
-> オンプレミスの SQL Server では Always On 可用性グループの読み取り可能セカンダリと読み取り専用ルーティング、PostgreSQL ではストリーミングレプリケーションのホットスタンバイ、MySQL ではリードレプリカが同様の役割を果たします。いずれの場合も、アプリケーション側から見れば「別の接続文字列で読み取り専用のエンドポイントに接続する」という点は共通です。
+> SQL Server では、[Always On 可用性グループの読み取り可能セカンダリと読み取り専用ルーティング](https://learn.microsoft.com/ja-jp/sql/database-engine/availability-groups/windows/configure-read-only-routing-for-an-availability-group-sql-server?view=sql-server-ver16)を利用できます。読み取り可能セカンダリ、リスナー、ルーティング先を構成し、読み取り側の接続文字列に `ApplicationIntent=ReadOnly` を指定します。接続先サーバー名を別々にする方式だけでなく、同じリスナーへの接続を読み取り先へ振り分ける方式です。
 
 > [!NOTE]
 > **Always On の読み取り専用ルーティングと手動切替も、Azure 上で実測しました。** 1 台の x64 VM 上に SQL Server 2022 の 2 インスタンスを置き、Linux の `CLUSTER_TYPE=NONE` の読み取りスケール用可用性グループへ EF Core 10.0.8 から接続しました。同じリスナーに対して `ApplicationIntent` を変えると、プライマリと読み取り可能セカンダリへ振り分けられ、後者への書き込みは拒否されました。手動で役割を切り替えた後も、読み取りと書き込みの接続先を確認できました。
