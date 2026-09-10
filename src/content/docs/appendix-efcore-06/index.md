@@ -326,8 +326,11 @@ public sealed class SqliteContextFactory : IDisposable
 > EF Core が書き込んだ値にはオフセットが付くため往復は一致しますが、**他のシステムや旧バージョンが書き込んだオフセットなしのデータを読む場合は結果が変わります。** すぐに修正できない場合の一時的な回避策として、次の `AppContext` スイッチで従来の挙動に戻せます（公式は「最後の手段」と位置づけています）。
 >
 > ```csharp
+> // SQLite を初めて使う前に、アプリケーションの起動処理で設定する
 > AppContext.SetSwitch("Microsoft.Data.Sqlite.Pre10TimeZoneHandling", isEnabled: true);
 > ```
+>
+> このスイッチは SQLite の読み取り処理の型が初期化されるときに一度だけ読み取られます。[EF Core 10.0.11 の公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/Microsoft.Data.Sqlite.Core/SqliteValueReader.cs#L14-L15)と実測でも、初回読み取り後に有効へ変えても結果は UTC のままでした。別プロセスで最初の SQLite 操作前に設定した場合は、日本時間のローカルオフセット `+09:00` で読み取れました。
 >
 > **なお、重大度「高」の破壊的変更はこれを含めて 3 つあります。** 残る 2 つも日本時間（UTC+9）の環境で実測しました。
 >
@@ -426,7 +429,7 @@ var data = await db.Hexes.Select(b => EF.Functions.Unhex(b.S)!).ToListAsync();
 
 #### 先行書き込みログ (WAL) が有効かを確認する
 
-EF Core 7 以降、SQLite プロバイダーは `RETURNING` 句を使って保存します。この方式は効率的ですが、**テーブルがロックされているときに自動で再試行しません。** 先行書き込みログ (write-ahead logging: WAL) が無効なデータベースを Web アプリケーションのような多スレッド環境で使うと、ロック関連のエラーに遭遇しやすくなります。
+EF Core 7 以降、SQLite プロバイダーは `RETURNING` 句を使って保存します。この方式は効率的ですが、**テーブルがロックされているときに自動で再試行しません。** [先行書き込みログ (Write-Ahead Logging: WAL)](https://learn.microsoft.com/ja-jp/dotnet/standard/data/sqlite/async) が無効なデータベースを Web アプリケーションのような多スレッド環境で使うと、ロック関連のエラーに遭遇しやすくなります。
 
 `journal_mode` を実測すると、経路によって既定値が違いました。
 
@@ -552,7 +555,7 @@ public class BlogsApiTests(BloggingApiFactory factory) : IClassFixture<BloggingA
 > [!WARNING]
 > **`DbContextOptions` を `RemoveAll` しただけでは、既定のプロバイダーは外れません。** `AddDbContext` は `DbContextOptions<TContext>` と `DbContextOptions` のほかに `IDbContextOptionsConfiguration<TContext>` を登録します。オプションの組み立ては後者を通じて行われるため、前の 2 つだけを取り除いて `UseSqlite` を追加すると、**本番用のプロバイダーとテスト用のプロバイダーが両方登録された状態**になります。
 >
-> この状態で `DbContext` を解決すると、次の例外が発生します（実測では API 呼び出しが 500 になりました）。
+> この状態では、`DbContext` インスタンスの DI 解決自体は成功しても、モデルを初期化する段階で次の例外が発生します。`context.Model` へのアクセスで確認でき、API のクエリ実行でも発生します（実測では API 呼び出しが 500 になりました）。
 >
 > ```text
 > System.InvalidOperationException: Services for database providers

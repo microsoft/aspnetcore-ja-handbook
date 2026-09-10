@@ -125,8 +125,8 @@ LEFT JOIN (
 ) AS [s] ON [p].[AlternateKey] = [s].[PostsAlternateKey]
 ```
 
-> [!WARNING]
-> `UsingEntity` には引数を 1 つだけ取るオーバーロードもありますが、そちらで `HasForeignKey` と `HasPrincipalKey` を同時に指定すると、**規約による主キー参照の外部キーが残ったまま、代替キー参照の列が追加で作られます**。実測では `PostTag` に `PostsId` と `PostsAlternateKey` の両方が生成され、後者は常に `NULL` のままでした。代替キーを使うときは公式サンプルどおり 2 引数のオーバーロードを使い、`HasPrincipalKey` だけを指定してください。
+> [!NOTE]
+> この例では、[公式サンプル](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/many-to-many#many-to-many-with-alternate-keys)と同じく、左右の関係をそれぞれ構成する 2 引数の `UsingEntity` オーバーロードを使います。各外部キーの参照先は `HasPrincipalKey` で指定します。
 
 ### 1 つのテーブルを複数のエンティティで共有する
 
@@ -277,7 +277,7 @@ CREATE TABLE [Products] (
 > チェック制約は「アプリケーションのバグや別経路からの書き込みでも不正なデータが入らない」という最後の砦です。利用者に見せるバリデーションは、アプリケーション側でも別途実装してください。
 
 > [!TIP]
-> 「主キーは正の数」「終了日は開始日以降」のようによくあるチェック制約は、コミュニティパッケージの [EFCore.CheckConstraints](https://github.com/efcore/EFCore.CheckConstraints) を使うと規約として自動生成できます。公式ドキュメントもこのパッケージを紹介しています。
+> よく使われるチェック制約の一部は、コミュニティパッケージの [EFCore.CheckConstraints](https://github.com/efcore/EFCore.CheckConstraints) で構成できます。EF Core の公式[チェック制約の説明](https://learn.microsoft.com/ja-jp/ef/core/modeling/indexes#check-constraints)も、このパッケージを紹介しています。
 
 ### シャドウプロパティとバッキングフィールド
 
@@ -342,7 +342,7 @@ public class Product
     public int Id { get; set; }
     public decimal Price => _price;          // 読み取り専用
 
-    public void SetPrice(decimal value)      // 変更は必ずこのメソッド経由
+    public void SetPrice(decimal value)      // アプリケーションからの変更用
     {
         if (value < 0) throw new ArgumentOutOfRangeException(nameof(value));
         _price = value;
@@ -359,7 +359,17 @@ modelBuilder.Entity<Product>()
 これにより、データベースから読み込むときは `SetPrice` を経由せずに `_price` へ直接書き込まれます。実測でも、データベースから 1 件読み出したあとの `SetPrice` の呼び出し回数は、保存時の 1 回のままで増えませんでした。ドメインの不変条件を守るための検証は「アプリケーションからの変更」にだけ適用され、「データベースからの復元」では走らない、ということです。
 
 > [!WARNING]
-> **`HasField` を省略すると、この例では列そのものが作られません。** 公式ドキュメントは規約で `_price` のようなフィールドが発見されると説明していますが、その前提として「**getter と setter を持つ public プロパティ**が規約でモデルに含まれる」という規約があります。上の `Price` は getter しか持たないため、そもそもモデルに含まれず、実測でも `Products` テーブルには `Id` 列しか生成されませんでした。読み取り専用プロパティを永続化したい場合は、`HasField` で明示的に構成してください。
+> **この読み取り専用の `Price` を永続化するには、`Property(p => p.Price)` でモデルに含めます。** [公式ドキュメント](https://learn.microsoft.com/ja-jp/ef/core/modeling/backing-field#basic-configuration)が説明するように、バッキングフィールドの規約による発見は、モデルに含まれるプロパティが対象です。上の構成から `HasField` だけを省略しても、`Property` が残っていれば `_price` は命名規約で発見されます。`HasField` はフィールドを明示的に指定する設定であり、このフィールド名では必須ではありません。
+>
+> EF Core 10.0.11 / SQLite で、`SetPrice(123m)` の後に保存・再読取を行って比較しました。
+>
+> | `Price` の構成 | `Price` 列 | 再読取した値 |
+> | --- | --- | --- |
+> | 構成なし | 作られない | `0` |
+> | `Property(p => p.Price)` のみ | 作られる | `123` |
+> | `Property(p => p.Price).HasField("_price")` | 作られる | `123` |
+>
+> いずれも `SetPrice` の呼び出し回数は最初の 1 回のままでした。構成全体を省略した場合と、`HasField` だけを省略した場合を混同しないでください。
 
 #### プロパティとフィールドのどちらを使うかを指定する
 
@@ -546,13 +556,13 @@ modelBuilder.Entity<Blog>()
     .Property(b => b.Id)
     .Metadata.SetValueGenerationStrategy(SqliteValueGenerationStrategy.None);
 
-// 方法 2: 値生成そのものを行わない（アプリケーションが値を設定する）
+// 方法 2: EF Core で値生成の対象にしない（アプリケーションが値を設定する）
 modelBuilder.Entity<Blog>()
     .Property(b => b.Id)
     .ValueGeneratedNever();
 ```
 
-どちらでも `AUTOINCREMENT` が消えることを確認しました。
+どちらの構成でも、生成された DDL から `AUTOINCREMENT` が消えることを確認しました。
 
 ```sql
 -- 既定
@@ -687,15 +697,15 @@ await db.SaveChangesAsync();
 > [!WARNING]
 > 主キーが `IDENTITY` 列の場合、この復元は `Cannot insert explicit value for identity column in table 'Employees' when IDENTITY_INSERT is set to OFF.` で失敗します。復元を運用として想定するなら、公式サンプルと同じく **主キーをアプリケーション側で生成する型（`Guid` など）にしておく**必要があります。
 
-#### 履歴は書き換えられない
+#### システムバージョン管理中の履歴は直接更新できない
 
-履歴テーブルを直接 `UPDATE` しようとすると、SQL Server 自身が拒否します（実測）。
+`SYSTEM_VERSIONING = ON` の状態で履歴テーブルを直接 `UPDATE` しようとすると、SQL Server 自身が拒否します（実測）。
 
 ```text
 Cannot update rows in a temporal history table 'V46T3.dbo.EmployeesHistory'.
 ```
 
-監査ログをアプリケーション側のテーブルで自前実装すると、そのテーブルも普通のテーブルなので書き換えられてしまいます。テンポラルテーブルはこの点がデータベースエンジンによって保証されます。
+ここで確認したのは、システムバージョン管理が有効な間の直接更新の拒否です。この結果を、管理操作も含めた改ざん防止全般の保証とは扱わないでください。運用設計では、[システムバージョン管理を停止する場合の公式の注意事項](https://learn.microsoft.com/ja-jp/sql/relational-databases/tables/temporal/stop-system-versioning?view=sql-server-ver16)も確認してください。
 
 > [!NOTE]
 > 通常のクエリ（テンポラル演算子を使わないクエリ）は `FOR SYSTEM_TIME` を付けないため、履歴は一切見えません。テンポラルテーブルにしても既存のコードの動作は変わりません。
@@ -926,7 +936,7 @@ CREATE TABLE [Items] (
 ) WITH (MEMORY_OPTIMIZED = ON);
 ```
 
-ファイルグループを追加するスクリプトは `SERVERPROPERTY('IsXTPSupported') = 1` で保護されているため、メモリ最適化に対応していないエディションでは何も実行されません。
+生成されたスクリプトでは、ファイルグループを準備する部分に `SERVERPROPERTY('IsXTPSupported') = 1` などの条件が付いていました。ただし、後続の `CREATE TABLE ... WITH (MEMORY_OPTIMIZED = ON)` はその条件の外側です。**対応していないエディションで DDL 全体が何もせず終了する、という意味ではありません。** ここで確認したのは生成 DDL であり、非対応エディションへの適用成功ではありません。
 
 ### 計算列
 
@@ -961,7 +971,9 @@ CREATE TABLE [People] (
 `FirstName = "Taro"` / `LastName = "Yamada"` を保存して読み直すと、`DisplayName` は `Taro Yamada`、`PersistedName` は `Yamada, Taro` になりました（実測）。
 
 > [!WARNING]
-> 計算列のプロパティに C# 側で値を代入しても、その値はデータベースに書き込まれません。実測では例外も発生せず `SaveChanges` が成功し、値は無視されました。公式ドキュメントも「既定値の代わりに明示的な値を指定することはできるが、計算列に対して同じことはできない」と述べています。**アプリケーションから書き換えたい値には計算列を使わないでください。**
+> 上の構成では、計算列のプロパティに C# 側で値を代入しても、その値でデータベースの計算結果を上書きできません。[公式ドキュメント](https://learn.microsoft.com/ja-jp/ef/core/modeling/generated-properties#overriding-value-generation)も、列の既定値は明示的な値で置き換えられる一方、計算列では同じことはできないと説明しています。**アプリケーションから書き換えたい値には計算列を使わないでください。**
+>
+> EF Core 10.0.11 / SQL Server 2022 で上の 2 列を実測しました。計算列のプロパティだけを変更した場合、`SaveChangesAsync` は例外なく `0` を返し、保存 SQL は発行されませんでした。別の `DbContext` で再読込すると、DB の値は `Taro Yamada` / `Yamada, Taro` のままでした。さらに `FirstName` を `"Jiro"` に変えた場合、UPDATE の書込対象は `FirstName` だけになり、再読込した計算列は `Jiro Yamada` / `Yamada, Jiro` になりました。ここで確認したのは **DB の値と書込 SQL** であり、C# オブジェクトへの代入そのものが取り消されるという意味ではありません。
 
 > [!NOTE]
 > 「最終更新日時」を格納計算列で管理したくなりますが、多くのデータベースは計算列に `GETDATE()` のような関数を指定できません。公式ドキュメントはこの用途にはデータベーストリガーを使うよう案内しています。
@@ -1000,7 +1012,7 @@ MAXSIZE = 10 GB, EDITION = ''GeneralPurpose'', SERVICE_OBJECTIVE = ''GP_S_Gen5_1
 END
 ```
 
-実際に Azure SQL Database（サーバーレスの `GP_S_Gen5_1`、最大サイズ 1 GB で作成）に対して `dotnet ef database update` を実行したところ、適用後に最大サイズが **10 GB** に変わっていることを確認しました（実測）。
+`MAXSIZE = 10 GB` を含むこの SQL の生成と、Azure SQL Database を対象にした `dotnet ef database update` による `Initial` の適用完了を確認しました。これは生成 SQL と適用コマンドの結果であり、適用前後の最大サイズを照会して比較した結果とは区別しています。
 
 > [!WARNING]
 > `ALTER DATABASE` はトランザクションの中で実行できません。実測では適用時に次の警告が出ました。
@@ -1035,11 +1047,11 @@ options.UseSqlServer(connectionString, o => o.UseCompatibilityLevel(160));
 | `UseSqlServer` | 150 | SQL Server 2019 |
 | `UseAzureSql` | 170 | Azure SQL Database |
 
-この差は生成される SQL を変えます。`Math.Max` / `Math.Min` は互換性レベル 160 以上で `GREATEST` / `LEAST` に翻訳されますが、**それ未満では翻訳自体ができず例外になります。** SQL Server 2022（データベース側の互換性レベルは 160）に対して、EF Core 側の設定だけを変えて実測した結果です。
+この差は生成される SQL を変えます。`Math.Max` / `Math.Min` は互換性レベル 160 以上で `GREATEST` / `LEAST` に翻訳されます。次の `Where` 内の `Math.Max` について、EF Core 側の互換性レベルだけを変えて `ToQueryString()` を呼ぶと、**160 未満では SQL 翻訳時に例外になりました。** これは SQL 翻訳の実測であり、データベースへのクエリ実行ではありません。最終 `Select` で許されるクライアント評価とは区別してください。
 
 ```csharp
 // Rating と Rating2 の大きいほうが 4 を超えるブログ
-var blogs = await db.Blogs.Where(b => Math.Max(b.Rating, b.Rating2) > 4).ToListAsync();
+var sql = db.Blogs.Where(b => Math.Max(b.Rating, b.Rating2) > 4).ToQueryString();
 ```
 
 | EF Core 側の構成 | 結果 |
@@ -1056,7 +1068,7 @@ WHERE GREATEST([b].[Rating], [b].[Rating2]) > 4
 ```
 
 > [!WARNING]
-> **SQL Server 2022 を使っていても、EF Core 側で互換性レベルを上げなければ新しい関数は使われません。** 上の例では、データベース側の `compatibility_level` が 160 であるにもかかわらず、EF Core が既定の 150 で動作したため翻訳に失敗しました。逆に、**データベースが古いのに EF Core 側だけ高いレベルを構成すると、生成された SQL をデータベースが実行できません。** 公式も「これは EF 自身の構成であり、実際のデータベースの互換性レベルには影響しない」と明記しています。両者を揃えてください。現在の値は次の SQL で確認できます。
+> **SQL Server 2022 を接続先に指定しても、EF Core の互換性レベルは自動では変わりません。** 上の翻訳結果は EF Core 側の設定に基づくもので、接続先のバージョンやデータベース側の設定を検査した結果ではありません。逆に、データベースが対応しない機能を EF Core 側だけで有効にすると、生成された SQL を実行できない場合があります。公式も「これは EF 自身の構成であり、実際のデータベースの互換性レベルには影響しない」と明記しています。接続先が対応するレベルを構成してください。データベースの現在の値は次の SQL で確認できます。
 >
 > ```sql
 > -- SQL Server
@@ -1130,7 +1142,7 @@ protected override void ConfigureConventions(ModelConfigurationBuilder configura
 > 指定する型には、具体的な型だけでなく基底型・インターフェイス・ジェネリック型定義も使えます。複数の構成が一致する場合は、公式ドキュメントによると「インターフェイス → 基底型 → ジェネリック型定義 → 非 NULL 許容の値型 → 完全一致の型」の順に、**具体性の低いものから順に適用**されます。したがって、より具体的な指定が後勝ちになります。
 
 > [!TIP]
-> Ruby on Rails や Django のように、モデル定義側で列長を宣言する ORM に慣れていると「毎回 `HasMaxLength` を書くのか」と感じるかもしれません。EF Core では `ConfigureConventions` がその役割を担い、プロジェクト全体の既定値をコード 1 か所で決められます。
+> **Django** の `models.CharField(max_length=200)` は、モデル側に最大長を指定する書き方です（[Microsoft の移行例](https://learn.microsoft.com/ja-jp/sql/connect/python/mssql-django/migrate-from-postgresql?view=sql-server-ver17)）。Django 6.1.1 でもフィールドの `max_length` が `200` になることを実測しました。ここで確認したのはモデルのメタデータであり、データベースによる長さ制約の強制ではありません。EF Core では `ConfigureConventions` により、複数のプロパティに適用する既定値をコード 1 か所にまとめられます。
 
 ### グローバルクエリフィルターと名前付きクエリフィルター
 
@@ -1242,7 +1254,7 @@ INNER JOIN (
 > 論理削除の運用に 1 か所でも物理削除の経路が混ざると、データベース側のカスケードによって子まで消えます。論理削除を使う場合は `OnDelete(DeleteBehavior.Restrict)` などでデータベースのカスケードを外し、削除は必ずフラグの更新として行ってください。
 
 > [!NOTE]
-> **Django** の `Manager` によるデフォルトクエリセットの絞り込みや、**Laravel** の Eloquent におけるグローバルスコープが同種の機能に相当します。**Hibernate** では、常に適用される静的な制約が `@SQLRestriction`（`@Where` は Hibernate 6.3 で非推奨になり、Hibernate 7 で削除されました）、セッション単位で有効・無効を切り替えられる動的なフィルターが `@FilterDef` / `@Filter` と、2 つの仕組みに分かれています。EF Core 10 の名前付きフィルターは、後者の `@FilterDef` / `@Filter` に近い粒度の制御を提供します。
+> EF Core 10 の名前付きクエリフィルターでは、複数の条件に名前を付け、必要なフィルターだけを無効にできます。論理削除とテナントの条件を分けて管理したい場合に使います。
 
 ---
 
@@ -1256,7 +1268,9 @@ INNER JOIN (
 | `CA2227` | コレクションプロパティのセッターを削除して読み取り専用にすべき |
 | `CA1056` | `Url` プロパティは `string` ではなく `Uri` にすべき |
 
-これらは汎用のライブラリ設計を想定したルールであり、**EF Core のエンティティには当てはまりません。** EF Core はコレクションナビゲーションの設定やリレーションシップの修正のためにセッターを利用しますし、`Uri` 型は標準では列にマッピングされません。エンティティを置いたフォルダーに対して、`.editorconfig` でこれらのルールを無効化するのが実務上の対応です。
+**EF Core のエンティティだから、これらのルールを一律に無効化する必要があるわけではありません。** [公式のナビゲーションの説明](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/navigations#collection-navigations)は、コレクションナビゲーションにセッターは不要としています。また `Uri` には[組み込みの値コンバーター](https://learn.microsoft.com/ja-jp/ef/core/modeling/value-conversions#built-in-converters)があり、標準でマッピングできない型ではありません。
+
+EF Core 10.0.11 と SQLite で、セッターのない `List<Post>` と、明示的なコンバーター構成を付けない `Uri` プロパティを持つモデルを保存し、別の `DbContext` で読み直しました。子のコレクション、親子の参照、URI の値を取得できました。警告への対応はモデルの公開設計に合わせて選び、意図して現在の形を維持する場合だけ、次のように対象フォルダーへ抑制を限定します。
 
 ```ini
 # プロジェクト直下の Models フォルダーを対象にする場合
@@ -1273,7 +1287,7 @@ dotnet_diagnostic.CA1056.severity = none
 - [外部キーと主キー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/foreign-and-principal-keys)
 - [キー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/keys)
 - [キーなしエンティティ型 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/keyless-entity-types)
-- [シャドウプロパティとインジケータープロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/shadow-properties)
+- [シャドウプロパティとインデクサープロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/shadow-properties)
 - [バッキングフィールド | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/backing-field)
 - [シーケンス | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/sequences)
 - [Add と AddAsync の違い | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/miscellaneous#add-versus-addasync)

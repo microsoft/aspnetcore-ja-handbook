@@ -199,7 +199,7 @@ Post {Id: 1} Unchanged
 
 #### 保存前のキーには一時値が入る
 
-`Add` した直後のエンティティは、まだデータベースに行がないため主キーの値が決まっていません。このとき EF Core は **一時値 (temporary value)** を割り当てます。`DebugView` を見ると、実際の値とはかけ離れた大きな負の数が表示されます（実測）。
+ここでは、データベースで生成される `int` 主キーを例にします。`Add` した直後は保存後のキーがまだ分からないため、EF Core は **一時値 (temporary value)** を割り当てます。`DebugView` には負の一時値が表示されます（実測）。すべての主キーがこの動作になるわけではなく、SQL Server プロバイダーの [GUID 主キー](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/value-generation#guids)のように、クライアント側で値が生成される場合もあります。
 
 ```text
 Blog {Id: -2147482647} Added
@@ -225,7 +225,7 @@ Console.WriteLine(db.Entry(blog).Property(x => x.Id).IsTemporary); // False
 
 ### 保存のバッチ処理
 
-EF Core は `SaveChanges` の呼び出しごとに、追跡している変更をまとめて 1 回の往復で送ります。ただし何件でも 1 回にまとめるわけではありません。公式ドキュメントは SQL Server について「4 文未満ではバッチ処理は概して効率が悪く、40 文前後を超えると利点が薄れるため、**既定では 1 回のバッチで最大 42 文まで**を実行し、残りは別の往復で実行する」と説明しています。
+EF Core は `SaveChanges` で追跡している変更をバッチにまとめ、データベースとの往復回数を抑えます。ただし、すべての変更が 1 回の送信で完結するわけではありません。公式ドキュメントは SQL Server について「4 文未満ではバッチ処理は概して効率が悪く、40 文前後を超えると利点が薄れるため、**既定では 1 回のバッチで最大 42 文まで**を実行し、残りは別の往復で実行する」と説明しています。
 
 実際に SQL Server 2022 に対して N 件の `Add` を保存し、発行された `DbCommand` の回数を数えたところ、公式の説明どおり 42 と 43 の間で分割されました（実測）。
 
@@ -257,23 +257,26 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 > | 既定（42） | 5,542 ms |
 > | 1000 | 272 ms |
 >
-> この数値はネットワーク遅延が大きい構成での測定であり、往復回数の削減がそのまま効いています。**同一ネットワーク内のデータベースでは差はここまで大きくなりません。**公式が「40 文前後を超えると利点が薄れる」としているとおり、既定値を変えるかどうかは必ず自分の環境で計測してから判断してください。
+> この数値は、当時の接続経路で 1,000 件を挿入し、`SaveChangesAsync` の時間を 3 回測った中央値です。この測定には、同一ネットワーク内での対照や通信遅延だけの切り分けは含まれていないため、別の環境でも同じ差が出るとは限りません。公式が「40 文前後を超えると利点が薄れる」としているとおり、既定値を変えるかどうかは必ず自分の環境で計測してから判断してください。
 
 > [!TIP]
 > そもそも大量の行を同じ条件で更新・削除するなら、バッチサイズを調整するより `ExecuteUpdate` / `ExecuteDelete` を使うほうが効果的です。公式も、変更追跡を経由せず 1 回の往復で完結する点を利点として挙げています。詳しくは後述の [一括更新・一括削除](#一括更新一括削除) を参照してください。
 
 ### データベーストリガーがあるテーブルの保存
 
-EF Core は `SaveChanges` のとき、SQL Server では T-SQL の **`OUTPUT` 句** を使って生成された値（`IDENTITY` の主キーなど）を効率よく取得します。ところが `OUTPUT` 句には制約があり、**トリガーが有効なテーブルには使えません**。
+EF Core は `SaveChanges` のとき、SQL Server では T-SQL の **`OUTPUT` 句** を使って生成された値（`IDENTITY` の主キーなど）を効率よく取得します。ところが **`INTO` のない `OUTPUT` 句は、その操作に対応するトリガーが有効なテーブルには使えません**。`OUTPUT ... INTO` とは制約が異なります。
 
-トリガーを付けたテーブルに対して何も構成せずに保存すると、実測では次の例外が発生しました。
+トリガーを付けたテーブルに対して何も構成せずに保存すると、EF Core 10.0.11 と SQL Server 2022 での実測では、次の `DbUpdateException` が発生しました。SQL Server のエラー番号 334 と詳細メッセージは**内部例外の `SqlException`** に入ります。
 
 ```text
-DbUpdateException: The target table 'Blogs' of the DML statement cannot have any
+DbUpdateException: Could not save changes because the target table has database triggers.
+Please configure your table accordingly, see
+https://aka.ms/efcore-docs-sqlserver-save-changes-and-output-clause for more information.
+→ SqlException (Number=334): The target table 'Blogs' of the DML statement cannot have any
 enabled triggers if the statement contains an OUTPUT clause without INTO clause.
 ```
 
-対処方法は 2 つあります。テーブルにトリガーがあることを EF Core に伝えるか、`OUTPUT` 句の使用を直接無効にします。
+対処方法は 2 つあります。テーブルにトリガーがあることを EF Core に伝えるか、`UseSqlOutputClause(false)` で、`OUTPUT` による直接の結果返却を避ける保存方式へ切り替えます。以下の方法 1 または方法 2 のいずれかを使います。`OUTPUT ... INTO` まで一律に禁止する設定という意味ではありません。
 
 ```csharp
 protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -282,20 +285,20 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
     modelBuilder.Entity<Blog>()
         .ToTable(tb => tb.HasTrigger("TR_Blogs_Insert"));
 
-    // 方法 2: OUTPUT 句の使用を無効にする
+    // 方法 2: 直接結果を返す OUTPUT を避ける保存方式に切り替える
     modelBuilder.Entity<Blog>()
         .ToTable(tb => tb.UseSqlOutputClause(false));
 }
 ```
 
-どちらを構成しても保存は成功しました（実測）。SQL Server で生成される SQL は次のように変わります。
+どちらの構成でも、有効な `AFTER INSERT` トリガーがあるテーブルへの保存は成功しました。以下は、同じ `Blog` モデルで **2 件を保存したときに観測した SQL の概略**です。比較用の既定方式の SQL は、トリガーを付けない条件で取得しました。生成される SQL の形は、保存する件数やモデルの構成にも依存します。
 
 ```sql
--- 既定: MERGE と OUTPUT 句で複数行をまとめて挿入し、生成された Id を一度に受け取る
+-- 2 件・トリガーなしの既定方式（観測した SQL の概略）
 MERGE ... INSERT ([Name]) VALUES (i.[Name])
 OUTPUT INSERTED.[Id], i._Position;
 
--- 構成後: 1 行ずつ INSERT し、その都度 SELECT で Id を取得する
+-- 2 件・トリガーありで方法 1 または方法 2 を構成（同一 DbCommand 内の SQL の概略）
 INSERT INTO [Blogs] ([Name]) VALUES (@p0);
 SELECT [Id] ...
 INSERT INTO [Blogs] ([Name]) VALUES (@p1);
@@ -306,7 +309,7 @@ SELECT [Id] ...
 > これは EF Core 7 で入った破壊的変更です。公式の破壊的変更一覧でも影響度 **High** に分類されており、「既定でより効率的な手法で保存するようになったが、その手法は対象テーブルにトリガーがある場合 SQL Server ではサポートされない」と説明されています。EF Core 6 以前から移行してきて保存だけが失敗する場合は、まずトリガーの有無を疑ってください。
 
 > [!NOTE]
-> 上の SQL のとおり、構成すると **1 行ずつの往復に戻る**ため、まとめて挿入する場合の性能は落ちます。公式もこの手法を「以前の、効率の劣る手法」と表現しています。トリガーがあるテーブルは必要な範囲に限定するのが望ましいです。
+> **SQL 文の数と、保存 SQL を送る `DbCommand` の数は別です。** 上の 2 件の INSERT / SELECT は、`HasTrigger` と `UseSqlOutputClause(false)` のどちらの構成でも、1 つの `DbCommand` にまとめて送られました。同じモデルで **10 件**を保存した対照実測では、両構成とも `MERGE ... OUTPUT ... INTO` と結果の SELECT を使い、保存 SQL のコマンド数は 1 でした（EF Core 10.0.11、SQL Server 2022）。[この版の SQL 生成実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.SqlServer/Update/Internal/SqlServerUpdateSqlGenerator.cs)にも、`INSERT` と SELECT、または `MERGE ... OUTPUT ... INTO` を使う分岐があります。この測定で数えたのは保存 SQL の `DbCommand` であり、トランザクション制御を含む通信全体の往復数ではありません。公式の[保存のバッチ処理](https://learn.microsoft.com/ja-jp/ef/core/performance/efficient-updating#batching)も、複数の SQL 文を 1 回の往復にまとめることを説明しています。「必ず 1 行につき 1 回の往復になる」とは考えず、生成 SQL と測定対象を確認してください。
 >
 > 多くのテーブルにトリガーがある場合は、`IModelFinalizingConvention` を実装したモデル構築規約で全テーブルにまとめて適用する方法が公式に案内されています。
 
@@ -389,7 +392,7 @@ END
 > [!TIP]
 > **すべての型・すべての操作に用意する必要はありません。** たとえば `DeleteUsingStoredProcedure` だけを構成すれば、挿入と更新は通常どおり EF Core が SQL を生成し、削除だけがストアドプロシージャになります。実際に `UpdateUsingStoredProcedure` だけを構成したところ、挿入は通常の `INSERT ... OUTPUT INSERTED.[Id]` のままで、更新だけが `EXEC [Docs_Update]` になりました。
 
-`HasRowsAffectedResultColumn` などで影響行数を返すようにしておくと、[楽観的同時実行制御](#楽観的同時実行制御)はストアドプロシージャでもそのまま機能します。ストアドプロシージャ側で `WHERE` に同時実行トークンを含め、`SELECT @@ROWCOUNT` で影響行数を返す構成にしておき、他のトランザクションが先に行を削除した状態で更新を試みたところ、期待どおり `DbUpdateConcurrencyException` が発生しました（実測）。
+`HasRowsAffectedResultColumn` などで影響行数を返すようにしておくと、EF Core は期待した行数と比較して競合を検出できます。実測では、`WHERE [Id] = @Id` で更新し、`SELECT @@ROWCOUNT` で影響行数を返すストアドプロシージャを使いました。別の操作で行を削除してから更新を試みると、0 行更新となり `DbUpdateConcurrencyException` が発生しました。この削除競合の実測には同時実行トークンを含めていません。同時更新をトークンで検出する場合は、[公式のストアドプロシージャの同時実行制御の説明](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-7.0/whatsnew#optimistic-concurrency)のように、トークンも `WHERE` の条件に含めます。
 
 ```text
 The database operation was expected to affect 1 row(s), but actually affected 0 row(s);
@@ -574,9 +577,9 @@ context.Database.AutoTransactionBehavior = AutoTransactionBehavior.Always;
 | `Always` | ユーザーのトランザクションがなければ常に作る。**往復が増えて性能が落ちる可能性がある** |
 | `Never` | 自動では決して作らない |
 
-SQL Server 2022 に対して、保存する行数とバッチサイズを変えながらトランザクションの開始回数を実測しました。
+SQL Server 2022 に対して、`MaxBatchSize(1)` に固定して 1 行または 3 行を保存し、`TransactionStarted` イベントから明示的なトランザクションの開始回数を数えました。
 
-| 設定 | 送るコマンド数 | トランザクション開始 |
+| 設定 | 保存行数（`MaxBatchSize(1)`） | トランザクション開始 |
 | --- | --- | --- |
 | `WhenNeeded`（既定） | 1 | 0 回 |
 | `WhenNeeded`（既定） | 3 | 1 回 |
@@ -585,7 +588,10 @@ SQL Server 2022 に対して、保存する行数とバッチサイズを変え�
 | `Never` | 1 | 0 回 |
 | `Never` | 3 | **0 回** |
 
-既定の `WhenNeeded` は、複数のコマンドに分かれるときだけトランザクションを張ります。なお EF Core は複数行の変更を 1 つのバッチにまとめるため、行数が増えてもコマンドが 1 つに収まるうちはトランザクションを作りません（上の表の「コマンド数」は `MaxBatchSize` を調整して分けたものです）。
+既定の `WhenNeeded` は、`DbCommand` の数だけで判断するわけではありません。1 つの `DbCommand` に複数の更新 SQL が含まれる場合など、必要に応じて明示的なトランザクションを作ります。追加の EF Core 10.0.11 / SQL Server 2022 の対照では、追跡中の 4 行を更新すると **`DbCommand` は 1 回でもトランザクション開始は 1 回**でした。上の表は、`MaxBatchSize(1)` に固定した保存行数と開始イベント数の記録です。
+
+> [!NOTE]
+> この追加対照と、後述のデッドロック再試行・保存ガードの追加対照では、ARM64 ホスト上で amd64 の SQL Server 2022 コンテナーをエミュレーション実行しました。[Microsoft のサポート対象は x86-64 の Linux ホストであり、エミュレーション環境は対象外](https://learn.microsoft.com/ja-jp/sql/linux/install-upgrade/quickstart-install-docker?view=sql-server-ver16)です。ここで示すのは、その条件での機能の観測結果であり、本番環境のサポートや性能を示すものではありません。
 
 > [!WARNING]
 > **`Never` は慎重に使ってください。** 公式ドキュメントは「`SaveChanges` が複数のコマンドを実行する必要があり、その途中で失敗した場合、先行するコマンドはすでにコミットされている可能性があり、データベースに部分的な変更が残る」と警告しています。上の実測でも、`Never` ではコマンドが 3 つに分かれてもトランザクションが張られませんでした。
@@ -763,7 +769,7 @@ builder.Property(b => b.LastUpdatedAt).IsConcurrencyToken();
 > ```
 
 > [!NOTE]
-> **Hibernate / JPA** の `@Version` と `jakarta.persistence.OptimisticLockException`（Hibernate 固有の例外ではなく Jakarta Persistence 仕様の標準例外です）、**Django** の `select_for_update()`（こちらは悲観的ロック）が対応する仕組みです。EF Core が既定で提供するのは楽観的同時実行制御であり、公式ドキュメントも「悲観的な手法がデータを先にロックしてから変更するのに対し、楽観的同時実行制御はロックを取らない」と説明しています。
+> EF Core が既定で提供するのは楽観的同時実行制御です。公式ドキュメントも、悲観的な手法がデータを先にロックしてから変更するのに対し、楽観的同時実行制御は事前にそのようなロックを取らない、と説明しています。
 
 ### 分離レベルによる同時実行制御
 
@@ -792,7 +798,7 @@ await transaction.CommitAsync(cancellationToken);
 SQL Server 2022 に対して実測したところ、公式の説明どおりの結果になりました。
 
 - **`RepeatableRead`** — トランザクション内で 1 行を読んだだけの状態で、別の接続から同じ行を `UPDATE` すると**ブロックされ**、コマンドタイムアウト（`Number=-2`）に至りました。
-- **`Snapshot`** — 同じ状況で別の接続からの `UPDATE` は**即座に成功**（0.2 秒）しました。その後で自分が更新して保存すると、次の例外になりました。
+- **`Snapshot`** — 同じ状況で別の接続からの `UPDATE` は 0.2 秒で成功しました。その後で自分が更新して保存するとエラーになりました。以下は、捕捉した例外のチェーンから `SqlException` を探して表示した内容です。
 
 ```text
 SqlException Number=3960: Snapshot isolation transaction aborted due to update conflict.
@@ -823,7 +829,7 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 ```
 
 > [!WARNING]
-> 再試行はあらゆる接続エラーで働くわけではありません。EF Core の SQL Server プロバイダーは、SQL Server が返す**特定のエラー番号**や .NET の **`TimeoutException`** など、一時的と判定した例外を対象にします。後者は[EF Core 10.0.11 の公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.SqlServer/Storage/Internal/SqlServerTransientExceptionDetector.cs#L706)に明記されており、後述の障害注入でも再試行を確認しました。一方、実際にコンテナーを再起動して接続を切断したところ、`EnableRetryOnFailure` を有効にしていても「ログイン前のハンドシェイク中にエラーが発生しました」という `SqlException` が再試行されずに即座に投げられました。このときメトリクス `microsoft.entityframeworkcore.execution_strategy_operation_failures` も 0 のままで、このエラーでは再試行が観測されませんでした。
+> 再試行はあらゆる接続エラーで働くわけではありません。EF Core の SQL Server プロバイダーは、SQL Server が返す**特定のエラー番号**や .NET の **`TimeoutException`** など、一時的と判定した例外を対象にします。後者は[EF Core 10.0.11 の公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.SqlServer/Storage/Internal/SqlServerTransientExceptionDetector.cs#L706)に明記されており、後述の障害注入でも再試行を確認しました。一方、コンテナーを再起動して接続を切断した実測では、`EnableRetryOnFailure` を有効にしていても「ログイン前のハンドシェイク中にエラーが発生しました」という `SqlException` で終了しました。この実行では再試行回数を直接記録していないため、0 回だったとは断定しません。別の一時停止・再開の測定で取得したメトリック値を、この接続失敗の回数根拠として使うこともできません。
 >
 > 自社環境で固有のエラー番号を再試行対象に加えたい場合は、`errorNumbersToAdd` にエラー番号を渡してください。「再試行を有効にしたから接続断はすべて吸収される」と考えるのは危険で、アプリケーション側での例外処理は依然として必要です。
 
@@ -933,7 +939,7 @@ Transaction (Process ID 65) was deadlocked on lock resources with another proces
 and has been chosen as the deadlock victim. Rerun the transaction.
 ```
 
-メッセージの末尾が示すとおり、デッドロックは **再実行すれば成功する** 種類のエラーです。そして SQL Server プロバイダーはエラー番号 1205 を一時的エラーとして扱うため（EF Core の `SqlServerTransientExceptionDetector` に `case 1205` が含まれています）、`EnableRetryOnFailure` と `CreateExecutionStrategy()` を組み合わせれば自動的に再試行されます。同じ 2 つのトランザクションを実行戦略で包んで実行したところ、犠牲者になった側も再試行されて **両方ともコミットに成功しました**。
+デッドロックは、犠牲者となったトランザクション全体を再実行すると**復旧できる場合があります**。SQL Server プロバイダーはエラー番号 1205 を一時的エラーとして扱うため（EF Core の `SqlServerTransientExceptionDetector` に `case 1205` が含まれています）、`EnableRetryOnFailure` と `CreateExecutionStrategy()` を組み合わせて再試行できます。EF Core 10.0.11 / SQL Server 2022 の追加対照では、逆順に更新する 2 つのトランザクションについて、1205 の発生、犠牲者側の 2 回目の操作、両方のコミット成功を記録しました。ただし、競合が続く場合などの成功まで保証するものではありません。
 
 ```csharp
 var strategy = context.Database.CreateExecutionStrategy();
@@ -956,7 +962,7 @@ await strategy.ExecuteAsync(async () =>
 | --- | --- |
 | 更新順序を揃える | すべてのトランザクションで、同じ種類のリソースを同じ順序（例: 常に主キーの昇順）で更新する |
 | トランザクションを短くする | ロックを保持する時間を最小化する。トランザクション内で外部 API 呼び出しやユーザー入力待ちをしない |
-| 読み取りのロックを避ける | 参照だけの処理は `AsNoTracking` を使い、必要なら Read Committed Snapshot 分離を有効にする |
+| 読み取りと書き込みのロック競合を減らす | ワークロードに合う場合は [READ_COMMITTED_SNAPSHOT](https://learn.microsoft.com/ja-jp/sql/relational-databases/sql-server-deadlocks-guide?view=sql-server-ver16#use-a-row-versioning-based-isolation-level) を検討する。`AsNoTracking` は変更追跡の設定であり、データベースの共有ロックを抑止する設定ではない |
 | 必要な行だけロックする | 広い範囲を `UPDATE` せず、主キーで対象を絞る |
 
 > [!WARNING]
@@ -1076,27 +1082,71 @@ context.SaveChangesFailed += (s, e) =>
 
 購読は 2 段階です。まず `DiagnosticListener` そのものの観測者を作り、EF Core のリスナー（名前は `Microsoft.EntityFrameworkCore`、`DbLoggerCategory.Name` から取得できます）を見つけたら、そのリスナーを購読します。
 
+次は、[公式の診断イベントの観測例](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/diagnostic-listeners#example-observing-diagnostic-events)に対応する 2 段階の観測者です。`KeyValueObserver` がイベント名を記録し、`CompleteDiagnosticObserver` が各リスナーの購読を保持して、破棄時に解除します。どちらの `OnError` も、通知された例外を `Console.Error` に渡します。`DiagnosticSample` 名前空間の独立したファイルとして配置します。
+
+この実装は、診断対象の操作を**逐次実行する有限の検証用**です。記録先の `List<string>` と購読一覧を並行アクセスから保護しておらず、複数のスレッドでイベントが発生する本番アプリケーションへそのまま組み込む例ではありません。
+
 ```csharp
-public class DiagnosticObserver : IObserver<DiagnosticListener>
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using Microsoft.EntityFrameworkCore;
+
+namespace DiagnosticSample;
+
+public class CompleteDiagnosticObserver(List<string> events)
+    : IObserver<DiagnosticListener>, IDisposable
 {
+    private readonly List<IDisposable> subscriptions = [];
+
     public void OnCompleted() { }
-    public void OnError(Exception error) { }
+    public void OnError(Exception error) => Console.Error.WriteLine(error);
 
     public void OnNext(DiagnosticListener value)
     {
-        if (value.Name == DbLoggerCategory.Name)   // "Microsoft.EntityFrameworkCore"
-        {
-            value.Subscribe(new KeyValueObserver());
-        }
+        if (value.Name == DbLoggerCategory.Name)
+            subscriptions.Add(value.Subscribe(new KeyValueObserver(events)));
     }
+
+    public void Dispose()
+    {
+        foreach (var s in subscriptions) s.Dispose();
+    }
+}
+
+public class KeyValueObserver(List<string> events)
+    : IObserver<KeyValuePair<string, object?>>
+{
+    public void OnCompleted() { }
+    public void OnError(Exception error) => Console.Error.WriteLine(error);
+
+    public void OnNext(KeyValuePair<string, object?> value) => events.Add(value.Key);
 }
 ```
 
+呼び出し側では、`AllListeners` の購読も保持します。次の `context` は、`Blogs` を公開する呼び出し側の `BloggingContext` です。接続先のテーブルは準備済みとし、このインスタンスではまだ EF Core の操作を実行していない状態で購読を開始します。[`using` の範囲](https://learn.microsoft.com/ja-jp/dotnet/csharp/language-reference/statements/using)で `Count()` を 1 回実行し、成功時も例外時も、`AllListeners`、各 EF Core リスナーの順に購読を解除します。イベント名の表示は解除後に行います。受信するイベント名や件数は検証条件に依存するため、次の実測記録を固定の期待値にはしません。
+
 ```csharp
-DiagnosticListener.AllListeners.Subscribe(new DiagnosticObserver());
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using DiagnosticSample;
+
+var events = new List<string>();
+using (var observer = new CompleteDiagnosticObserver(events))
+using (DiagnosticListener.AllListeners.Subscribe(observer))
+{
+    _ = context.Blogs.Count();
+}
+
+foreach (var name in events.Distinct())
+    Console.WriteLine(name);
 ```
 
-`Count()` を 1 回実行しただけで 19 種類のイベント名を受信しました。実測で観測できたものの一部を挙げます。
+掲載した購読保持・解除と `OnError` 実装は、EF Core 10.0.11 と SQLite で動作を確認しました。`OnError` はインターフェイスから直接呼び出して標準エラー出力を確認したもので、EF Core がエラー通知を発行した事例ではありません。
+
+以下は、それとは別の既存の観測記録です。`Count()` を 1 回実行しただけで 19 種類のイベント名を受信しました。観測できたものの一部を挙げます。
 
 ```text
 Microsoft.EntityFrameworkCore.Infrastructure.ContextInitialized
@@ -1115,7 +1165,7 @@ Microsoft.EntityFrameworkCore.Database.Connection.ConnectionOpening
 
 ### インターセプターによる横断的な処理
 
-作成日時の自動設定、監査ログ、クエリへのヒント付与のような **すべての操作に共通する処理** は、個々のリポジトリーやサービスに書くと漏れが生じます。EF Core は **インターセプター (Interceptor)** を提供しており、低レベルの操作に割り込んで処理を追加したり、操作そのものを抑制・変更したりできます。
+作成日時の自動設定、監査ログ、クエリへのヒント付与のような **すべての操作に共通する処理** は、個々のリポジトリやサービスに書くと漏れが生じます。EF Core は **インターセプター (Interceptor)** を提供しており、低レベルの操作に割り込んで処理を追加したり、操作そのものを抑制・変更したりできます。
 
 公式ドキュメントが挙げるインターセプターは次のとおりです。
 
@@ -1133,7 +1183,25 @@ Microsoft.EntityFrameworkCore.Database.Connection.ConnectionOpening
 
 次は `ISaveChangesInterceptor` を使って、作成日時と更新日時を自動で設定する例です（`SaveChangesInterceptor` は空実装を持つ基底クラスで、必要なメソッドだけをオーバーライドできます）。
 
+この例は、`AuditSample` 名前空間にまとめた独立した監査用モデルです。`CreatedAt` と `UpdatedAt` を持つ `Blog` を、この例の `BloggingContext` に登録します。本編の同名型へメンバーを追加する差分ではありません。呼び出し側で `DbContextOptionsBuilder<AuditSample.BloggingContext>` にプロバイダーと接続値を設定し、その `Options` をコンストラクターへ渡します。インターセプターの登録先は、このコンテキストの `OnConfiguring` です（[公式の登録方法](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/interceptors#registering-interceptors)）。
+
 ```csharp
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+
+namespace AuditSample;
+
+public class Blog
+{
+    public int Id { get; set; }
+    public required string Name { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? UpdatedAt { get; set; }
+}
+
 public class AuditInterceptor : SaveChangesInterceptor
 {
     public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
@@ -1164,6 +1232,8 @@ public class AuditInterceptor : SaveChangesInterceptor
 
 public class BloggingContext(DbContextOptions<BloggingContext> options) : DbContext(options)
 {
+    public DbSet<Blog> Blogs => Set<Blog>();
+
     // インターセプターは多くの場合ステートレスなので、
     // 1 つのインスタンスをすべての DbContext で共有できます
     private static readonly AuditInterceptor Audit = new();
@@ -1173,7 +1243,7 @@ public class BloggingContext(DbContextOptions<BloggingContext> options) : DbCont
 }
 ```
 
-SQL Server 2022 に対して実際に動かしたところ、追加時は `CreatedAt` だけが設定され（`UpdatedAt` は `null`）、その後の更新で `UpdatedAt` だけが設定されて `CreatedAt` は変わらないことを確認しました。
+掲載した `AuditSample` は、EF Core 10.0.11 と SQLite で、追加・更新時の日時設定と再読取を確認しています。以下の日時は、それとは別の SQL Server 2022 での観測記録です。追加時は `CreatedAt` だけが設定され（`UpdatedAt` は `null`）、その後の更新で `UpdatedAt` だけが設定されて `CreatedAt` は変わらないことを確認しました。
 
 ```text
 after insert: CreatedAt=2026-09-01T08:23:51.0828970 UpdatedAt=null
@@ -1195,7 +1265,22 @@ after update: CreatedAt=2026-09-01T08:23:51.0828970 UpdatedAt=2026-09-01T08:23:5
 
 `ISaveChangesInterceptor` が「書き込み」に割り込むのに対し、`IMaterializationInterceptor` は **クエリ結果からエンティティが組み立てられる過程** に割り込みます。データベースの列にマッピングしていないプロパティを、読み込み時に初期化するといった用途に使えます。
 
+この例も本編と別の `StampSample` 名前空間に配置します。`LoadedAt` は検証用 `Blog` のプロパティで、`StampContext.OnModelCreating` の [`Ignore`](https://learn.microsoft.com/ja-jp/ef/core/modeling/entity-properties#included-and-excluded-properties) により列へのマッピングから外します。呼び出し側で `DbContextOptionsBuilder<StampContext>` にプロバイダーと接続値を設定して `Options` を渡してください。`OnConfiguring` で登録する `LoadStampInterceptor` は、[Singleton インターセプターの指針](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/interceptors#singleton-interceptors)に従って同じインスタンスを再利用します。
+
 ```csharp
+using System;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+
+namespace StampSample;
+
+public class Blog
+{
+    public int Id { get; set; }
+    public required string Name { get; set; }
+    public DateTime LoadedAt { get; set; }
+}
+
 public sealed class LoadStampInterceptor : IMaterializationInterceptor
 {
     public object InitializedInstance(MaterializationInterceptionData data, object instance)
@@ -1208,6 +1293,19 @@ public sealed class LoadStampInterceptor : IMaterializationInterceptor
         return instance;
     }
 }
+
+public class StampContext(DbContextOptions<StampContext> options) : DbContext(options)
+{
+    private static readonly LoadStampInterceptor Stamp = new();
+
+    public DbSet<Blog> Blogs => Set<Blog>();
+
+    protected override void OnConfiguring(DbContextOptionsBuilder options)
+        => options.AddInterceptors(Stamp);
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+        => modelBuilder.Entity<Blog>().Ignore(b => b.LoadedAt);
+}
 ```
 
 このインターフェイスには次の 4 つのメソッドがあり、公式ドキュメントはそれぞれの呼び出しタイミングを次のように定義しています。
@@ -1219,7 +1317,9 @@ public sealed class LoadStampInterceptor : IMaterializationInterceptor
 | `InitializingInstance` | プロパティ値を設定する直前（コンストラクターが設定した値はすでに入っている） |
 | `InitializedInstance` | プロパティ値の設定が完了した直後 |
 
-SQL Server 2022 から未追跡の 2 件を読み込み、4 つのメソッドを記録する検証用実装で呼び出し順序を出力したところ、新しく生成するエンティティ 1 件ごとにこの順で呼ばれ、`Ignore` でマッピングから外した `LoadedAt` に値が入ることを確認しました（実測で確認）。
+掲載した `StampSample` は、EF Core 10.0.11 と SQLite で、`LoadedAt` の列への非マップと読取時の値設定を確認しています。以下の SQL Server 2022 の出力は、4 コールバックを記録する別の検証用実装による観測記録です。掲載した `LoadStampInterceptor` 自体が、この呼び出し順序ログを出力するわけではありません。
+
+SQL Server 2022 から未追跡の 2 件を読み込み、その検証用実装で呼び出し順序を出力したところ、新しく生成するエンティティ 1 件ごとにこの順で呼ばれ、`Ignore` でマッピングから外した `LoadedAt` に値が入ることを確認しました。
 
 ```text
 CreatingInstance
@@ -1240,7 +1340,7 @@ InitializedInstance: Blog
 > EF Core 10.0.11 と SQLite で全 4 コールバックを記録した対照実測では、初回に生成した `Blog` は計 4 回、同じ追跡済み `Blog` の再取得と列だけの投影はそれぞれ 0 回、`AsNoTracking()` で新しく生成した `Blog` は計 4 回でした。呼び出し回数を単純にクエリの結果件数の 4 倍と考えないでください。大量のインスタンスを生成する処理では実装したコールバックが繰り返し実行されるため、ここに重い処理を書かないでください。
 
 > [!NOTE]
-> **Hibernate** には同様の目的で `org.hibernate.Interceptor` があり、`onPersist` などで永続化操作に割り込めます（Hibernate 6 で `onSave` は非推奨になり、`onPersist` に置き換えられました）。また **Jakarta Persistence** の仕様には `@PrePersist` / `@PreUpdate` などの **ライフサイクルコールバック** が定義されており、エンティティ自身またはリスナークラスのメソッドとして作成日時・更新日時の設定を行えます。EF Core のインターセプターは、これらと違って `SaveChanges` だけでなく **コマンド・接続・トランザクション・マテリアライゼーション・LINQ 式ツリー** といった層ごとに用意されている点が特徴です。
+> EF Core のインターセプターは、`SaveChanges` だけでなく、**コマンド・接続・トランザクション・マテリアライゼーション・LINQ 式ツリー** といった層ごとに用意されています。目的に合うインターセプターを選んでください。
 
 ---
 
@@ -1258,7 +1358,7 @@ Azure SQL Database の **読み取りスケールアウト (Read Scale-Out)** �
 ```mermaid
 flowchart LR
     accTitle: 書き込み用と読み取り用の接続経路
-    accDescr: アプリケーションは BloggingContext でプライマリへ書き込み、BloggingReadContext で読み取り専用レプリカへ問い合わせる。プライマリからレプリカへの複製は非同期で行われる。
+    accDescr: アプリケーションは BloggingContext でプライマリへ書き込み、BloggingReadContext で読み取り専用レプリカへ問い合わせる。プライマリのデータはレプリカへ複製される。この図は複製の同期方式を指定するものではない。
     APP["ASP.NET Core アプリケーション"]
     subgraph W["書き込み系"]
         WC["BloggingContext<br>ApplicationIntent=ReadWrite"]
@@ -1271,7 +1371,7 @@ flowchart LR
 
     APP --> WC --> PRI
     APP --> RC --> REP
-    PRI -. "非同期レプリケーション" .-> REP
+    PRI -. "データの複製" .-> REP
 ```
 
 読み取り側のレプリカに接続するには、接続文字列に `ApplicationIntent=ReadOnly` を指定します。
@@ -1291,7 +1391,7 @@ Server=tcp:myserver.database.windows.net,1433;Database=Blogging;Authentication=A
 > [!NOTE]
 > Premium と Business Critical では、読み取り専用レプリカのうち**同時にアクセスできるのは 1 つだけ**です。複数の読み取り専用レプリカを使い分けたい場合は Hyperscale を選びます。
 >
-> また、Premium や Business Critical に上げたあとも必ずプライマリに接続させたい場合は、読み取りスケールアウトを明示的に無効化する必要があります。有効なままだと接続文字列の `ApplicationIntent=ReadOnly` によってレプリカに振り分けられます。
+> また、Premium や Business Critical に上げたあとも、**`ApplicationIntent` の指定にかかわらずすべての接続をプライマリへ向けたい場合**は、読み取りスケールアウトを明示的に無効化する必要があります。有効なままでも、指定なしまたは `ReadWrite` ならプライマリへ接続します。`ReadOnly` を指定した接続が読み取り専用レプリカへ振り分けられます。
 
 接続先がレプリカであることは、次のクエリで確認できます。
 
@@ -1304,7 +1404,7 @@ var updateability = await context.Database
 // 読み取り専用レプリカに接続していれば "READ_ONLY" が返る
 ```
 
-Azure SQL Database の Business Critical（2 vCore）に対して実際に接続し、`ApplicationIntent` の値だけを変えて比較した結果は次のとおりです。
+Azure SQL Database の Business Critical（2 vCore）へ `Microsoft.Data.SqlClient` で接続し、`ApplicationIntent` の値だけを変えて比較した結果は次のとおりです。この測定では `ExecuteScalarAsync` から `DATABASEPROPERTYEX` を呼び出しました。上の EF Core コードそのものを Azure 上で実行した記録とは区別してください。
 
 | `ApplicationIntent` | `Updateability` |
 | --- | --- |
@@ -1344,7 +1444,7 @@ Azure SQL Database の Business Critical（2 vCore）に対して実際に接続
 | 一覧・検索・ダッシュボード・レポート | レプリカ |
 | 分析・集計バッチ | レプリカ |
 
-また、読み取り専用レプリカ上のトランザクションは、**セッションの分離レベル設定やクエリヒントに関係なく常にスナップショット分離レベル**で実行され、書き込みはできません。レプリカに接続した `DbContext` で `SaveChangesAsync` を呼ぶとエラーになります。実際に Business Critical のレプリカへ `ApplicationIntent=ReadOnly` で接続して書き込みを試みたところ、次の例外が発生しました。
+また、読み取り専用レプリカ上のトランザクションは、**セッションの分離レベル設定やクエリヒントに関係なく常にスナップショット分離レベル**で実行され、書き込みはできません。実測では、`Microsoft.Data.SqlClient` の `SqlConnection` で Business Critical のレプリカへ `ApplicationIntent=ReadOnly` を指定して接続し、`ExecuteNonQueryAsync` でテーブル作成を試みると、次の `SqlException` が発生しました。これは `SaveChangesAsync` ではなく、SqlClient で DDL を実行したときの記録です。
 
 ```text
 Microsoft.Data.SqlClient.SqlException: Failed to update database "BloggingBC"
@@ -1354,11 +1454,11 @@ because the database is read-only.
 > [!WARNING]
 > ただし、**`ApplicationIntent=ReadOnly` そのものに書き込みを禁止する働きはありません。** これは「読み取り専用のエンドポイントにルーティングしてほしい」という接続時のヒントにすぎず、書き込みを拒否しているのはルーティング先のレプリカ側です。ローカル開発環境の SQL Server のように可用性グループも読み取りスケールアウトも構成されていないサーバーに対しては、この指定は単に無視されます。実際に SQL Server 2022 の単体インスタンスへ `ApplicationIntent=ReadOnly` を付けて接続し、`SaveChangesAsync` で行を追加したところ、例外は発生せず **書き込みが成功しました**。
 >
-> つまり、読み取り専用のつもりで書いたコードに書き込みが紛れ込んでいても、開発環境では気づけず本番で初めて失敗します。この点からも、後述する読み取り専用 `DbContext` を型として分離し、`AsNoTracking` を既定にして設計段階で防ぐ方法が有効です。
+> つまり、読み取り専用のつもりで書いたコードに書き込みが紛れ込んでいても、開発環境では気づけず本番で初めて失敗する可能性があります。後述の読み取り用 `DbContext` の型分離や追跡無効化は、用途を明確にするための設計です。書き込みの禁止そのものは、保存メソッドのガードの適用範囲と、データベース側の制約を分けて考えてください。
 
 ### EF Core 側での読み書き分離
 
-最も分かりやすいのは、**読み取り専用の DbContext 型を別に定義する** 方法です。型が分かれていれば、どちらに接続しているかがコード上で明確になり、レプリカに向けた `DbContext` で誤って書き込むことを設計で防げます。
+最も分かりやすいのは、**読み取り用の DbContext 型を別に定義する** 方法です。型が分かれていれば、どちらに接続しているかをコード上で区別しやすくなります。ただし、型を分けるだけで書き込みが禁止されるわけではありません。
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -1388,7 +1488,7 @@ public class BloggingReadContext(DbContextOptions<BloggingReadContext> options) 
 
 ### 読み取り専用 DbContext の設計
 
-読み取り専用コンテキストでは、追跡を既定で無効化し、`SaveChangesAsync` を封じておくと事故を防げます。
+読み取り用コンテキストでは、追跡を既定で無効化し、`SaveChanges` / `SaveChangesAsync` の各オーバーロードをガードして、通常の保存経路での誤用を防ぎます。引数なしの経路だけでなく、`acceptAllChangesOnSuccess` を受け取る経路も対象にします。
 
 ```csharp
 public class BloggingReadContext(DbContextOptions<BloggingReadContext> options) : DbContext(options)
@@ -1404,8 +1504,18 @@ public class BloggingReadContext(DbContextOptions<BloggingReadContext> options) 
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
         => throw new InvalidOperationException("読み取り専用コンテキストでは保存できません。");
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+        => throw new InvalidOperationException("読み取り専用コンテキストでは保存できません。");
+
+    public override Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+        => throw new InvalidOperationException("読み取り専用コンテキストでは保存できません。");
 }
 ```
+
+> [!WARNING]
+> このガードが対象にするのは、変更追跡を経由する保存メソッドです。[`ExecuteUpdate` / `ExecuteDelete`](https://learn.microsoft.com/ja-jp/ef/core/saving/execute-insert-update-delete#change-tracking) は `SaveChanges` を呼ばずに実行されるため、このガードでは禁止できません。EF Core 10.0.11 / SQL Server 2022 の対照でも、4 つの保存経路は拒否されましたが、`ExecuteUpdateAsync` は実行されました。実際に書き込みを禁止する必要がある接続では、読み取り専用レプリカや[データベース側の権限](https://learn.microsoft.com/ja-jp/sql/relational-databases/security/authentication-access/database-level-roles?view=sql-server-ver16)で制約してください。
 
 DI への登録では、それぞれ別の接続文字列を割り当てます。
 
@@ -1501,6 +1611,9 @@ public record CreateBlogRequest(string Name, string Url);
 - [IMaterializationInterceptor インターフェイス | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.diagnostics.imaterializationinterceptor?view=efcore-10.0)
 - [EF Core の .NET イベント | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/events)
 - [EF Core での診断リスナーの使用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/diagnostic-listeners)
+- [DiagnosticListener.Subscribe メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/system.diagnostics.diagnosticlistener.subscribe?view=net-10.0)
+- [using ステートメント | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/csharp/language-reference/statements/using)
+- [エンティティのプロパティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/entity-properties)
 - [接続の回復性 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-resiliency)
 - [SetConnectionString メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.relationaldatabasefacadeextensions.setconnectionstring?view=efcore-10.0)
 - [SetDbConnection メソッド | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.relationaldatabasefacadeextensions.setdbconnection?view=efcore-10.0)

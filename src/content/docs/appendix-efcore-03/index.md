@@ -56,40 +56,47 @@ description: "EF Core のマイグレーションの読み方と運用、単一�
 > [!NOTE]
 > **マイグレーションはリレーショナルデータベース専用の仕組みです。** Azure Cosmos DB のようなドキュメントデータベースには決まったスキーマがないため、公式ドキュメントは「スキーマのマイグレーションはサポートされない」「既存データベースからのリバースエンジニアリング（スキャフォールディング）もサポートされない」と明記しています。
 >
-> 実際に Azure 上の Azure Cosmos DB（NoSQL API）に EF Core 10 から接続して確認したところ、次のようになりました（実測で確認）。
+> Cosmos プロバイダー専用のプロジェクトのコンパイルと、Azure Cosmos DB（NoSQL API）を対象にした EF Core 10 の操作を分けて確認しました。次のコンパイルエラーやモデル検証の例外は、サービスへのデータベース操作が成功したことを示す結果ではありません。
 >
 > | 書いたコード | 結果 |
 > | --- | --- |
 > | `db.Database.MigrateAsync()` | **コンパイルエラー** `CS1061`。`Migrate` 系の拡張メソッドはリレーショナルプロバイダー専用に定義されているため、Cosmos プロバイダーだけを参照したプロジェクトでは存在しない |
-> | `db.Database.EnsureCreatedAsync()` | 成功。データベースとコンテナーが作成される |
+> | `db.Database.EnsureCreatedAsync()` | アカウントキー認証で成功。データベースとコンテナーが作成される |
 > | `HasIndex(o => o.Customer)` | `InvalidOperationException: The entity type 'Order' has an index defined over properties 'Customer'. The Azure Cosmos DB provider for EF Core currently does not support index definitions.` |
 >
 > この制限は、リレーショナルデータベースのような**通常の `HasIndex` 定義**についてのものです。Azure Cosmos DB は既定のポリシーで項目を自動的にインデックス化します。一方、EF Core 10 では `IsFullTextIndex()` や `IsVectorIndex()` による**検索専用の索引設定は可能**で、実コンテナーの作成も成功しました。[付録5の「Cosmos DB の全文検索とベクトル検索」](../appendix-efcore-05/index.md#cosmos-db-の全文検索とベクトル検索)を参照してください。通常の索引定義は EF Core 8 までは無視され、EF Core 9 以降は例外になるため、検索専用の設定と区別してください。
 
 > [!WARNING]
-> **Azure Cosmos DB では、`EnsureCreatedAsync()` は Microsoft Entra ID (RBAC) 認証では動きません。** 公式ドキュメントは「Azure Cosmos DB SDK は管理プレーンの操作について RBAC をサポートしていない。RBAC を使う場合は `EnsureCreatedAsync` ではなく Azure Management API を使うこと」と明記しています。
+> **Microsoft Entra ID 認証で新しいデータベースを用意するときは、`EnsureCreatedAsync()` に頼らないでください。** ここでの RBAC はロールベースのアクセス制御 (Role-Based Access Control) を指します。[EF Core の Cosmos DB プロバイダーの公式説明](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/)は、SDK の管理プレーン操作は RBAC に対応せず、`EnsureCreatedAsync` の代わりに Azure Management API を使うよう案内しています。
 >
-> 同じ Azure Cosmos DB アカウントに対して認証方式だけを変えて実測すると、次のようになりました。
+> キー認証を無効にした Azure Cosmos DB アカウントで、`DefaultAzureCredential` を使い、ネイティブのデータアクセス用ロールの有無とスコープを変えて確認しました。
 >
-> | 認証方式 | `EnsureCreatedAsync()` | 作成済みコンテナーへの読み書き |
+> | データアクセス用ロールとスコープ | 操作 | 実測結果 |
 > | --- | --- | --- |
-> | `DefaultAzureCredential`（RBAC） | **`CosmosException` 403 Forbidden** | 成功 |
-> | 主キー（アカウントキー） | 成功。データベースとコンテナーが作成される | 成功 |
+> | なし | 作成済みコンテナーのクエリ | `403 Forbidden` |
+> | Data Contributor を対象コンテナーに限定 | 対象コンテナーへの保存・再読取・削除 | 成功 |
+> | 同上 | 別コンテナーの読み取り | `403 Forbidden` |
+> | Data Contributor をアカウント全体に付与 | 既存データのクエリ後、未作成 DB に `EnsureCreatedAsync()` | クエリは成功、DB 作成は `403 Forbidden` |
 >
-> RBAC 側の例外メッセージは次のとおりです。データプレーンの組み込みロール（Cosmos DB 組み込みデータ共同作成者）を割り当てていても発生します。**このロールはデータの読み書きだけを許可するもので、コンテナーの作成という管理プレーンの操作は含まれないためです。**
+> ここで使ったのは、[Cosmos DB 組み込みデータ共同作成者](https://learn.microsoft.com/ja-jp/azure/cosmos-db/how-to-connect-role-based-access-control)（CLI のロール名は `Cosmos DB Built-in Data Contributor`、ロール定義 ID の末尾は `0002`）です。管理プレーンの権限とは別のもので、管理プレーンに `Owner` があっても、データアクセス用ロールがない最初の条件ではクエリが拒否されました。
+>
+> 最後の条件の例外の抜粋は次のとおりです。**データのクエリができることと、SDK 経由で新しい DB を作成できることは別**です。ロールなしやスコープ外での `readMetadata` 権限不足とは区別し、拒否された操作まで確認してください。
 >
 > ```text
 > CosmosException: Response status code does not indicate success: Forbidden (403); Substatus: 5302;
 > message : Request blocked by Auth <アカウント名> : Request for Read DatabaseAccount is blocked
 > because principal [<オブジェクト ID>] does not have required RBAC permissions
+> to perform action [Microsoft.DocumentDB/databaseAccounts/sqlDatabases/write] on any scope.
 > ```
 >
-> パスワードレス認証を採用しているなら、コンテナーの作成はアプリケーションから切り離し、Azure CLI や Bicep などのインフラ側で行ってください。Azure CLI なら次のコマンドで作成でき、その後は RBAC のままアプリケーションから読み書きできることを確認しました（実測）。
+> パスワードレス認証を採用しているなら、コンテナーの作成はアプリケーションから切り離し、Azure CLI や Bicep などのインフラ側で行ってください。Azure CLI なら次のコマンドで作成でき、その後は RBAC のままアプリケーションから読み書きできることを確認しました（実測）。ここでは、Azure CLI にサインイン済みの運用担当者が管理プレーンの作成権限を持ち、既存のアカウントと SQL データベースを対象に実行します。山括弧の 4 項目は実際の名前に置き換えてください。
 >
 > ```bash
 > az cosmosdb sql container create -a <アカウント名> -g <リソースグループ> \
 >   -d <データベース名> -n <コンテナー名> --partition-key-path "/id" --throughput 400
 > ```
+>
+> `/id` は実測モデルに合わせた指定です。文字列の `Id` を `HasPartitionKey` でパーティションキーに、`ToContainer` で作成先のコンテナー名を指定しました。[EF Core 側のモデル設定](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/modeling#partition-keys)に合わせて、CLI 側のパーティションキーパスも指定してください。`/id` が EF Core の既定値という意味ではありません。
 >
 > なお認証方式にかかわらず、公式ドキュメントは `EnsureCreatedAsync` について「**デプロイ時にのみ呼ぶこと。通常の運用で呼ぶとパフォーマンスの問題を起こしうる**」とも注意しています。アプリケーションの起動処理に入れたままにしないでください。
 
@@ -141,7 +148,7 @@ DF__Posts__CreatedDa__49C3F6B7
 DF__Posts__Views__4AB81AF0
 ```
 
-末尾は毎回変わるため、名前が分からないと後から `ALTER TABLE ... DROP CONSTRAINT` で外すのが面倒になります。
+自動生成された名前は固定名として扱わず、対象データベースで確認する必要があります。名前が分からないと、後から `ALTER TABLE ... DROP CONSTRAINT` で外すのが面倒になります。
 
 EF Core 10 では、`HasDefaultValueSql` / `HasDefaultValue` の第 2 引数で制約名を指定できるようになりました。
 
@@ -182,7 +189,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 ```
 
 > [!WARNING]
-> 既定値を設定した列には、**その型の CLR 既定値（`int` の `0`、`bool` の `false` など）を明示的に保存できません。** EF Core は「プロパティに値が設定されたかどうか」を CLR 既定値との比較で判定するため、`0` を代入することと何も代入しないことを区別できないからです。
+> **この `int` の構成では、`0` を明示しても「未設定」と区別されず、データベースの既定値が使われます。** `Count` の初期値も、EF Core が未設定の判定に使う値も `0` のためです。以下は `HasDefaultValue(-1)` を指定し、センチネルを変更していない場合の例であり、すべての型や既定値の構成に当てはまる説明ではありません。
 >
 > `Count` に `HasDefaultValue(-1)` を設定して 3 行を挿入したところ、次のようになりました。
 >
@@ -211,7 +218,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 > }
 > ```
 >
-> 3 通りの構成で同じ 3 行を挿入して比較しました（実測）。
+> 未設定・明示的な `0`・明示的な `5` の 3 通りを、次の構成で挿入して比較しました（実測）。**`HasSentinel(-1)` の構成だけ `Count` の初期化子を `-1` とし、ほかの 2 構成では初期化子を付けず、CLR 既定値の `0` から開始しています。**
 >
 > | 設定した内容 | 既定値のみ | **`HasSentinel(-1)`** | `ValueGeneratedNever()` |
 > | --- | --- | --- | --- |
@@ -221,7 +228,9 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 >
 > `ValueGeneratedNever()` は、公式が「マイグレーションが列を作るときの既定値制約は構成したいが、EF には常に値を挿入させたい場合」の方法として挙げているものです。ただし**未設定でもデータベースの既定値が使われなくなる**点に注意してください。上の実測でも、何も設定しない行が `-1` ではなく `0` になっています。
 >
-> プロパティを `int?` のような **null 許容型**にする方法も有効です。null は CLR 既定値と区別できるため、`0` を明示的に保存できます。
+> プロパティを `int?` のような **null 許容型**にする方法も有効です。`int?` の CLR 既定値は `null` なので、未設定の `null` と明示的な `0` を区別できます。EF Core 10.0.11 / SQLite で `HasDefaultValue(-1)` を指定した実測でも、未設定は `-1`、明示的な `0` は `0`、明示的な `5` は `5` として保存されました。
+>
+> `bool` では、[EF Core 8 以降の公式説明](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-8.0/whatsnew#database-defaults-for-booleans)にあるとおり、定数のデータベース既定値に合わせてセンチネルが設定されます。EF Core 10.0.11 / SQLite で `HasDefaultValue(true)` と `HasDefaultValue(false)` をそれぞれ試すと、どちらも明示的な `false` と `true` を正しく保存できました。この初期化子なしの `bool` では、未設定の場合も CLR 既定値の `false` が保存されました。
 
 > [!WARNING]
 > 公式ドキュメントは「**既存のマイグレーションがある状態で `UseNamedDefaultConstraints()` を有効にすると、次に追加するマイグレーションでモデル内のすべての既定値制約がリネームされる**」と注意しています。稼働中のデータベースに対して有効化する場合は、生成されたマイグレーションの差分を必ず確認してください。
@@ -363,7 +372,7 @@ dotnet ef migrations script --idempotent --output artifacts/migrations.sql
 dotnet ef migrations script AddNewTables AddAuditTable
 ```
 
-`--idempotent` を付けると、各マイグレーションが未適用かどうかを確認してから実行するスクリプトが生成されるため、現在の適用状況が分からないデータベースにも安全に流せます。
+`--idempotent` を付けると、移行履歴を確認し、未適用のマイグレーションだけを実行するスクリプトが生成されます。同じ一連のマイグレーションで管理され、適用済みの位置が異なるデータベースに使えます。手作業によるスキーマ変更まで検出・修復する仕組みではないため、適用前の SQL レビューは必要です。
 
 > [!WARNING]
 > **SQLite ではべき等スクリプトを生成できません。** 公式ドキュメントは「他のデータベースと違い SQLite には手続き言語が含まれていないため、べき等スクリプトが必要とする if-then の論理を生成する方法がない」と説明しています。実際に SQLite のプロジェクトで実行すると、次のエラーになりました（実測で確認）。
@@ -433,10 +442,10 @@ dotnet ef migrations bundle --self-contained --target-runtime linux-x64 --output
 
 ### マイグレーションバンドルの対象ランタイムを指定する
 
-`dotnet ef migrations bundle` で対象ランタイムを指定するオプションは **`--target-runtime`（短縮形 `-r`）** です。よく似た `--runtime` というオプションも存在しますが、こちらは「ツールがビルドに使うランタイム」を指す別のオプションで、`--self-contained` と組み合わせると次のエラーで失敗することがあります（実測）。
+`dotnet ef migrations bundle` で対象ランタイムを指定するオプションは **`--target-runtime`（短縮形 `-r`）** です。よく似た `--runtime` というオプションも存在しますが、こちらは「ツールがビルドに使うランタイム」を指す別のオプションで、`--self-contained` と組み合わせると次のエラーで失敗することがあります（macOS Arm64 上で `--runtime osx-arm64` を指定した実測。以下はファイルパスを短縮した抜粋）。
 
 ```text
-error NETSDK1047: 資産ファイル 'obj/project.assets.json' に 'net10.0/linux-x64' のターゲットがありません。
+error NETSDK1047: 資産ファイル 'obj/project.assets.json' に 'net10.0/osx-arm64' のターゲットがありません。
 ```
 
 `--target-runtime` を使えば、プロジェクトに `RuntimeIdentifiers` を追加しなくても生成できます。実測では macOS 上から `--target-runtime linux-x64` でバンドルを生成し、Linux 向けの実行可能ファイル（ELF 64-bit）が出力されることを確認しました。生成したバンドルを実際に SQL Server 2022 に対して実行し、マイグレーションが適用されることも確認済みです。
@@ -586,11 +595,11 @@ SQLite にはアプリケーションロックの仕組みがないため、公�
 
 ```text
 放置されたロック行を挿入した
-8 秒経ってもロック待ちのまま（無期限に待つ）
+8 秒経ってもロック待ちのまま
 ロックテーブルを削除したら完了した
 ```
 
-タイムアウトはありません。**ロックが解放されるまで無期限に待ち続けます**。公式ドキュメントが示す解決方法は、`__EFMigrationsLock` テーブルを削除することです。次は SQLite で実測したときに使った SQL です。
+この実測で直接確認したのは、**8 秒後にも待機しており、残留ロックを取り除くと完了した**ことです。無期限に観測したわけではありません。公式ドキュメントは、残留したロックのため後続の移行がロック解除を無期限に待つ問題を説明し、`__EFMigrationsLock` テーブルの削除を解決方法として挙げています。次は SQLite で実測したときに使った SQL です。
 
 ```sql
 DROP TABLE "__EFMigrationsLock";
@@ -618,7 +627,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 実際に `GenerateCreateScript()` の出力を確認したところ、除外していない `Products` の `CREATE TABLE` だけが生成され、`AuditLogs` の DDL は含まれませんでした（実測）。一方でエンティティ型はモデルに残っているため、`db.AuditLogs` に対する LINQ クエリは通常どおり組み立てられ、`SELECT COUNT(*) FROM [AuditLogs]` が発行されます。
 
 > [!WARNING]
-> **除外するのは「作成の責任」だけで、テーブルが存在しなくてもエラーにはなりません。** 上の状態でテーブルを作らずにクエリを実行すると、実行時に `SqlException: Invalid object name 'AuditLogs'.` になりました。テーブルは他のコンテキストのマイグレーションか、別チームの管理下で確実に作られている必要があります。
+> **除外するのは、このコンテキストによるスキーマ管理の対象です。構成や DDL 生成でテーブルの実在を確認するわけではありません。** 上の状態でテーブルを作らずにクエリを実行すると、実行時に `SqlException: Invalid object name 'AuditLogs'.` になりました。クエリを実行する前に、他のコンテキストのマイグレーションなどでテーブルを用意してください。
 
 > [!TIP]
 > 再びマイグレーションで管理したくなったら、`ExcludeFromMigrations` を外した状態で新しいマイグレーションを作成します。それ以降の変更はマイグレーションに含まれるようになります。
@@ -740,14 +749,14 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 > [!WARNING]
 > **シードコードはロールバック（ダウングレード）のあとにも実行されます。** 公式ドキュメントは「構成されたシードコードはダウングレードのあとに実行される。ターゲットが `0` の場合にアプリケーションのスキーマが存在しないことも含め、ターゲットのマイグレーション時点のスキーマに耐えられなければならない」と述べています。
 >
-> 実際に SQLite で `dotnet ef database update 0` を実行したところ、テーブルがすべて削除されたあとにシードコードが呼び出され、次の例外でコマンド自体が失敗しました（実測で確認）。
+> 実際に SQLite で `dotnet ef database update 0` を実行すると、対象テーブルが削除されたあとにシードコードが呼び出され、シード内のクエリが次の例外になりました（実測で確認）。この保存ログはパイプ経由で取得したもので、CLI 単体の終了コードを測定したものではありません。
 >
 > ```text
 > An exception occurred while iterating over the results of a query for context type 'Ctx'.
 > Microsoft.Data.Sqlite.SqliteException (0x80004005): SQLite Error 1: 'no such table: Blogs'.
 > ```
 >
-> シードコードの中でテーブルの有無を確認するか、例外を捕捉して何もしないようにしてください。例外を捕捉するように書き換えると、同じ `update 0` が最後まで完走することも確認しました。
+> シードコードは、移行先のスキーマに対象テーブルがない場合にも対応させてください。比較した足場では、例外を捕捉した場合は `Done.` まで進みました。ただし、**すべての例外を握りつぶすことを勧めるものではありません。** 想定したスキーマ未作成の場合と、それ以外の接続・保存の失敗を区別してください。
 >
 > また、これらのデリゲートは毎回の実行で呼ばれる可能性があるため、上記のように **既に存在するかを確認してから追加** してください。この点は `HasData` と異なり、EF Core が重複を防いでくれません。
 
@@ -755,7 +764,7 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 
 既存のデータベースからエンティティと `DbContext` を生成する `dotnet ef dbcontext scaffold` には、そのまま使うと危険な既定の挙動があります。
 
-このコマンドをそのまま実行すると、**生成された `DbContext` の `OnConfiguring` に接続文字列がそのまま埋め込まれます**。SQL Server 2022 に対して実際に実行したところ、パスワードを含む接続文字列がソースコードに書き出され、あわせて次の `#warning` が生成されました。
+このコマンドをそのまま実行すると、**生成された `DbContext` の `OnConfiguring` に接続文字列がそのまま埋め込まれます**。SQL Server 2022 に対して実際に実行したところ、パスワードを含む接続文字列がソースコードに書き出され、あわせて次の `#warning` が生成されました（以下は接続先を伏せ、警告文の先頭部分だけを掲載した例です）。
 
 ```csharp
 protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
@@ -763,7 +772,7 @@ protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     => optionsBuilder.UseSqlServer("Server=...;User Id=sa;Password=...");
 ```
 
-公式ドキュメントは、これは「生成されたコードが最初に使うときにいきなり動かないという体験を避けるため」であり、**接続文字列が製品コードに存在してはならない**と明記しています。`--no-onconfiguring` オプションを付けると `OnConfiguring` の生成そのものを抑止でき、実測でも接続文字列を含まない、DI 用のコンストラクターだけを持つクラスが生成されました。
+公式ドキュメントは、これは「生成されたコードが最初に使うときにいきなり動かないという体験を避けるため」であり、**接続文字列が製品コードに存在してはならない**と明記しています。`--no-onconfiguring` オプションを付けると `OnConfiguring` の生成そのものを抑止できます。実測でも、生成ファイルに `OnConfiguring` や接続文字列がないことを確認しました。
 
 ```bash
 dotnet ef dbcontext scaffold "<接続文字列>" Microsoft.EntityFrameworkCore.SqlServer \
@@ -881,7 +890,7 @@ dotnet ef migrations add InitialCreate \
 > なお公式ドキュメントは、**データプロジェクトからマイグレーションプロジェクトを参照してはならない**と明記しています。マイグレーションプロジェクトがすでにデータプロジェクトを参照しているため、循環参照になるからです。
 
 > [!NOTE]
-> **Spring Boot** では Flyway や Liquibase がマイグレーションを担い、SQL または XML/YAML でスキーマ変更を記述します。**Django** の `makemigrations` / `migrate` は、EF Core と同じく **モデルの差分を自動検出してマイグレーションファイルを生成する** 方式です。一方 **Laravel** の `php artisan make:migration` / `migrate` は、適用状況の管理とロールバックの仕組みこそ似ていますが、生成されるのは空のマイグレーションであり、`Schema` ファサードを使って変更内容を **自分で記述します**。モデルからの差分検出は行われません。
+> EF Core では、モデルの変更をもとにマイグレーションファイルを生成します。生成されたコードはそのまま適用せず、データを失う操作がないか確認してください。
 
 ---
 
@@ -921,7 +930,7 @@ public virtual ICollection<Enrollment> Enrollments { get; set; } = new List<Enro
 
 ### 単一クエリと分割クエリ
 
-複数のコレクションナビゲーションを `Include` すると、EF Core は既定で 1 つの SQL に JOIN してまとめます。このとき、結果セットに同じ行が繰り返し現れる **カルテシアン爆発 (Cartesian Explosion)** が起こります。転送量そのものを減らす手段は[付録5の「インデックスを正しく張る」](../appendix-efcore-05/index.md#インデックスを正しく張る)ではなく投影であり、判断の順序は[付録5の「まず計測する」](../appendix-efcore-05/index.md#まず計測する)に従ってください。
+同じ階層の複数のコレクションナビゲーションを `Include` すると、EF Core は既定で 1 つの SQL に JOIN してまとめます。このとき、兄弟コレクションの行の組み合わせが増える **カルテシアン爆発 (Cartesian Explosion)** が起こります。転送量そのものを減らす手段は[付録5の「インデックスを正しく張る」](../appendix-efcore-05/index.md#インデックスを正しく張る)ではなく投影であり、判断の順序は[付録5の「まず計測する」](../appendix-efcore-05/index.md#まず計測する)に従ってください。
 
 ```csharp
 var blogs = await context.Blogs
@@ -955,11 +964,11 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 | 観点 | 単一クエリ（既定） | 分割クエリ |
 | --- | --- | --- |
 | ラウンドトリップ数 | 1 回 | コレクションの数だけ増える |
-| データ転送量 | 重複により増える可能性がある | 重複がない |
-| 整合性 | 1 回のクエリなので一貫している | クエリ間で他のトランザクションによる変更が入り得る |
+| データ転送量 | 重複により増える可能性がある | 兄弟コレクション間の行の積を避けられる。すべての列の重複がなくなるわけではない |
+| 整合性 | データベースの単一クエリと分離レベルの保証範囲に従う | クエリ間で他のトランザクションによる変更が入り得る |
 
 > [!WARNING]
-> 分割クエリは既定では 1 つのトランザクションで実行されないため、クエリの合間に他のトランザクションがデータを変更すると、整合性のない結果になる可能性があります。整合性が重要な場合は明示的にトランザクションを開始するか、単一クエリを使ってください。なお 1 対 1 のナビゲーションは行が重複しないため、常に JOIN されます。
+> 分割クエリは既定では 1 つのトランザクションで実行されないため、クエリの合間に他のトランザクションがデータを変更すると、整合性のない結果になる可能性があります。公式は対策として、直列化可能またはスナップショット分離のトランザクションで包む方法を挙げています。単に既定の分離レベルでトランザクションを開始するだけの説明とは区別してください。なお 1 対 1 の関連エンティティは、公式が説明する分割クエリでも同じクエリの JOIN で読み込まれます。
 
 > [!NOTE]
 > **EF Core 10 では、分割クエリの並べ替えの一貫性が修正されました。** EF Core 9 以前は、2 本目以降のクエリに埋め込まれるサブクエリの `ORDER BY` から主キー列が欠落することがあり、**検出しにくいデータ破損につながる可能性がありました**。
@@ -990,7 +999,7 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 > ORDER BY [b0].[Name], [b0].[Id]
 > ```
 >
-> 2 本目のサブクエリでも `ORDER BY [b].[Name], [b].[Id]` と主キーまで含めて並べ替えられており、1 本目と同じ行が選ばれることが保証されています。EF Core 9 以前ではここが `ORDER BY [b].[Name]` だけだったため、`Name` が重複する行があると 1 本目と 2 本目で異なる行が選ばれ得ました。**分割クエリと `Take` / `Skip` を併用しているプロジェクトは、EF Core 10 へ上げる価値があります。**
+> 2 本目のサブクエリでも `ORDER BY [b].[Name], [b].[Id]` と主キーまで含めて並べ替えられており、`Name` の重複による順序の不定性を避けています。**クエリ間のデータ変更まで防ぐものではありません。** 公式も EF Core 10 より前の分割クエリで `Take` / `Skip` を使う際は、一意な順序を明示するよう注意しています。ここで確認したのは EF Core 10 の生成 SQL であり、旧バージョンとの同時比較ではありません。
 
 ### LeftJoin / RightJoin 演算子
 
@@ -1014,7 +1023,7 @@ var results = await context.Students
 
 ### 大文字小文字の区別は照合順序が決める
 
-C# の `==` は大文字小文字を区別しますが、**SQL に翻訳された後は、データベースの照合順序 (collation) が区別するかどうかを決めます。** SQL Server の既定の照合順序は大文字小文字を区別しないため、次のクエリは `John` と `JOHN` の両方に一致しました。
+C# の `==` は大文字小文字を区別しますが、**SQL に翻訳された後は、データベースの照合順序 (collation) が区別するかどうかを決めます。** 今回は、大文字小文字を区別しない照合順序のデータベースで実行したため、次のクエリは `John` と `JOHN` の両方に一致しました。
 
 ```csharp
 var count = await context.Customers.Where(c => c.Name == "john").CountAsync(cancellationToken);
@@ -1041,9 +1050,9 @@ var exact = await context.Customers
 // SQL: WHERE [c].[Name] COLLATE SQL_Latin1_General_CP1_CS_AS = N'John'  →  実測で 1 件
 ```
 
-#### 照合順序を上書きするとインデックスが効かなくなる
+#### 照合順序の上書きとインデックスへの影響
 
-これが最大の落とし穴です。インデックスは列の照合順序を引き継ぐため、**クエリで違う照合順序を指定すると照合順序が一致せず、インデックスが使えなくなります。** `Name` 列に非クラスター化インデックスを張った 2,001 行のテーブルで、SQL Server 2022 の実行プランを比較しました。
+インデックスは列の照合順序を引き継ぐため、**クエリで違う照合順序を指定すると、その列のインデックスを効率的に使えなくなることがあります。** 公式も「一般にインデックスの利用を妨げる」と説明しており、すべての実行プランでインデックスが一切使われないという意味ではありません。`Name` 列に非クラスター化インデックスを張った 2,001 行のテーブルで、SQL Server 2022 の [`SET SHOWPLAN_ALL ON`](https://learn.microsoft.com/ja-jp/sql/t-sql/statements/set-showplan-all-transact-sql?view=sql-server-ver16) により推定実行プランを取得して比較しました。クエリ実行後の実測時間や実際の実行プランを取得した結果ではありません。
 
 | クエリ | 実行プラン |
 | --- | --- |
@@ -1197,15 +1206,15 @@ var page = await context.Posts
 > ページングでは、並び順が一意になるようにしてください。並び順が同値の行があると、ページ間で行の順序が不定になります。上の例のように、末尾に主キーを加えるのが確実です。
 
 > [!WARNING]
-> `pageNumber` と `pageSize` をクエリ文字列などの外部入力から受け取る場合は、**必ず範囲を検証してください**。EF Core は値の妥当性を検査せず、そのまま SQL のページング句に渡します。そして **不正な値を渡したときの結果はデータベースによって異なります。**
+> `pageNumber` と `pageSize` をクエリ文字列などの外部入力から受け取る場合は、**必ず範囲を検証してください**。今回の負値のケースでは、EF Core 側で拒否されず SQL のページング句まで渡りました。不正な値の扱いを、データベース側の処理に任せないようにしてください。
 >
-> SQL Server の `OFFSET` は「0 以上」、`FETCH NEXT` は「1 以上」であることが T-SQL の仕様で定められています。したがって範囲外の値はエラーになります。一方 SQLite の `LIMIT` / `OFFSET` はエラーにならず、負の `LIMIT` は「上限なし」として扱われます。20 件のデータに対して実測した結果は次のとおりです。
+> SQL Server の [`OFFSET` は「0 以上」、`FETCH NEXT` は「1 以上」](https://learn.microsoft.com/ja-jp/sql/t-sql/queries/select-order-by-clause-transact-sql?view=sql-server-ver16)であることが T-SQL の仕様で定められています。20 件のデータに対して、次の結果を実測しました。
 >
-> | 入力 | 生成される句 | SQL Server 2022 | SQLite |
-> | --- | --- | --- | --- |
-> | `pageNumber=0`, `pageSize=10` | `Skip(-10).Take(10)` | `SqlException`（下記） | 10 件（負の `OFFSET` が無視される） |
-> | `pageNumber=1`, `pageSize=-5` | `Skip(-10).Take(-5)` | `SqlException`（下記） | **全 20 件が返る** |
-> | `pageNumber=1`, `pageSize=0` | `Skip(0).Take(0)` | 0 件 | 0 件 |
+> | 入力 | LINQ 演算 | SQL Server 2022 |
+> | --- | --- | --- |
+> | `pageNumber=0`, `pageSize=10` | `Skip(-10).Take(10)` | `SqlException`（下記） |
+> | `pageNumber=1`, `pageSize=-5` | `Skip(0).Take(-5)` | `SqlException`（下記） |
+> | `pageNumber=1`, `pageSize=0` | `Skip(0).Take(0)` | 0 件 |
 >
 > SQL Server 側の例外メッセージはそれぞれ次のとおりです。
 >
@@ -1214,16 +1223,16 @@ var page = await context.Posts
 > The number of rows provided for a FETCH clause must be greater then zero.
 > ```
 >
-> つまり **SQL Server では 500 エラーになり、SQLite では件数制限が外れてテーブル全体が返ります。** 後者は一覧 API がそのままサービス拒否や情報漏洩の窓口になるため、より危険です。いずれにせよ入力を信用せず、次のように上限つきで丸めてください。
+> 負値を使った SQL Server のクエリは例外終了しました。HTTP のステータスコードは API 側の例外処理に依存し、この DB の実測だけから 500 応答と断定できません。外部入力は事前に検証し、次のように上限を設けてください。
 >
 > ```csharp
 > pageNumber = Math.Max(pageNumber, 1);
 > pageSize = Math.Clamp(pageSize, 1, 100);
 > ```
 >
-> なお `Take(0)` はどちらのデータベースでも 0 件です。SQL Server では EF Core がページング句を生成せず `WHERE 0 = 1` に置き換えるため、データベースへの問い合わせ自体が最適化されます。
+> なお、今回の SQL Server での `Take(0)` は 0 件でした。生成 SQL はページング句ではなく `WHERE 0 = 1` を含んでいました。データベースへの問い合わせが省略されたことを示す実測ではありません。
 >
-> ASP.NET Core のモデルバインディングを使う場合は、[第 3 章](../03-mvc-web-and-api/index.md)で扱った検証属性（`[Range(1, 100)]` など）を DTO に付けて、コントローラーに入る前に弾くのが確実です。
+> ASP.NET Core で [`[ApiController]` の既定の自動 400 応答](https://learn.microsoft.com/ja-jp/aspnet/core/web-api/?view=aspnetcore-10.0#automatic-http-400-responses)を使う場合は、[第 3 章](../03-mvc-web-and-api/index.md)で扱った検証属性（`[Range(1, 100)]` など）を DTO に付けると、範囲外入力を**アクション実行前に 400 応答で拒否**できます。`[ApiController]` を使わない場合や、`SuppressModelStateInvalidFilter` を `true` にして自動応答を無効にした場合は、`ModelState` の確認とエラー応答を明示的に実装してください。
 
 > [!TIP]
 > **さらに詳しく**
@@ -1324,10 +1333,10 @@ await context.Entry(post)
 | `b.Posts.Count() > 0`（**メソッド**） | `(SELECT COUNT(*) FROM [Posts] ...) > 0` |
 | `b.Posts.Count() != 0`（**メソッド**） | `(SELECT COUNT(*) ...) <> 0 OR (SELECT COUNT(*) ...) IS NULL` |
 
-`EXISTS` は最初の 1 件が見つかった時点で打ち切れますが、`COUNT(*)` は条件に合う行をすべて数えます。関連レコードが多いほど差が開きます。
+この比較で確認したのは生成 SQL の違いであり、実行時間の差を測ったものではありません。生成 SQL だけを根拠に、関連レコードが増えるほど性能差も大きくなるとは判断できません。
 
 > [!WARNING]
-> **`Count` プロパティと `Count()` メソッドで結果が変わります。** 上の表のとおり、最適化が働くのは `ICollection<T>.Count` プロパティのほうだけで、LINQ の `Count()` メソッドを書くと `COUNT(*)` のままです。とくに `Count() != 0` は、同じサブクエリが 2 回現れるさらに冗長な SQL になりました。**迷ったら `Any()` を使ってください。** 意図が明確で、書き方によって SQL が変わることもありません。
+> **上の比較では、`Count` プロパティと `Count()` メソッドで生成 SQL が変わりました。** 最適化が働いたのは `ICollection<T>.Count` プロパティのほうで、LINQ の `Count()` メソッドを書くと `COUNT(*)` のままでした。とくに `Count() != 0` は、同じサブクエリが 2 回現れるさらに冗長な SQL になりました。**存在チェックには `Any()` を使ってください。** 「1 件でもあるか」という意図を直接表現できます。
 
 存在しないことを調べる場合は注意が必要です。`Count == 0` は `EXISTS` に変換されず `COUNT(*) = 0` のままでした。`!Any()` と書けば `NOT EXISTS` になります。
 
@@ -1436,7 +1445,7 @@ options.UseSqlServer(connectionString, o => o.UseRelationalNulls(true));
 > `UseRelationalNulls(true)` を使うと、**LINQ クエリの意味が C# と一致しなくなります**。上と同じデータ（4 行、うち `String1` か `String2` が null の行が 2 行）で実測したところ、既定では 2 件返る `String1 != String2` が、`UseRelationalNulls(true)` では 1 件しか返りませんでした。生成される SQL は `WHERE [e].[String1] <> [e].[String2]` だけになり、null を含む行が `WHERE` で落ちるためです。公式ドキュメントでも「期待と異なる結果になることがあるため、このモードの使用には注意が必要」と警告されています。
 
 > [!TIP]
-> null 非許容の列どうしの比較がもっとも単純で高速です。可能な場合は列を null 非許容にすることを検討してください。
+> null 非許容の列どうしの比較では、null 許容列の比較に必要な補償条件を省けます。公式も、可能な場合は列を null 非許容にすることを勧めています。この例では SQL の形と結果を確認しており、実行時間を比較したベンチマークではありません。
 
 #### SQLite の bool? の null も空文字になる
 
@@ -1585,7 +1594,7 @@ var ids = await context.Database
 
 #### 未マップ型 (DTO) を直接受け取る
 
-`SqlQuery` が扱えるのはスカラー値だけではありません。**EF Core のモデルに含まれていない任意の CLR 型**にも結果を詰められます（EF Core 8.0 で追加）。複数のテーブルを結合した結果や、列の部分集合をそのまま DTO に受け取れるため、生の SQL を書くときに `DbCommand` などの低レベルな API へ降りる必要がなくなります。
+`SqlQuery` が扱えるのはスカラー値だけではありません。**EF Core のモデルに含まれていない、マッピング可能な CLR 型**にも結果を詰められます（EF Core 8.0 で追加）。複数のテーブルを結合した結果や、列の部分集合をそのまま DTO に受け取れるため、生の SQL を書くときに `DbCommand` などの低レベルな API へ降りる必要がなくなります。
 
 この節の `Blog` / `Post` と `context` も、[「関連データを読み込まずに数える」の検証用モデル](#関連データを読み込まずに数える)（`RatingQuerySample.RatingContext`）を使います。`Rating` はこのモデルの `Post` に定義されています。本編の `BloggingContext` にそのまま貼り付ける例ではありません。
 
@@ -1785,7 +1794,7 @@ var blogs = await context.Blogs
 ```
 
 > [!WARNING]
-> **SQL Server はストアドプロシージャの呼び出しに対する合成を許可しません。** つまり、前項の `Where` や `OrderBy` を続けることができません。実測では、`Where` を続けた時点で次の例外になりました。
+> **SQL Server はストアドプロシージャの呼び出しに対する合成を許可しません。** 実測では、`FromSql` に `Where` を合成し、`ToListAsync` でクエリを実行しようとしたときに次の例外になりました。`Where` を呼んでクエリを組み立てた瞬間の例外ではありません。
 >
 > ```text
 > InvalidOperationException: 'FromSql' or 'SqlQuery' was called with non-composable SQL
@@ -1974,7 +1983,7 @@ protected override void Up(MigrationBuilder migrationBuilder)
 }
 ```
 
-`KEY INDEX` には、その表の一意・非 NULL・単一列のインデックス名（通常は主キーのインデックス）を指定します。マイグレーションの一部の操作はトランザクション内で実行できないため、`suppressTransaction: true` でトランザクションから外します（[付録 EF Core 4 の「保存をストアドプロシージャに割り当てる」](../appendix-efcore-04/index.md#保存をストアドプロシージャに割り当てる)でも同じ指定を使っています）。
+`KEY INDEX` には、その表の一意・非 NULL・単一列のインデックス名（通常は主キーのインデックス）を指定します。マイグレーションの一部の操作はトランザクション内で実行できないため、`suppressTransaction: true` でトランザクションから外します（[付録 EF Core 4 の「保存をストアドプロシージャに割り当てる」](../appendix-efcore-04/index.md#保存をストアドプロシージャに割り当てる)でもこの指定の用途を説明しています）。
 
 全文検索を有効にした SQL Server 2022 に対してこの 2 文を実行してから検索したところ、`EF.Functions.Contains` が翻訳した SQL は次のようになり、該当する行が返りました（実測）。
 
