@@ -1727,16 +1727,18 @@ var blogs = await context.Blogs
 ```
 
 > [!WARNING]
-> 次は、このコードを SQL Server 2022 で実行する確認例の SQL です。**例外ではなく、意図と異なる結果**を確認できています。
+> 次は、このコードが行う比較を示す説明用の SQL です。実際の EF Core の実行では値を `DbParameter` として渡しますが、ここでは値を分かりやすく示すため、[SQL Server のローカル変数宣言](https://learn.microsoft.com/ja-jp/sql/t-sql/language-elements/declare-local-variable-transact-sql?view=sql-server-ver16)を付けています。
 >
 > ```sql
-> DECLARE p0 nvarchar(4000) = N'Owner';
-> DECLARE p1 nvarchar(4000) = N'johndoe';
+> DECLARE @p0 nvarchar(4000) = N'Owner';
+> DECLARE @p1 nvarchar(4000) = N'johndoe';
 >
 > SELECT * FROM [Blogs] WHERE @p0 = @p1
 > ```
 >
-> この例では列名まで文字列パラメーターになり、条件は `'Owner' = 'johndoe'` という偽の文字列比較です。該当データがあるのに結果は **0 件**であることを確認できています。期待する結果が 0 件のテストだけでは、この誤りを見落とします。
+> [`ToQueryString()` の公式 API 説明](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.entityframeworkqueryableextensions.toquerystring?view=efcore-10.0)は、出力はデバッグ用であり、直接実行に適さない場合があるとしています。診断表示と実際に送信するコマンド・パラメーターは区別してください。
+>
+> この例では列名まで文字列パラメーターになり、条件は `'Owner' = 'johndoe'` という偽の文字列比較です。上の C# コードを SQL Server 2022 で実行する確認例では、**例外ではなく、該当データがあるのに結果は 0 件**となることを確認できています。期待する結果が 0 件のテストだけでは、この誤りを見落とします。
 
 どうしても列名を動的に組み立てる必要がある場合は、公式ドキュメントが示すとおり `FromSqlRaw` を使い、**列名は文字列補間で埋め込み、値は `DbParameter` として渡します。**
 
