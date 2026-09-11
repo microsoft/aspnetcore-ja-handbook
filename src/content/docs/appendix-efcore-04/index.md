@@ -751,16 +751,30 @@ builder.Property(b => b.LastUpdatedAt).IsConcurrencyToken();
 > [!WARNING]
 > [公式のアプリケーション管理トークン](https://learn.microsoft.com/ja-jp/ef/core/saving/concurrency#application-managed-concurrency-tokens)では、**値の更新はアプリケーション側の責任**です。SQLite の確認例でも、先行更新でトークンを変えない条件は上書き、下記の更新処理で値が変わる条件は `DbUpdateConcurrencyException` です。この結果を、オーバーライドだけが検出の実装方法であるという意味にはしません。
 >
+> 次のメソッドは、既定の自動変更検出が有効な `DbContext` 内に追加する例です。[EF Core の実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore/DbContext.cs)では、`SaveChanges()` と `SaveChangesAsync(CancellationToken)` は、それぞれ `bool acceptAllChangesOnSuccess` を受け取るオーバーロードへ委譲します。**同期・非同期の両方でトークンを更新するため、その 2 つをオーバーライドし、更新処理を共通化します。** `SaveChangesAsync(CancellationToken)` だけをオーバーライドすると、同期の保存や `SaveChangesAsync(false, cancellationToken)` では更新処理を通りません。
+>
 > ```csharp
-> public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+> public override int SaveChanges(bool acceptAllChangesOnSuccess)
+> {
+>     UpdateConcurrencyTokens();
+>     return base.SaveChanges(acceptAllChangesOnSuccess);
+> }
+>
+> public override Task<int> SaveChangesAsync(
+>     bool acceptAllChangesOnSuccess,
+>     CancellationToken cancellationToken = default)
+> {
+>     UpdateConcurrencyTokens();
+>     return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+> }
+>
+> private void UpdateConcurrencyTokens()
 > {
 >     foreach (var entry in ChangeTracker.Entries<Blog>()
 >                  .Where(e => e.State == EntityState.Modified))
 >     {
 >         entry.Entity.LastUpdatedAt = DateTime.UtcNow;
 >     }
->
->     return base.SaveChangesAsync(cancellationToken);
 > }
 > ```
 
