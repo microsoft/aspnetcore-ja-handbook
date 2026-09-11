@@ -503,7 +503,7 @@ public class BlogsController(BloggingContext context) : ControllerBase
 
 #### 接続の暗号化は既定で有効
 
-SQL Server プロバイダーが使う `Microsoft.Data.SqlClient` は、バージョン 4.0（EF Core 7）から **`Encrypt` の既定値が `True` に変わりました。** 既定の `TrustServerCertificate=False` と組み合わせると、**サーバー証明書の検証も必要**になります。開発用のコンテナーや自己署名証明書のサーバーに、それまで動いていた接続文字列で接続すると失敗します。
+SQL Server プロバイダーが使う `Microsoft.Data.SqlClient` は、バージョン 4.0 から **`Encrypt` の既定値が `True` に変わりました。** EF Core の SQL Server プロバイダーでは、[EF Core 7 への更新でこの変更が影響します](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-7.0/breaking-changes#encrypt-true)。SqlClient と EF Core のバージョン番号は別です。既定の `TrustServerCertificate=False` と組み合わせると、**サーバー証明書の検証も必要**になります。開発用のコンテナーや自己署名証明書のサーバーに、それまで動いていた接続文字列で接続すると失敗します。
 
 ```text
 SqlException: サーバーとの接続を正常に確立しましたが、ログイン前のハンドシェイク中に
@@ -904,12 +904,12 @@ var query = context.Blogs
 Console.WriteLine(query.ToQueryString());
 ```
 
-SQL Server 2022 に対して実行すると、次の SQL が得られます。
+本章のモデルを SQL Server プロバイダーで構成して `ToQueryString()` を呼ぶと、次の SQL が得られます。データベースへの接続やクエリの実行は行いません。
 
 ```sql
 DECLARE @url_contains nvarchar(4000) = N'%dotnet%';
 
-SELECT [b].[Id], [b].[Name], [b].[Url]
+SELECT [b].[Id], [b].[CreatedAt], [b].[Name], [b].[Rating], [b].[Url]
 FROM [Blogs] AS [b]
 WHERE [b].[Url] LIKE @url_contains ESCAPE N'\'
 ORDER BY [b].[Id]
@@ -937,21 +937,21 @@ ORDER BY [b].[Id]
 }
 ```
 
-`SaveChangesAsync` で 1 件の追加と 1 件の更新を行ったときに、SQL Server 2022 に対して実際に出力されたログは次のとおりです。
+次は、本章のモデルで既存の `Blog.Name` を更新し、`Post` を 1 件追加する場合のログの**表示形式の例**です。SQL とパラメーター構成は、EF Core 10.0.11 の SQL Server プロバイダーが生成した実行直前のコマンドで確認したものです。ここでは SQL Server での保存を再実行しておらず、実行時間は `<実行時間>` としています。
 
 ```text
 info: Microsoft.EntityFrameworkCore.Database.Command[20101]
-      Executed DbCommand (8ms) [Parameters=[@p1='?' (DbType = Int32), @p0='?' (Size = 4000), @p2='?' (DbType = Int32), @p3='?' (Size = 4000)], CommandType='Text', CommandTimeout='30']
+      Executed DbCommand (<実行時間>) [Parameters=[@p1='?' (DbType = Int32), @p0='?' (Size = 4000), @p2='?' (DbType = Int32), @p3='?' (Size = 4000), @p4='?' (DbType = DateTimeOffset), @p5='?' (Size = 4000)], CommandType='Text', CommandTimeout='30']
       SET NOCOUNT ON;
       UPDATE [Blogs] SET [Name] = @p0
       OUTPUT 1
       WHERE [Id] = @p1;
-      INSERT INTO [Posts] ([BlogId], [Title])
+      INSERT INTO [Posts] ([BlogId], [Content], [PublishedAt], [Title])
       OUTPUT INSERTED.[Id]
-      VALUES (@p2, @p3);
+      VALUES (@p2, @p3, @p4, @p5);
 ```
 
-公式の[保存のバッチ処理](https://learn.microsoft.com/ja-jp/ef/core/performance/efficient-updating#batching)は、複数の変更をまとめて送信し、ラウンドトリップを減らす仕組みを説明しています。このログでも、`UPDATE` と `INSERT` が 1 つのコマンドにまとめられていることを確認できています。
+公式の[保存のバッチ処理](https://learn.microsoft.com/ja-jp/ef/core/performance/efficient-updating#batching)は、複数の変更をまとめて送信し、ラウンドトリップを減らす仕組みを説明しています。この例でも、`UPDATE` と `INSERT` が 1 つのコマンドにまとめられていることを確認できています。
 
 > [!WARNING]
 > ログの `Parameters` に注目してください。値が `'?'` になっています。EF Core は**既定でパラメーターの値をログに出力しません**。個人情報などがログに残るのを防ぐためです。`EnableSensitiveDataLogging()` を呼ぶと実際の値（`@url_contains='%dotnet%'` のような形）が出力されますが、**本番環境では有効にしないでください**。

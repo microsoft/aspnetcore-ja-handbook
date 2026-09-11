@@ -162,7 +162,7 @@ Post {Id: 2} Unchanged FK {BlogId: 1}
 
 思ったとおりの状態になっているかは、`ChangeTracker.DebugView` で確認できます。公式ドキュメントの説明どおり、**`ShortView` は追跡中のエンティティ・その状態・キー値だけ**を、**`LongView` はさらにすべてのプロパティ値とナビゲーションの状態まで**表示します。
 
-次は、`Blog` を 1 件読み込んで `Name` を書き換えた状態で、両方を出力する確認例です。
+次は、`Blog` 1 件と、それに関連する `Post` 1 件を読み込んで追跡し、`Blog.Name` を書き換えた状態で、両方を出力する確認例です。`Blog` だけを読み込んだ場合に、未読の `Post` まで表示されるわけではありません。
 
 ```csharp
 context.ChangeTracker.DetectChanges();
@@ -475,6 +475,8 @@ await context.Posts
 ```
 
 EF Core 10 では、**JSON 列にマッピングされた複合型のプロパティも `ExecuteUpdateAsync` で更新できる** ようになりました。従来の `ExecuteUpdateAsync` は JSON 列の更新に対応していませんでした。複合型と所有型の違いは[付録1の「値の変換・所有型・複合型」](../appendix-efcore-01/index.md#値の変換所有型複合型)で扱います。
+
+この確認例は本編とは別のモデルです。`Blog` は `Id` と `Details` を持ち、`Details` の複合型は `Title`（`string`）と `Views`（`int`）を持ちます。付録1の JSON クエリ例で使う `Viewers` ではなく、この例では `Views` というプロパティ名を使います。
 
 ```csharp
 modelBuilder.Entity<Blog>().ComplexProperty(b => b.Details, bd => bd.ToJson());
@@ -1304,7 +1306,7 @@ after update: CreatedAt=2026-09-01T08:23:51.0828970 UpdatedAt=2026-09-01T08:23:5
 > This is commonly caused by injection of a new singleton service instance into every DbContext instance.
 > ```
 >
-> `static readonly` なフィールドか、DI コンテナーに Singleton として登録したインスタンスを渡してください。
+> この指示は、上の表で「シングルトン」が **はい** のインターセプターに対するものです。`static readonly` なフィールドか、DI コンテナーに Singleton として登録したインスタンスを渡してください。一方、処理中の監査情報などをフィールドに保持する `ISaveChangesInterceptor` は、[公式の監査例](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/interceptors#example-savechanges-interception-for-auditing)のように `DbContext` ごとに別インスタンスを用意します。上の `AuditInterceptor` を共有できるのは、その実装が状態をフィールドに保持しないためです。
 
 #### 読み込み時に処理を挟む（`IMaterializationInterceptor`）
 

@@ -45,7 +45,7 @@ description: "EF Core を使うコードのテスト戦略、実データベー�
 
 ### 実データベースに対するテスト
 
-xUnit では、テスト用のセットアップに **フィクスチャ** を使います。次は、クラスフィクスチャのインスタンスはテストクラスごとに生成し、同じテストプロセス内でデータベースの初期化を 1 回だけ行う例です。
+xUnit では、テスト用のセットアップに **フィクスチャ** を使います。次は、クラスフィクスチャのインスタンスはテストクラスごとに生成し、同じテストプロセス内でデータベースの初期化を 1 回だけ行う例です。**本編で `BloggingContext` 用のマイグレーションを作成済みで、それを適用できる構成を前提とします。** `Migrate()` はモデルから新しいマイグレーションを生成する処理ではありません。
 
 ```csharp
 public class TestDatabaseFixture
@@ -191,11 +191,14 @@ xUnit では、複数のテストクラスでフィクスチャを共有する�
 
 この条件の所要時間は 443 ms と 9 ms です。比較対象は全行を読み込む `RemoveRange` + `SaveChanges` と生 SQL で、`ExecuteDelete` の結果を含みません。比率や順位は他の条件へ一般化できません。
 
+削除だけでは初期データまでなくなります。初期データを前提とするテストでは、コミットするテスト専用のフィクスチャにも前述の `SeedData` と同じ初期化処理を用意し、削除後に再投入してください。次のメソッドをそのフィクスチャに追加します。上の所要時間は削除処理だけのもので、再投入の時間は含みません。
+
 ```csharp
 public async Task CleanupAsync()
 {
     await using var context = CreateContext();
     await context.Database.ExecuteSqlRawAsync("DELETE FROM [Blogs]");
+    SeedData(context);
 }
 ```
 
@@ -311,7 +314,8 @@ public sealed class SqliteContextFactory : IDisposable
 > {
 >     modelBuilder.Entity<Blog>()
 >         .Property(b => b.Id)
->         .Metadata.SetValueGenerationStrategy(SqliteValueGenerationStrategy.None);
+>         .Metadata.SetValueGenerationStrategy(
+>             Microsoft.EntityFrameworkCore.Metadata.SqliteValueGenerationStrategy.None);
 > }
 > ```
 >
@@ -433,16 +437,17 @@ var data = await db.Hexes.Select(b => EF.Functions.Unhex(b.S)!).ToListAsync();
 
 #### 先行書き込みログ (WAL) が有効かを確認する
 
-[公式の WAL の案内](https://learn.microsoft.com/ja-jp/dotnet/standard/data/sqlite/async)では、EF Core が作成するデータベースは既定で WAL 有効です。[エラー処理の説明](https://learn.microsoft.com/ja-jp/dotnet/standard/data/sqlite/database-errors#locking-retries-and-timeouts)は、Microsoft.Data.Sqlite が busy / locked エラーを成功またはタイムアウトまで再試行するとしています。これは EF Core の実行戦略とは別の層です。
+[公式の WAL の案内](https://learn.microsoft.com/ja-jp/dotnet/standard/data/sqlite/async)では、EF Core が作成するデータベースは既定で WAL 有効と説明されています。**ここで対象にするのはファイルデータベースです。** [SQLite 自体の公式仕様](https://www.sqlite.org/pragma.html#pragma_journal_mode)では、インメモリデータベースのジャーナルモードは `MEMORY` または `OFF` に限られ、WAL には切り替えられません。[エラー処理の説明](https://learn.microsoft.com/ja-jp/dotnet/standard/data/sqlite/database-errors#locking-retries-and-timeouts)は、Microsoft.Data.Sqlite が busy / locked エラーを成功またはタイムアウトまで再試行するとしています。これは EF Core の実行戦略とは別の層です。
 
 補足として、EF Core 10.0.11 / SQLite、WAL 無効、別接続の書き込みロックを 300 ミリ秒後に解除する条件では、`RETURNING` 付きの保存成功を確認できています。EF の実行戦略は再試行無効です。この結果をすべてのロック競合の回復保証や、WAL 不要の根拠にはしません。
 
-次は作成方法ごとの `journal_mode` の確認例です。
+次は作成方法ごとの `journal_mode` の確認例です。インメモリの行は EF Core 10.0.11 / `Data Source=:memory:` での確認で、`PRAGMA journal_mode = 'wal'` を実行しても `memory` のままです。
 
 | 作成方法 | `PRAGMA journal_mode` |
 | --- | --- |
-| EF Core が作成したデータベース | `wal` |
-| `SqliteConnection` で直接作成したデータベース | `delete` |
+| EF Core が作成したファイルデータベース | `wal` |
+| `SqliteConnection` で直接作成したファイルデータベース | `delete` |
+| EF Core が作成したインメモリデータベース | `memory` |
 
 既存のファイルを引き継ぐ場合は、作成経路だけで設定を仮定せず、`journal_mode` を確認してください。WAL を有効にするには、公式が示す次の `PRAGMA` を使います。
 
@@ -452,7 +457,7 @@ PRAGMA journal_mode = 'wal';
 
 #### マイグレーションの制限
 
-[公式の SQLite マイグレーション制限](https://learn.microsoft.com/ja-jp/ef/core/providers/sqlite/limitations#migrations-limitations)は、対応する一部の変更を**テーブルの再構築**で行うと説明しています。次は `Note` 列を削除して `Rank` 列を追加するマイグレーションの SQL 確認例です。
+[公式の SQLite マイグレーション制限](https://learn.microsoft.com/ja-jp/ef/core/providers/sqlite/limitations#migrations-limitations)は、対応する一部の変更を**テーブルの再構築**で行うと説明しています。次は `Note` 列を削除して `Rank` 列を追加するマイグレーションの SQL から、テーブルの変更部分を抜粋した確認例です。マイグレーション履歴への記録などは省略しています。
 
 ```sql
 BEGIN TRANSACTION;
@@ -476,7 +481,7 @@ PRAGMA foreign_keys = 1;
 
 この変更に対して生成されたスクリプトには、全行のコピーと外部キー検査の一時停止が含まれます。すべての列削除で必ず同じスクリプトになるという意味ではありません。行数の多いテーブルでは所要時間と一時的なディスク使用量に注意してください。
 
-また、[公式の冪等スクリプトの制限](https://learn.microsoft.com/ja-jp/ef/core/providers/sqlite/limitations#idempotent-script-limitations)のとおり、SQLite は必要な条件分岐の手続き言語を持たず、冪等スクリプトを生成できません。次は[本編の生成コマンド](../08-entity-framework-core/index.md#sql-スクリプトとマイグレーションバンドル)に対応するエラー確認例です。
+また、[公式の冪等スクリプトの制限](https://learn.microsoft.com/ja-jp/ef/core/providers/sqlite/limitations#idempotent-script-limitations)のとおり、SQLite は必要な条件分岐の手続き言語を持たず、冪等スクリプトを生成できません。次は[本編の生成コマンド](../08-entity-framework-core/index.md#sql-スクリプトとマイグレーションバンドル)に対応するエラー確認例で、末尾の案内を省略した抜粋です。
 
 ```text
 Generating idempotent scripts for migrations is not currently supported for SQLite.

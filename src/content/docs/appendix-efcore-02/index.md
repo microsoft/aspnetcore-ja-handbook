@@ -378,7 +378,7 @@ modelBuilder.Entity<Product>()
 
 #### プロパティとフィールドのどちらを使うかを指定する
 
-`HasField` を構成すると、公式ドキュメントによれば「EF は常にバッキングフィールドを読み書きし、プロパティを使うことはない」のが既定の動作です。この動作は `UsePropertyAccessMode` で変更できます。
+アクセスモードの既定は [`PreferField`](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.propertyaccessmode?view=efcore-10.0) です。上のようにバッキングフィールドがある場合は、プロパティを経由せずフィールドを読み書きします。`UsePropertyAccessMode` ではこの方針を明示・変更できます。次の `Field` は、フィールドを必ず使用する指定です。この `Product` では既定と同じ経路になりますが、フィールドを利用できない場合にプロパティへ切り替えず、例外になります。
 
 ```csharp
 modelBuilder.Entity<Product>()
@@ -387,7 +387,7 @@ modelBuilder.Entity<Product>()
     .UsePropertyAccessMode(PropertyAccessMode.Field);
 ```
 
-指定できる値の一覧は `PropertyAccessMode` 列挙型を参照してください。たとえば「マテリアライズ（データベースから復元）するときだけフィールドに書き込み、それ以外はプロパティを使う」といった構成が可能です。
+別の方針として、`PreferFieldDuringConstruction` はマテリアライズ（データベースから復元）するときにフィールドを優先し、それ以外はプロパティを優先します。利用できない場合は他方へ切り替わります。上の `Price` にはセッターがないため、この指定だけでプロパティ経由の書き込みや `SetPrice` の呼出しに変わるわけではありません。
 
 #### フィールドのみのプロパティ
 
@@ -571,7 +571,8 @@ SQLite では整数の主キーに `AUTOINCREMENT` が付きます。EF Core 10 
 // 方法 1: SQLite 固有の設定で止める
 modelBuilder.Entity<Blog>()
     .Property(b => b.Id)
-    .Metadata.SetValueGenerationStrategy(SqliteValueGenerationStrategy.None);
+    .Metadata.SetValueGenerationStrategy(
+        Microsoft.EntityFrameworkCore.Metadata.SqliteValueGenerationStrategy.None);
 
 // 方法 2: EF Core で値生成の対象にしない（アプリケーションが値を設定する）
 modelBuilder.Entity<Blog>()
@@ -1061,7 +1062,7 @@ EF Core の SQL Server プロバイダーは、**接続先のバージョンを�
 options.UseSqlServer(connectionString, o => o.UseCompatibilityLevel(160));
 ```
 
-公式ドキュメントは「互換性レベルを明示的に構成しなければ、**最新機能を活用しない妥当な既定値**が選ばれる。そのため**明示的に構成することを推奨する**」と述べています。EF Core 10 の既定値は次のとおりです。
+公式ドキュメントは「互換性レベルを明示的に構成しなければ、**最新機能を活用しない妥当な既定値**が選ばれる。そのため**明示的に構成することを推奨する**」と述べています。[EF Core 10.0.11 の公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.SqlServer/Infrastructure/Internal/SqlServerOptionsExtension.cs)で確認できる既定値は次のとおりです。
 
 | メソッド | 既定の互換性レベル | 相当する製品 |
 | --- | --- | --- |
@@ -1285,7 +1286,7 @@ private void ApplySoftDelete()
 >
 > 親 (`Blog`) がフィルターで除外されているのに子 (`Post`) が除外されないと、`Post` を起点にしたクエリで親が読み込めず、予期しない結果になります。ナビゲーションを省略可能にするか、関係する両方のエンティティに対応するフィルターを定義してください。
 
-次は、`fish` を含む `Blog` と含まない `Blog` に投稿を 3 件ずつ持たせた SQL Server 2022 での確認例です。この必須関係とフィルターの構成では、**`Include` の追加により取得件数が減る**ことを確認できています。
+ここからは、[公式の必須ナビゲーションの例](https://learn.microsoft.com/ja-jp/ef/core/querying/filters#query-filters-and-required-navigations)と同じく、`BlogId` / `Url` を持つ別の `Blog` モデルと、`b => b.Url.Contains("fish")` のフィルターを使います。前述の `Id` / `Name` / `IsDeleted` を持つモデルとは別です。`fish` を含む `Blog` と含まない `Blog` に投稿を 3 件ずつ持たせた SQL Server 2022 の確認例では、**`Include` の追加により取得件数が減る**ことを確認できています。
 
 ```csharp
 var withoutInclude = await context.Posts.ToListAsync();                       // 6 件
@@ -1316,16 +1317,16 @@ INNER JOIN (
 省略可能にすると `LEFT JOIN` になるため件数は減りませんが、`Post.Blog` が `null` になり得ます。**件数を揃えたいのか、親を必ず取りたいのかで選び分けてください。**
 
 > [!WARNING]
-> **論理削除を採用するなら、データベース側のカスケード削除を構成してはいけません。** 公式ドキュメントは「エンティティを論理削除する場合はデータベースでカスケード削除を構成しないこと。誤って論理削除ではなく実際に削除されてしまう可能性がある」と明記しています。
+> **論理削除を採用するなら、データベース側のカスケード削除を構成してはいけません。** [公式ドキュメント](https://learn.microsoft.com/ja-jp/ef/core/saving/cascade-delete#cascade-delete-in-the-database)は「エンティティを論理削除する場合はデータベースでカスケード削除を構成しないこと。誤って論理削除ではなく実際に削除されてしまう可能性がある」と明記しています。
 >
 > 次は、`Blog` と `Post` の両方に `IsDeleted` のフィルターを設定し、外部キーを既定の `ON DELETE CASCADE` のまま親を `Remove` する SQL Server 2022 での確認例です。
 >
-> | 操作 | `Blogs` の実行数 | `Posts` の実行数 |
+> | 操作 | `Blogs` の残存件数 | `Posts` の残存件数 |
 > | --- | --- | --- |
 > | `IsDeleted = true` にして保存（論理削除） | 1 | 2 |
 > | 親を `Remove` して保存（物理削除） | **0** | **0** |
 >
-> 論理削除の運用に 1 か所でも物理削除の経路が混ざると、データベース側のカスケードによって子まで消えます。論理削除を使う場合は `OnDelete(DeleteBehavior.Restrict)` などでデータベースのカスケードを外し、削除は必ずフラグの更新として行ってください。
+> この表はフィルターで隠れた行も含めた残存件数です。物理削除の行は、前述の `ApplySoftDelete` による変換を通さず、実際に `DELETE` が発行される経路との対比です。論理削除の運用に 1 か所でも物理削除の経路が混ざると、データベース側のカスケードによって子まで消えます。論理削除を使う場合は `OnDelete(DeleteBehavior.Restrict)` などでデータベースのカスケードを外し、削除は必ずフラグの更新として行ってください。
 
 > [!NOTE]
 > EF Core 10 の名前付きクエリフィルターでは、複数の条件に名前を付け、必要なフィルターだけを無効にできます。論理削除とテナントの条件を分けて管理したい場合に使います。
@@ -1385,3 +1386,4 @@ dotnet_diagnostic.CA1056.severity = none
 - [ALTER DATABASE の制約 | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/t-sql/statements/alter-database-transact-sql?view=sql-server-ver17)
 - [非トランザクション移行の警告定義 | GitHub](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.Relational/Properties/RelationalStrings.resx)
 - [コード分析の構成ファイル | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/fundamentals/code-analysis/configuration-files)
+- [SQL Server プロバイダーのその他の考慮事項（Azure SQL のデータベース設定） | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/misc)

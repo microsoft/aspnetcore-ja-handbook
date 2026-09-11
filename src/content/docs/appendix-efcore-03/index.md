@@ -1003,7 +1003,7 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 
 ### LeftJoin / RightJoin 演算子
 
-.NET 10 では LINQ に `LeftJoin` と `RightJoin` の演算子が追加され、EF Core 10 はこれを SQL の `LEFT JOIN` / `RIGHT JOIN` に変換します。
+.NET 10 では LINQ に `LeftJoin` と `RightJoin` の演算子が追加され、[EF Core 10 はこれを SQL の `LEFT JOIN` / `RIGHT JOIN` に変換します](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-10.0/whatsnew#support-for-the-net-10-leftjoin-and-rightjoin-operators)。
 
 ```csharp
 var results = await context.Students
@@ -1926,8 +1926,10 @@ modelBuilder.Entity<BlogPostCount>()
     .ToView("View_BlogPostCounts");
 ```
 
+`BlogPostCount` はモデルに登録済みなので、専用の `DbSet` プロパティを追加せず、`Set<BlogPostCount>()` から問い合わせられます。
+
 ```csharp
-var counts = await context.BlogPostCounts
+var counts = await context.Set<BlogPostCount>()
     .OrderBy(v => v.BlogName)
     .ToListAsync(cancellationToken);
 ```
@@ -2026,3 +2028,4 @@ WHERE CONTAINS([a].[Contents], N'vegetables')
 - [EF Core 9 の Count の最適化 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-9.0/whatsnew#queries-using-count--0-are-optimized)
 - [EF Core 10.0.11 のモデル変更検出 | GitHub](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.Design/Design/Internal/MigrationsOperations.cs)
 - [EF Core 10.0.11 の CLI 終了コード | GitHub](https://github.com/dotnet/efcore/blob/v10.0.11/src/ef/Program.cs)
+- [EF Core 10 の LeftJoin / RightJoin 対応 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-10.0/whatsnew#support-for-the-net-10-leftjoin-and-rightjoin-operators)

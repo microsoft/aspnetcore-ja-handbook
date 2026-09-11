@@ -974,7 +974,7 @@ modelBuilder.Entity<Author>()
 これにより `Authors` テーブルに `Address_PostalCode`、`Address_Prefecture`、`Address_Line1` という列が作られます。
 
 > [!NOTE]
-> EF Core 10 では複合型のサポートが大きく拡張され、`struct` や `record struct` を複合型として使えるようになったほか、JSON 列へのマッピングやテーブル分割にも対応しました。所有型と複合型はどちらも「エンティティの一部を別の型に切り出す」ものですが、所有型はキーと所有者との関連を持つエンティティ型として扱われるのに対し、複合型は識別子を持たない純粋な値です。**公式ドキュメントは、値としてのセマンティクスが欲しい用途ではすでに所有型を使っている場合も複合型への移行を推奨しています。**
+> 複合型、`struct` / `record struct` の複合型としての利用、所有者と同じテーブルの列に保存するマッピングは、[EF Core 8 から利用できます](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-8.0/whatsnew#value-types-as-complex-types)。[EF Core 10 では JSON 列へのマッピングなどが追加されました](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-10.0/whatsnew#complex-types)。所有型と複合型はどちらも「エンティティの一部を別の型に切り出す」ものですが、所有型はキーと所有者との関連を持つエンティティ型として扱われるのに対し、複合型は識別子を持たない純粋な値です。**[複合型の公式ドキュメント](https://learn.microsoft.com/ja-jp/ef/core/modeling/complex-types)は、値としてのセマンティクスが欲しい用途ではすでに所有型を使っている場合も複合型への移行を推奨しています。**
 
 > [!WARNING]
 > EF Core 9 以前から複合型を使っている場合、**EF Core 10 へのアップグレードで列名が変わることがあります。** 公式の破壊的変更として次の 2 点が挙げられています。
@@ -1098,14 +1098,14 @@ CREATE TABLE [Docs] (
 >
 > [公式の変更履歴](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-10.0/breaking-changes#sql-server-json-data-type-used-by-default-on-azure-sql-and-compatibility-level-170)は、`json` 型への移行でクエリの挙動に差が生じ、JSON 配列に対する `DISTINCT` がサポートされないことを注意点に挙げています。今回の確認でも、**JSON 列全体を投影して `Distinct()` する形**は `json` 型で比較不能のエラーになっています。`nvarchar(max)` で動作するクエリを、そのまま使用できるとは考えないでください。
 >
-> 従来どおり `nvarchar(max)` を使いたい場合は、`UseAzureSql` ではなく `UseSqlServer` を使うか、次のように互換性レベルを明示的に 170 未満に構成します。
+> Azure SQL で従来どおり `nvarchar(max)` を使いたい場合は、公式の回避策に従い、`UseAzureSql` を維持したまま EF 側の互換性レベルを 170 未満に構成します。`UseSqlServer` への切替とは異なり、`UseAzureSql` の自動再試行の既定も維持できます。この指定は EF の SQL 生成やマッピングを制御するもので、データベース自体の互換性レベルを変更する操作ではありません。
 >
 > ```csharp
-> options.UseSqlServer(connectionString, o => o.UseCompatibilityLevel(160));
+> options.UseAzureSql(connectionString, o => o.UseCompatibilityLevel(160));
 > ```
 
 > [!NOTE]
-> 同じく EF Core 10 では、Azure SQL Database と SQL Server 2025 の `vector` データ型がサポートされました。エンティティに `SqlVector<float>` 型のプロパティを持たせると埋め込み (embedding) を保存でき、`EF.Functions.VectorDistance` で類似度検索を書けます。セマンティック検索や RAG のような AI ワークロードで使う機能で、この付録の範囲を超えるためここでは紹介にとどめます。
+> 同じく EF Core 10 では、Azure SQL Database と SQL Server 2025 の [`vector` データ型がサポートされました](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/vector-search)。エンティティに `SqlVector<float>` 型のプロパティを持たせると埋め込み (embedding) を保存でき、`EF.Functions.VectorDistance` で類似度検索を書けます。セマンティック検索や RAG のような AI ワークロードで使う機能で、この付録の範囲を超えるためここでは紹介にとどめます。
 >
 > ```csharp
 > public class Doc
@@ -1290,3 +1290,7 @@ modelBuilder.Entity<Animal>()
 - [カスケード削除 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/cascade-delete)
 - [外部キーと主キー | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/foreign-and-principal-keys)
 - [高度なテーブルマッピング | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/table-splitting)
+- [複合型 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/modeling/complex-types)
+- [EF Core 8 の複合型 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-8.0/whatsnew#value-types-as-complex-types)
+- [EF Core 10 の新機能 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-10.0/whatsnew)
+- [SQL Server プロバイダーのベクトル検索 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/vector-search)
