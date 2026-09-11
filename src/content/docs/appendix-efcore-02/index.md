@@ -1204,7 +1204,31 @@ public class TenantBlogContext(
 }
 ```
 
-名前を付けておくと、無効化したいフィルターだけを個別に選べます。
+この `TenantBlogContext` は、本編の通常の `AddDbContext<TenantBlogContext>` だけでは DI から解決できません。DI は未登録の `int tenantId` を用意できないためです。この例では、[オプションを渡して `new` で生成する公式の方法](https://learn.microsoft.com/ja-jp/ef/core/dbcontext-configuration/#basic-dbcontext-initialization-with-new)を使い、テナント ID を引数に取るファクトリを用意します。
+
+```csharp
+public static class TenantBlogContextFactory
+{
+    public static TenantBlogContext Create(
+        string connectionString, int authenticatedTenantId)
+    {
+        var options = new DbContextOptionsBuilder<TenantBlogContext>()
+            .UseSqlServer(connectionString)
+            .Options;
+
+        return new TenantBlogContext(options, authenticatedTenantId);
+    }
+}
+```
+
+呼び出し側では、アプリケーションの構成から取得した `connectionString` と、信頼できる認証情報から決めた `authenticatedTenantId` を渡します。リクエストに含まれるテナント ID を、そのユーザーが利用できるか確認せずに渡してはいけません。ここでは `TenantBlogContext` を DI から直接受け取るのではなく、次のように生成し、呼び出し側で `await using` により破棄します。
+
+```csharp
+await using var context = TenantBlogContextFactory.Create(
+    connectionString, authenticatedTenantId);
+```
+
+この `context` に対して、名前を付けたフィルターのうち無効化したいものだけを個別に選べます。
 
 ```csharp
 // 論理削除のフィルターだけを無効化し、テナントのフィルターは維持する

@@ -861,28 +861,41 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 > as a retriable unit.
 > ```
 
-この場合は、実行戦略を取得してトランザクション全体をその中で実行します。
+この場合は、[公式の例](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-resiliency#execution-strategies-and-transactions)と同様に、実行戦略を取得するコンテキストと、**試行ごとに作るコンテキスト**を分けます。トランザクションをロールバックしても、変更トラッカーの `Added` などの状態まで初期化されるわけではありません。
+
+次は、試行間で追跡状態を持ち越さないための例です。`options` は、前述の `UseSqlServer(..., s => s.EnableRetryOnFailure())` を設定した `DbContextOptions<BloggingContext>` とし、`BloggingContext` はこの型を受け取るコンストラクターを持つものとします。`Statistics` には `BlogCount` を保持する集計行が 1 行だけある前提です。
 
 ```csharp
-var strategy = context.Database.CreateExecutionStrategy();
-
-await strategy.ExecuteAsync(async () =>
+static async Task AddBlogAndUpdateStatisticsAsync(
+    DbContextOptions<BloggingContext> options,
+    CancellationToken cancellationToken)
 {
-    await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
+    await using var strategyContext = new BloggingContext(options);
+    var strategy = strategyContext.Database.CreateExecutionStrategy();
 
-    context.Blogs.Add(new Blog { Name = "A", Url = "https://a.example.com" });
-    await context.SaveChangesAsync(cancellationToken);
+    await strategy.ExecuteAsync(async () =>
+    {
+        await using var context = new BloggingContext(options);
+        await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
 
-    await context.Database.ExecuteSqlAsync(
-        $"UPDATE [Statistics] SET [BlogCount] = [BlogCount] + 1",
-        cancellationToken);
+        context.Blogs.Add(new Blog { Name = "A", Url = "https://a.example.com" });
+        await context.SaveChangesAsync(cancellationToken);
 
-    await transaction.CommitAsync(cancellationToken);
-});
+        await context.Database.ExecuteSqlAsync(
+            $"UPDATE [Statistics] SET [BlogCount] = [BlogCount] + 1",
+            cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+    });
+}
 ```
 
+EF Core 10.0.11 の `SqlServerRetryingExecutionStrategy` を SQLite の実トランザクションと組み合わせた障害注入の確認例では、同じコンテキストを再利用すると、保存途中の `TimeoutException` 後にデータベースの行はロールバックされても `Added` が残り、再試行後は Blog が 2 行、統計値が 1 になることを確認できています。上のように試行ごとに作り直すと、コミット前に失敗してロールバックされる条件では 1 行・統計値 1 に戻せています。これは追跡状態と再実行の制御を調べる確認例であり、SQL Server の接続障害を再現したものではありません。
+
 > [!WARNING]
-> 再試行によってブロック全体が再実行されるため、その中の処理は **冪等 (idempotent)** である必要があります。ブロック内で外部 API の呼び出しやメール送信などの副作用を伴う処理を行わないでください。
+> **この例だけでは、コミット成否不明時の二重登録・二重加算は防げません。** `Blog.Id` はデータベース生成の `int` のままで、同じ論理操作を識別する一意キーもありません。上のローカル確認例でも、コミット直後に例外を注入すると、新しいコンテキストで再実行して Blog が 2 行・統計値が 2 になります。
+>
+> 再試行する処理は **冪等 (idempotent)** に設計する必要があります。後述する既知の GUID キーと `ExecuteInTransactionAsync` の成功確認や、公式の[トランザクションを識別する行を保存する方法](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-resiliency#option-4---manually-track-the-transaction)を使い、挿入と統計更新を同じトランザクションに含めて、既にコミットされた操作を再適用しないようにします。単にコンテキストを作り直すだけでは、この成功確認の代わりにはなりません。ブロック内で外部 API の呼び出しやメール送信などの副作用を伴う処理を行わないでください。
 
 > [!NOTE]
 > **コミット時に例外になっても、「保存されていない」とは限りません。** 公式の[コミット失敗と冪等性の問題](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-resiliency#transaction-commit-failure-and-the-idempotency-issue)は、成否不明のままデータベース生成キーで挿入を再実行すると、二重作成になり得ると説明しています。

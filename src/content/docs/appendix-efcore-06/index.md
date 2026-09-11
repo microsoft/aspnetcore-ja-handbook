@@ -315,7 +315,7 @@ public sealed class SqliteContextFactory : IDisposable
 > }
 > ```
 >
-> 逆に、値変換を挟んでいるなどの理由で規約が働かない場合は、`UseAutoincrement()` で明示的に有効化できます。なお `ValueGeneratedNever()` を使う場合は、保存前にアプリケーション側が値を用意する必要があります。この指定はデータベース側の値生成までは止めないため、EF Core を経由しない書き込みでは依然として値が生成される点にも注意してください。
+> 逆に、値変換を挟んでいるなどの理由で規約が働かない場合は、`UseAutoincrement()` で明示的に有効化できます。なお `ValueGeneratedNever()` を使う場合は、EF Core で保存する前にアプリケーション側が値を用意する必要があります。ただし、公式の説明にあるとおり、この指定はデータベース側の既定の値生成までは止めません。前掲の `INTEGER PRIMARY KEY` の表を新規作成した場合や、マイグレーションでこの定義に再構築した場合も、SQLite の既定の **ROWID による採番**は残ります。そのため、EF Core を経由せず `Id` を省略して挿入すれば値が生成されます。**`AUTOINCREMENT` を外すことと、データベース側の採番を完全に無効にすることは別**です。
 
 > [!WARNING]
 > [EF Core 10 の破壊的変更](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-10.0/breaking-changes#using-getdatetimeoffset-without-an-offset-now-assumes-utc)では、SQLite のタイムゾーンの扱いが重大度「高」に分類されています。オフセットなしのテキスト（例: `2026-08-31 12:00:00`）を `DateTimeOffset` として読むと、Microsoft.Data.Sqlite 10.0 からは **UTC** と解釈します。以前は **ローカルタイムゾーン** の値とみなしていました。
