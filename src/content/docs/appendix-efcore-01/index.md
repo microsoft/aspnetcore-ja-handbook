@@ -482,15 +482,15 @@ modelBuilder.Entity<Post>()
     .UsingEntity(join => join.ToTable("PostTags"));
 ```
 
-このとき生成される結合テーブルの列名は、**ナビゲーションプロパティの名前**から作られます。次は、SQL Server での生成 DDL の確認例です。
+このとき生成される結合テーブルの列名は、**ナビゲーションプロパティの名前**から作られます。次は、上の明示設定を適用した SQL Server 向けの生成 DDL の確認例です。結合テーブル名と制約名には `PostTags` が使われます。
 
 ```sql
-CREATE TABLE [PostTag] (
+CREATE TABLE [PostTags] (
     [PostsId] int NOT NULL,
     [TagsId] int NOT NULL,
-    CONSTRAINT [PK_PostTag] PRIMARY KEY ([PostsId], [TagsId]),
-    CONSTRAINT [FK_PostTag_Posts_PostsId] FOREIGN KEY ([PostsId]) REFERENCES [Posts] ([Id]) ON DELETE CASCADE,
-    CONSTRAINT [FK_PostTag_Tag_TagsId] FOREIGN KEY ([TagsId]) REFERENCES [Tag] ([Id]) ON DELETE CASCADE
+    CONSTRAINT [PK_PostTags] PRIMARY KEY ([PostsId], [TagsId]),
+    CONSTRAINT [FK_PostTags_Posts_PostsId] FOREIGN KEY ([PostsId]) REFERENCES [Posts] ([Id]) ON DELETE CASCADE,
+    CONSTRAINT [FK_PostTags_Tag_TagsId] FOREIGN KEY ([TagsId]) REFERENCES [Tag] ([Id]) ON DELETE CASCADE
 );
 ```
 

@@ -113,8 +113,19 @@ public partial class AddPostPublishedAt : Migration
             name: "PublishedAt",
             table: "Posts",
             type: "datetimeoffset",
+            nullable: true);
+
+        migrationBuilder.Sql("UPDATE [Posts] SET [PublishedAt] = [CreatedAt] WHERE [PublishedAt] IS NULL;");
+
+        migrationBuilder.AlterColumn<DateTimeOffset>(
+            name: "PublishedAt",
+            table: "Posts",
+            type: "datetimeoffset",
             nullable: false,
-            defaultValue: new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+            defaultValue: new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            oldClrType: typeof(DateTimeOffset),
+            oldType: "datetimeoffset",
+            oldNullable: true);
 
         migrationBuilder.CreateIndex(
             name: "IX_Posts_PublishedAt",
@@ -130,11 +141,11 @@ public partial class AddPostPublishedAt : Migration
 }
 ```
 
-`Up` が適用時、`Down` がロールバック時の処理です。データの移行が必要な場合は `migrationBuilder.Sql("...")` で任意の SQL を挟めます。
+`Up` が適用時、`Down` がロールバック時の処理です。この例は、既存の `CreatedAt` が非 NULL の `datetimeoffset` 列であることを前提に、生成されたコードへデータ移行を加えたものです。[公式のデータ移行の手順](https://learn.microsoft.com/ja-jp/ef/core/managing-schemas/migrations/managing#transform-existing-data)に従い、**NULL 許容で追加 → `Sql` で既存データを埋める → 非 NULL 化**の順に処理します。最初から非 NULL と既定値を指定して追加すると、既存行にも既定値が入り、`WHERE [PublishedAt] IS NULL` に一致する行がなくなります。
 
-```csharp
-migrationBuilder.Sql("UPDATE [Posts] SET [PublishedAt] = [CreatedAt] WHERE [PublishedAt] IS NULL;");
-```
+上の `defaultValue` は、移行後に列の値を省略して挿入する行に対する既定値です。既存行はこの固定値ではなく、それぞれの `CreatedAt` で埋めます。列の既定値を維持する場合は、モデル側の `HasDefaultValue` も同じ値に合わせます。
+
+EF Core 10.0.11 でこの `Up` から生成した SQL を Azure SQL Database の既存 2 行に適用した確認例でも、それぞれの `CreatedAt` が `PublishedAt` に引き継がれています。移行後の明示的な NULL 挿入は制約違反になり、`PublishedAt` を省略した新規行には指定した既定値が入ることを確認できています。
 
 > [!WARNING]
 > プロパティ名を変更した場合、EF Core は「列の削除」と「列の追加」として差分を検出することがあります。そのまま適用するとデータが失われるため、生成されたマイグレーションを確認し、必要に応じて `migrationBuilder.RenameColumn(...)` に書き換えてください。公式ドキュメントも「どの適用方法を選ぶ場合でも、必ず生成されたマイグレーションを検査し、本番データベースに適用する前にテストすること」と明記しています。
@@ -1518,11 +1529,12 @@ var blogs = await context.Blogs
     .ToListAsync(cancellationToken);
 ```
 
-`FromSql` は **補間文字列 (FormattableString)** の埋込値を SQL パラメーターに変換し、SQL として連結しません。次は、`pattern` に `https://ok.example.com' OR '1'='1` を渡す確認例です。このデータでは値がパラメーターとして扱われ、結果が 0 件であることを確認できています。
+`FromSql` は **補間文字列 (FormattableString)** の埋込値を SQL パラメーターに変換し、SQL として連結しません。次は、上の `LIKE` クエリを SQLite で実行し、`pattern` に `https://ok.example.com' OR '1'='1` を渡す確認例です。`Url` が `https://ok.example.com` の行に対してこの値は一致せず、結果は 0 件です。
 
 ```text
 .param set p0 'https://ok.example.com'' OR ''1''=''1'
-SELECT * FROM Blogs WHERE Url = @p0
+
+SELECT * FROM [Blogs] WHERE [Url] LIKE @p0
 ```
 
 > [!WARNING]

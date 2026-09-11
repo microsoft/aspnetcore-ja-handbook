@@ -530,11 +530,11 @@ SqlException: サーバーとの接続を正常に確立しましたが、ログ
 `AddDbContext` は `DbContext` を **Scoped** サービスとして登録します。ASP.NET Core では 1 つの HTTP リクエストが 1 つのスコープに対応するため、リクエストごとに `DbContext` インスタンスが作られ、リクエスト終了時に破棄されます。
 
 > [!IMPORTANT]
-> 公式の[Scoped サービスの使用上の注意](https://learn.microsoft.com/ja-jp/dotnet/core/extensions/dependency-injection/service-lifetimes#scoped)に従い、**`DbContext` を Singleton サービスのコンストラクターへ直接注入してはいけません。** 開発環境の既定の検証が有効な本章の構成では、アプリケーションの起動時に次の例外が発生し、リクエストを受ける前に検出されます。
+> 公式の[Scoped サービスの使用上の注意](https://learn.microsoft.com/ja-jp/dotnet/core/extensions/dependency-injection/service-lifetimes#scoped)に従い、**`DbContext` を Singleton サービスのコンストラクターへ直接注入してはいけません。** 開発環境の既定の検証が有効な本章の構成で、Singleton の `MyBackgroundService` に `BloggingContext` を注入する場合は、起動時の `AggregateException` に次の内部例外が含まれ、リクエストを受ける前に検出されます。
 >
 > ```text
 > System.InvalidOperationException: Cannot consume scoped service
-> 'Microsoft.EntityFrameworkCore.DbContextOptions`1[BloggingContext]'
+> 'BloggingApi.Data.BloggingContext'
 > from singleton 'MyBackgroundService'.
 > ```
 >

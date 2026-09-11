@@ -1345,7 +1345,19 @@ EF Core の既定は **スナップショット変更追跡 (snapshot change tra
 ```csharp
 public class Blog : INotifyPropertyChanged, INotifyPropertyChanging
 {
+    private int _id;
     private string _name = "";
+
+    public int Id
+    {
+        get => _id;
+        set
+        {
+            PropertyChanging?.Invoke(this, new PropertyChangingEventArgs(nameof(Id)));
+            _id = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Id)));
+        }
+    }
 
     public string Name
     {
@@ -1362,6 +1374,8 @@ public class Blog : INotifyPropertyChanged, INotifyPropertyChanging
     public event PropertyChangingEventHandler? PropertyChanging;
 }
 ```
+
+`Id` は[規約により主キーになります](https://learn.microsoft.com/ja-jp/ef/core/modeling/keys#configuring-a-primary-key)。[公式の通知エンティティの例](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/change-detection#implementing-notification-entities)と同様に、`Name` だけでなく `Id` にも変更前後の通知を実装しています。
 
 重要なのは、**インターフェイスを実装しただけでは EF Core は通知イベントを購読しない**という点です。公式ドキュメントは「EF Core はこれらのインターフェイスが正しく実装されているかを検証できないため、自動的にはイベントを購読しない」と明記しています。モデル側で戦略を指定する必要があります。
 

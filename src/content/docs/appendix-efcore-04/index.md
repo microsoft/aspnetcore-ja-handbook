@@ -1179,6 +1179,8 @@ Microsoft.EntityFrameworkCore.Database.Connection.ConnectionOpening
 
 次は `ISaveChangesInterceptor` を使って、作成日時と更新日時を自動で設定する例です（`SaveChangesInterceptor` は空実装を持つ基底クラスで、必要なメソッドだけをオーバーライドできます）。
 
+[公式の監査例](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/interceptors#the-interceptor)に従い、同期の `SaveChanges` と非同期の `SaveChangesAsync` のどちらでも処理するため、`SavingChanges` と `SavingChangesAsync` の両方を実装します。日時を設定する共通処理は `SetAuditTimestamps` にまとめます。
+
 この例は、`AuditSample` 名前空間にまとめた独立した監査用モデルです。`CreatedAt` と `UpdatedAt` を持つ `Blog` を、この例の `BloggingContext` に登録します。本編の同名型へメンバーを追加する差分ではありません。呼び出し側で `DbContextOptionsBuilder<AuditSample.BloggingContext>` にプロバイダーと接続値を設定し、その `Options` をコンストラクターへ渡します。インターセプターの登録先は、このコンテキストの `OnConfiguring` です（[公式の登録方法](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/interceptors#registering-interceptors)）。
 
 ```csharp
@@ -1200,12 +1202,25 @@ public class Blog
 
 public class AuditInterceptor : SaveChangesInterceptor
 {
+    public override InterceptionResult<int> SavingChanges(
+        DbContextEventData eventData,
+        InterceptionResult<int> result)
+    {
+        SetAuditTimestamps(eventData.Context);
+        return base.SavingChanges(eventData, result);
+    }
+
     public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
         DbContextEventData eventData,
         InterceptionResult<int> result,
         CancellationToken cancellationToken = default)
     {
-        var context = eventData.Context;
+        SetAuditTimestamps(eventData.Context);
+        return base.SavingChangesAsync(eventData, result, cancellationToken);
+    }
+
+    private static void SetAuditTimestamps(DbContext? context)
+    {
         if (context is not null)
         {
             var now = DateTime.UtcNow;
@@ -1221,8 +1236,6 @@ public class AuditInterceptor : SaveChangesInterceptor
                 }
             }
         }
-
-        return base.SavingChangesAsync(eventData, result, cancellationToken);
     }
 }
 
@@ -1239,7 +1252,7 @@ public class BloggingContext(DbContextOptions<BloggingContext> options) : DbCont
 }
 ```
 
-掲載した `AuditSample` は、EF Core 10.0.11 と SQLite で、追加・更新時の日時設定と再読み取りを確認できています。以下の日時は、別の SQL Server 2022 での観測記録です。この条件では、追加時は `CreatedAt` だけが設定され（`UpdatedAt` は `null`）、その後の更新で `UpdatedAt` だけが変わることを確認できています。
+掲載した `AuditSample` は、EF Core 10.0.11 と SQLite で、同期・非同期の両方について追加・更新時の日時設定と再読み取りを確認できています。以下の日時は、別の SQL Server 2022 での観測記録です。この条件では、追加時は `CreatedAt` だけが設定され（`UpdatedAt` は `null`）、その後の更新で `UpdatedAt` だけが変わることを確認できています。
 
 ```text
 after insert: CreatedAt=2026-09-01T08:23:51.0828970 UpdatedAt=null
@@ -1456,8 +1469,11 @@ because the database is read-only.
 
 最も分かりやすいのは、**読み取り用の DbContext 型を別に定義する** 方法です。型が分かれていれば、どちらに接続しているかをコード上で区別しやすくなります。ただし、型を分けるだけで書き込みが禁止されるわけではありません。
 
+この節では、[本編の「エンティティクラスの定義」](../08-entity-framework-core/index.md#エンティティクラスの定義)にある `Blog` / `Post` / `Contributor` を使います。`Blog.Posts` と `Post.BlogId` / `Post.Blog` もその定義に含まれます。直前の `AuditSample.Blog` とは別のモデルです。
+
 ```csharp
 using Microsoft.EntityFrameworkCore;
+using BloggingApi.Models;
 
 namespace BloggingApi.Data;
 
@@ -1540,9 +1556,14 @@ builder.Services.AddDbContext<BloggingReadContext>(options =>
 }
 ```
 
-利用側では、目的に応じてコンテキストを注入します。
+利用側では、目的に応じてコンテキストを注入します。一覧はレプリカから取得し、作成直後の確認にも使う 1 件取得はプライマリから取得します。[`CreatedAtAction` の公式説明](https://learn.microsoft.com/ja-jp/aspnet/core/tutorials/first-web-api?view=aspnetcore-10.0#examine-the-posttodoitem-create-method)に従い、POST の `Location` ヘッダーには、この 1 件取得の URI を返します。
 
 ```csharp
+using BloggingApi.Data;
+using BloggingApi.Models;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+
 [ApiController]
 [Route("api/blogs")]
 public class BlogsController(
@@ -1557,6 +1578,21 @@ public class BlogsController(
             .Select(b => new BlogSummary(b.Id, b.Name, b.Posts.Count))
             .ToListAsync(cancellationToken);
 
+    // 作成直後でも取得できるように、1 件取得はプライマリから読む
+    [HttpGet("{id:int}")]
+    public async Task<ActionResult<Blog>> GetBlog(
+        int id,
+        CancellationToken cancellationToken)
+    {
+        var blog = await writeContext.Blogs.AsNoTracking()
+            .SingleOrDefaultAsync(b => b.Id == id, cancellationToken);
+
+        if (blog is null)
+            return NotFound();
+
+        return blog;
+    }
+
     // 書き込みと、その直後の応答はプライマリを使う
     [HttpPost]
     public async Task<ActionResult<Blog>> CreateBlog(
@@ -1567,11 +1603,12 @@ public class BlogsController(
         writeContext.Blogs.Add(blog);
         await writeContext.SaveChangesAsync(cancellationToken);
 
-        return CreatedAtAction(nameof(GetBlogs), new { id = blog.Id }, blog);
+        return CreatedAtAction(nameof(GetBlog), new { id = blog.Id }, blog);
     }
 }
 
 public record CreateBlogRequest(string Name, string Url);
+public record BlogSummary(int Id, string Name, int PostCount);
 ```
 
 > [!TIP]
@@ -1593,6 +1630,7 @@ public record CreateBlogRequest(string Name, string Url);
 
 ## 5. 参考ドキュメント
 
+- [ASP.NET Core を使用して Web API を作成する | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/tutorials/first-web-api?view=aspnetcore-10.0)
 - [切断されたエンティティ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/saving/disconnected-entities)
 - [チェンジトラッカーのデバッグ | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/debug-views)
 - [変更の検出と通知 | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/change-detection)

@@ -512,21 +512,30 @@ SqlException: Cannot insert explicit value for identity column in table 'Blogs'
 when IDENTITY_INSERT is set to OFF.
 ```
 
-公式が案内している回避策は、`SET IDENTITY_INSERT` を自分で切り替える方法です。**この設定はトランザクションではなく接続に対して働く**ため、EF Core の操作と同じ接続で実行する必要があります。`DbContext` 経由で SQL を発行すれば同じ接続が使われます。
+[公式が案内している回避策](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/value-generation#inserting-explicit-values-into-identity-columns)は、`SET IDENTITY_INSERT` を自分で切り替える方法です。**この設定はトランザクションではなく接続のセッションに対して働く**ため、EF Core の操作と同じ接続で実行する必要があります。次の例では、トランザクションによって接続を開いたままにし、その接続上で SQL の発行と保存を行います。
 
 ```csharp
-using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
+await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
 
 await context.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT dbo.Blogs ON", cancellationToken);
 
-context.Blogs.Add(new Blog { Id = 999, Name = "復元した行", Url = "https://example.com" });
-await context.SaveChangesAsync(cancellationToken);
+try
+{
+    context.Blogs.Add(new Blog { Id = 999, Name = "復元した行", Url = "https://example.com" });
+    await context.SaveChangesAsync(cancellationToken);
+}
+finally
+{
+    // 保存の失敗やキャンセル後も OFF を試みる
+    await context.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT dbo.Blogs OFF", CancellationToken.None);
+}
 
-await context.Database.ExecuteSqlRawAsync("SET IDENTITY_INSERT dbo.Blogs OFF", cancellationToken);
 await transaction.CommitAsync(cancellationToken);
 ```
 
-この手順による `Id = 999` の行の挿入は、SQL Server 2022 で確認できています。
+`ON` が成功した後は、保存が失敗・キャンセルされても `finally` で `OFF` を試みます。後始末には、キャンセル済みの可能性がある要求のトークンではなく `CancellationToken.None` を渡します。
+
+EF Core 10.0.11 / Azure SQL Database の確認例では、成功・保存時の一意制約違反・キャンセルのいずれでも、**同じセッションでの後続の明示的 ID 挿入が拒否され、別テーブルへの `IDENTITY_INSERT ON` は成功する**ことで、元のテーブルが `OFF` に戻ったことを確認できています。`Id = 999` の行は成功時だけ残り、失敗・キャンセル時はロールバックされています。ただし、接続障害などで `OFF` 自体が失敗する可能性はあるため、例外時はこの処理を中断し、同じコンテキストで処理を続行しないでください。
 
 > [!WARNING]
 > `SET IDENTITY_INSERT` を `ON` にできるのは、**同一セッション内で同時に 1 つのテーブルだけ**です。同じ接続を使って複数テーブルへ明示的な ID で挿入する場合は、テーブルごとに `ON` と `OFF` を切り替えます。
@@ -902,6 +911,8 @@ modelBuilder.Entity<SpecialPost>()
 
 SQL Server 2019 以降は `char` / `varchar` 列に UTF-8 の照合順序を指定でき、Unicode を `nvarchar` より小さく格納できる場合があります。EF Core からは、列の型を `varchar` にしたうえで `_UTF8` で終わる照合順序を指定し、あわせて `IsUnicode()` を呼びます。照合順序がクエリの結果そのものを変える点は[付録3の「大文字小文字の区別は照合順序が決める」](../appendix-efcore-03/index.md#大文字小文字の区別は照合順序が決める)で扱います。
 
+この組み合わせは[公式の UTF-8 構成例](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/columns#unicode-and-utf-8)に従っています。`IsUnicode()` は、`HasColumnType` で明示した `varchar(max)` を `nvarchar(max)` に置き換える指定ではありません。
+
 ```csharp
 modelBuilder.Entity<SpecialPost>()
     .Property(b => b.Name)
@@ -909,6 +920,8 @@ modelBuilder.Entity<SpecialPost>()
     .UseCollation("LATIN1_GENERAL_100_CI_AS_SC_UTF8")
     .IsUnicode();
 ```
+
+EF Core 10.0.11 / Azure SQL Database でこの構成を適用した確認例でも、実際の列型は `varchar` のままで、日本語と絵文字を含む `日本語🌸 café` を保存して再読込した値が一致しています。
 
 次は、この 2 つの構成を組み合わせた生成 DDL の確認例です。
 
@@ -1173,10 +1186,22 @@ modelBuilder.Entity<Blog>().HasQueryFilter(b => !b.IsDeleted);
 
 EF Core 10 では **名前付きクエリフィルター (Named Query Filters)** が導入され、1 つのエンティティ型に複数のフィルターを設定して個別に無効化できるようになりました。
 
+テナント ID は、[公式のマルチテナントの例](https://learn.microsoft.com/ja-jp/ef/core/querying/filters#using-context-data---multi-tenancy)と同じく、コンテキストのインスタンスに保持させます。次の `tenantId` には、認証済みユーザーなどの信頼できる情報から決めた現在のテナント ID を、コンテキストの作成時に渡します。
+
 ```csharp
-modelBuilder.Entity<Blog>()
-    .HasQueryFilter("SoftDeletionFilter", b => !b.IsDeleted)
-    .HasQueryFilter("TenantFilter", b => b.TenantId == tenantId);
+public class TenantBlogContext(
+    DbContextOptions<TenantBlogContext> options,
+    int tenantId) : DbContext(options)
+{
+    public DbSet<Blog> Blogs => Set<Blog>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Blog>()
+            .HasQueryFilter("SoftDeletionFilter", b => !b.IsDeleted)
+            .HasQueryFilter("TenantFilter", b => b.TenantId == tenantId);
+    }
+}
 ```
 
 名前を付けておくと、無効化したいフィルターだけを個別に選べます。
