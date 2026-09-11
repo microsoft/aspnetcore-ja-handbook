@@ -742,14 +742,23 @@ foreach (var entry in ex.Entries)
 }
 ```
 
-`rowversion` が使えないプロバイダーでは、任意のプロパティを同時実行トークンにできます。次の例は、エンティティに `LastUpdatedAt` プロパティを追加したうえで、それをトークンとして使う想定です。
+`rowversion` が使えないプロバイダーでは、アプリケーション側で管理するプロパティを同時実行トークンにできます。次の例では、更新日時とは別に、`Blog` クラスへ `Guid` 型の `ConcurrencyToken` プロパティを追加します。
 
 ```csharp
-builder.Property(b => b.LastUpdatedAt).IsConcurrencyToken();
+// Blog クラス内
+public Guid ConcurrencyToken { get; set; }
+```
+
+エンティティの構成で、このプロパティを同時実行トークンに指定します。
+
+```csharp
+builder.Property(b => b.ConcurrencyToken).IsConcurrencyToken();
 ```
 
 > [!WARNING]
-> [公式のアプリケーション管理トークン](https://learn.microsoft.com/ja-jp/ef/core/saving/concurrency#application-managed-concurrency-tokens)では、**値の更新はアプリケーション側の責任**です。SQLite の確認例でも、先行更新でトークンを変えない条件は上書き、下記の更新処理で値が変わる条件は `DbUpdateConcurrencyException` です。この結果を、オーバーライドだけが検出の実装方法であるという意味にはしません。
+> [公式のアプリケーション管理トークン](https://learn.microsoft.com/ja-jp/ef/core/saving/concurrency#application-managed-concurrency-tokens)は、GUID をトークンにして `Guid.NewGuid()` を割り当てる例を示しています。**値の設定・更新はアプリケーション側の責任**なので、下の例では、追加・更新される `Blog` に新しい GUID を割り当てます。オーバーライドは実装方法の一例であり、公式は保存インターセプターによる割り当ても紹介しています。
+>
+> **更新日時を取得し直すだけでは、トークンが変わる保証にはなりません。** [`DateTime.UtcNow` の公式説明](https://learn.microsoft.com/ja-jp/dotnet/api/system.datetime.utcnow?view=net-10.0)では、時刻の分解能は OS のシステムタイマーに依存します。同じ時刻値が続けばトークンが変わらず、先行更新を検出できません。この例では時刻をトークンにせず、更新日時が必要な場合は別のプロパティで管理します。
 >
 > 次のメソッドは、既定の自動変更検出が有効な `DbContext` 内に追加する例です。[EF Core の実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore/DbContext.cs)では、`SaveChanges()` と `SaveChangesAsync(CancellationToken)` は、それぞれ `bool acceptAllChangesOnSuccess` を受け取るオーバーロードへ委譲します。**同期・非同期の両方でトークンを更新するため、その 2 つをオーバーライドし、更新処理を共通化します。** `SaveChangesAsync(CancellationToken)` だけをオーバーライドすると、同期の保存や `SaveChangesAsync(false, cancellationToken)` では更新処理を通りません。
 >
@@ -771,9 +780,9 @@ builder.Property(b => b.LastUpdatedAt).IsConcurrencyToken();
 > private void UpdateConcurrencyTokens()
 > {
 >     foreach (var entry in ChangeTracker.Entries<Blog>()
->                  .Where(e => e.State == EntityState.Modified))
+>                  .Where(e => e.State is EntityState.Added or EntityState.Modified))
 >     {
->         entry.Entity.LastUpdatedAt = DateTime.UtcNow;
+>         entry.Entity.ConcurrencyToken = Guid.NewGuid();
 >     }
 > }
 > ```
