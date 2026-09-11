@@ -1237,10 +1237,26 @@ var allBlogs = await context.Blogs
     .ToListAsync(cancellationToken);
 ```
 
-`DbSet.Remove` を呼んだときに実際の削除ではなく `IsDeleted` を立てたい場合は、`SaveChangesAsync` をオーバーライドします。
+`DbSet.Remove` を呼んだときに実際の削除ではなく `IsDeleted` を立てたい場合は、[公式の論理削除の例](https://learn.microsoft.com/ja-jp/ef/core/querying/filters#basic-example---soft-deletion)と同様に、保存前に `Deleted` を `Modified` へ変換します。次のメソッドを `TenantBlogContext` に追加すると、同期・非同期のどちらの保存経路でも同じ変換を適用できます。
+
+オーバーライドするのは、`acceptAllChangesOnSuccess` を受け取る `SaveChanges(bool)` と `SaveChangesAsync(bool, CancellationToken)` です。[`DbContext` の公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore/DbContext.cs)では、`SaveChanges()` と `SaveChangesAsync(CancellationToken)` もそれぞれこれらのオーバーロードへ処理を委譲します。
 
 ```csharp
-public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+public override int SaveChanges(bool acceptAllChangesOnSuccess)
+{
+    ApplySoftDelete();
+    return base.SaveChanges(acceptAllChangesOnSuccess);
+}
+
+public override Task<int> SaveChangesAsync(
+    bool acceptAllChangesOnSuccess,
+    CancellationToken cancellationToken = default)
+{
+    ApplySoftDelete();
+    return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+}
+
+private void ApplySoftDelete()
 {
     ChangeTracker.DetectChanges();
 
@@ -1249,10 +1265,11 @@ public override async Task<int> SaveChangesAsync(CancellationToken cancellationT
         entry.State = EntityState.Modified;
         entry.CurrentValues[nameof(Blog.IsDeleted)] = true;
     }
-
-    return await base.SaveChangesAsync(cancellationToken);
 }
 ```
+
+> [!NOTE]
+> 対象は、変更追跡を経由して `SaveChanges` / `SaveChangesAsync` で保存する操作です。[`ExecuteDeleteAsync` は変更トラッカーを使わずに直接削除する](https://learn.microsoft.com/ja-jp/ef/core/saving/execute-insert-update-delete#executedelete)ため、このオーバーライドでは論理削除に変換されません。
 
 > [!WARNING]
 > クエリフィルターを設定したエンティティが、必須のリレーションシップ（外部キーが NULL を許さない関係）の「1」側になっている場合、EF Core はモデル検証時に次の警告を出します。

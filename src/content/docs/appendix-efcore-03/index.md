@@ -1123,12 +1123,12 @@ because another instance with the same key value for {'Id'} is already being tra
 
 この例でも、データベースへの問い合わせ前の **変更追跡の段階での例外**を確認できています。
 
-大文字小文字を区別したいのであれば、公式ドキュメントが示すとおり、キーのプロパティに**プロバイダー値比較子 (provider value comparer)** を明示的に構成します。
+大文字小文字を区別したいのであれば、[公式の移行手順](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-8.0/breaking-changes#sql-server-key-values-are-compared-case-insensitively)が示すとおり、キーのプロパティに、変更追跡で使う **`ValueComparer`（値比較子）** を `SetValueComparer` で明示的に構成します。プロバイダー値の比較に使う `SetProviderValueComparer` とは区別してください。
 
 ```csharp
 modelBuilder.Entity<Customer>()
     .Property(c => c.Id)
-    .Metadata.SetProviderValueComparer(
+    .Metadata.SetValueComparer(
         new ValueComparer<string>(
             (l, r) => string.Equals(l, r, StringComparison.Ordinal),
             v => v.GetHashCode()));
