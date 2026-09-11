@@ -514,6 +514,9 @@ when IDENTITY_INSERT is set to OFF.
 
 [公式が案内している回避策](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/value-generation#inserting-explicit-values-into-identity-columns)は、`SET IDENTITY_INSERT` を自分で切り替える方法です。**この設定はトランザクションではなく接続のセッションに対して働く**ため、EF Core の操作と同じ接続で実行する必要があります。次の例では、トランザクションによって接続を開いたままにし、その接続上で SQL の発行と保存を行います。
 
+> [!IMPORTANT]
+> **次のコードは、EF Core の自動再試行を有効にしていない構成が前提です。** [公式の接続回復性の説明](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/#connection-resiliency)のとおり、`UseAzureSql` は既定で再試行を有効にします。`UseAzureSql` や `EnableRetryOnFailure` を使う構成では、このコードをそのまま実行せず、[付録4の実行戦略とトランザクションの例](../appendix-efcore-04/#接続の回復性とトランザクションの併用)に従ってください。`CreateExecutionStrategy().ExecuteAsync(...)` の中で、試行ごとに新しい `DbContext` とトランザクションを作り、`IDENTITY_INSERT ON`、保存、`OFF`、コミットを一単位として扱います。Azure SQL 向けの再試行設定を外すことを推奨するものではありません。
+
 ```csharp
 await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
 
@@ -535,7 +538,7 @@ await transaction.CommitAsync(cancellationToken);
 
 `ON` が成功した後は、保存が失敗・キャンセルされても `finally` で `OFF` を試みます。後始末には、キャンセル済みの可能性がある要求のトークンではなく `CancellationToken.None` を渡します。
 
-EF Core 10.0.11 / Azure SQL Database の確認例では、成功・保存時の一意制約違反・キャンセルのいずれでも、**同じセッションでの後続の明示的 ID 挿入が拒否され、別テーブルへの `IDENTITY_INSERT ON` は成功する**ことで、元のテーブルが `OFF` に戻ったことを確認できています。`Id = 999` の行は成功時だけ残り、失敗・キャンセル時はロールバックされています。ただし、接続障害などで `OFF` 自体が失敗する可能性はあるため、例外時はこの処理を中断し、同じコンテキストで処理を続行しないでください。
+EF Core 10.0.11 / Azure SQL Database に `UseSqlServer` で接続し、EF Core の自動再試行を有効にしない構成の確認例では、成功・保存時の一意制約違反・キャンセルのいずれでも、**同じセッションでの後続の明示的 ID 挿入が拒否され、別テーブルへの `IDENTITY_INSERT ON` は成功する**ことで、元のテーブルが `OFF` に戻ったことを確認できています。`Id = 999` の行は成功時だけ残り、失敗・キャンセル時はロールバックされています。ただし、接続障害などで `OFF` 自体が失敗する可能性はあるため、例外時はこの処理を中断し、同じコンテキストで処理を続行しないでください。
 
 > [!WARNING]
 > `SET IDENTITY_INSERT` を `ON` にできるのは、**同一セッション内で同時に 1 つのテーブルだけ**です。同じ接続を使って複数テーブルへ明示的な ID で挿入する場合は、テーブルごとに `ON` と `OFF` を切り替えます。
