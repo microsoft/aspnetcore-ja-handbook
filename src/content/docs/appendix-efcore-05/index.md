@@ -164,7 +164,7 @@ info: 2026/09/10 09:55:23.500 RelationalEventId.CommandExecuted[20101] (Microsof
 
 ### EF Core が公開しているメトリックを見る
 
-[公式のメトリックガイド](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/metrics)では、EF Core 9 以降に `System.Diagnostics.Metrics` API で **`Microsoft.EntityFrameworkCore`** というメーターを公開すると説明しています。アプリケーション全体の傾向を把握するための 7 つの計測器は次のとおりです。
+[公式のメトリックガイド](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/metrics)では、EF Core 9 以降に `System.Diagnostics.Metrics` API で **`Microsoft.EntityFrameworkCore`** というメーター（[`Meter`](https://learn.microsoft.com/ja-jp/dotnet/core/diagnostics/metrics)：.NET の計測 API の単位）を公開すると説明しています。アプリケーション全体の傾向を把握するための 7 つの計測器は次のとおりです。
 
 | メトリック | 種類 | 意味 |
 | --- | --- | --- |
@@ -220,6 +220,43 @@ meterListener.RecordObservableInstruments();
 > [!TIP]
 > `compiled_query_cache_misses` と `optimistic_concurrency_failures` は累積カウンターです。前者の増分は同期間のヒット数や実行状況と比較し、後者の増分は観測時間で割るなどして競合の発生頻度を調べます。累積値だけをヒット率や発生頻度と読み替えず、アプリケーションの通常時の値に合わせてアラート条件を決めてください。
 
+#### メトリックで全体像をつかむ
+
+特に重要なのが **クエリキャッシュのヒット率** です。EF Core は LINQ 式から SQL への変換結果をキャッシュしており、起動直後を過ぎればヒット率はほぼ 100% になるはずです。`compiled_query_cache_misses` は累積値なので、増え続けることだけでは効率を判断できません。同期間の `hits` と `misses` の増分から比率を調べ、新しい形のクエリが増えていないか確認します。
+
+次は、同じ処理を 50 回ずつ繰り返した条件でのヒット率の確認例です。
+
+| 書き方 | ヒット率 |
+| --- | --- |
+| 同じ形の LINQ クエリを繰り返す | 98% |
+| `EF.Constant()` で値をインライン化する | 98% |
+| 条件式を実行時に付け外しして形を変える | 92% |
+| `FromSqlRaw` に、値を直接埋め込んだ毎回異なる SQL を渡す | **0%** |
+
+> [!NOTE]
+> [EF Core 9 の破壊的変更](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-9.0/breaking-changes#efconstant-and-efparameter-no-longer-work-inside-compiled-queries)では、`EF.Constant()` の処理をクエリキャッシュより後の段階へ移し、定数値ごとの再コンパイルを避けると説明しています。この表でも同じ式の形で値だけを変える条件は、50 回中 49 ヒット・1 ミスです。式の形が変わる場合までヒット率を保証するものではなく、データベース側のプランキャッシュへの影響は別に確認します。
+>
+> ただしこれは EF Core 9 以降の挙動です。EF Core 8 の実装では `EF.Constant()` がクエリキャッシュより前の段階で定数ノードを埋め込んでいたため、値が変わるたびに EF Core 側でもキャッシュミスが発生していました。EF Core 9 でこの処理はパイプラインの後段へ移されています。
+>
+> [EF Core 10.0.11 の公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.Relational/Query/Internal/FromSqlQueryRootExpression.cs)は、生 SQL のクエリ式の等価比較に SQL 文字列を含めます。同版と SQLite で 50 回ずつ比較した結果は、同じ SQL の繰り返しとパラメーター化では各 1 回、毎回異なる SQL では 50 回のコンパイルです。**文字列連結を使うこと自体がヒット率 0% の条件ではありません。**
+>
+> 同期間のヒット・ミスから求めた比率が低いなら、まず生 SQL の組み立て方と、条件を動的に付け外ししている箇所を疑ってください。パラメーター化を保ったまま生の SQL を書く方法は[付録3の「生の SQL を使う」](../appendix-efcore-03/index.md#生の-sql-を使う)を参照してください。
+
+`active_dbcontexts` が想定より多いままなら `DbContext` が破棄されずに残っている可能性があり、`optimistic_concurrency_failures` の増加は同時更新の競合が実際に起きていることを示します。これらは OpenTelemetry や Application Insights にそのまま送れます。
+
+> [!TIP]
+> **`active_dbcontexts` は「正常な状態」を先に知っておくと役に立ちます。** 次は、`AddDbContextPool` を使い、スコープごとにクエリを 1 回発行する処理を 10 分間で 2,800 回繰り返した条件での記録です。
+>
+> | 経過 | 反復回数 | マネージドヒープ | ワーキングセット | `active_dbcontexts` |
+> | --- | --- | --- | --- | --- |
+> | 42 秒 | 200 | 8.6 MiB | 139.4 MiB | 1 |
+> | 292 秒 | 1,400 | 9.6 MiB | 141.1 MiB | 1 |
+> | 600 秒 | 2,800 | 8.9 MiB | 141.2 MiB | 1 |
+>
+> この観測では、マネージドヒープは 4 MiB 台まで戻る変動があり、42 秒から 600 秒までのワーキングセット増加は約 1.8 MiB です（1 MiB = 1,048,576 バイト）。`active_dbcontexts` は**各記録時点で 1**ですが、この値だけで全インスタンスの正しい返却まで証明できるわけではありません。
+>
+> この値が反復回数に比例して増えていく場合は、`DbContext` を `using` や DI スコープの外で作って破棄し忘れている可能性があります。負荷をかけた状態でこのメトリックが横ばいになるかどうかを、リリース前に一度確認しておくとよいでしょう。
+
 ### クエリタグでログと LINQ を結びつける
 
 ログに大量の SQL が流れると、「この重いクエリはソースコードのどこが出しているのか」が分からなくなります。**クエリタグ (Query Tag)** を使うと、LINQ クエリに付けた注釈が SQL のコメントとしてそのまま出力されます。
@@ -267,55 +304,6 @@ SQL Server のクエリストアや実行計画の分析ツールでは、この
 
 > [!TIP]
 > パフォーマンスを調べるときは、EF Core の細かな設定より先に「不要な列を取りすぎていないか」「N+1 が起きていないか」「必要なインデックスがあるか」を確認します。ここまでで説明した `AsNoTracking`、投影、`Include`、`AsSplitQuery`、ページングを先に見直してください。`AsSplitQuery` の判断基準は[付録3の「単一クエリと分割クエリ」](../appendix-efcore-03/index.md#単一クエリと分割クエリ)にあります。
-
-#### メトリックで全体像をつかむ
-
-個々のクエリを見る前に、アプリケーション全体の傾向を数値で押さえます。EF Core は `Microsoft.EntityFrameworkCore` という名前の [`Meter`](https://learn.microsoft.com/ja-jp/dotnet/core/diagnostics/metrics)（.NET の計測 API の単位。詳しくは「メトリックの概要」を参照）を通じて次のカウンターを公開しています（EF Core 10.0.11 で実際に列挙して確認）。
-
-| メトリック名 | 意味 |
-| --- | --- |
-| `microsoft.entityframeworkcore.active_dbcontexts` | 生存している `DbContext` の数 |
-| `microsoft.entityframeworkcore.queries` | 実行されたクエリの累計 |
-| `microsoft.entityframeworkcore.savechanges` | `SaveChanges` の累計 |
-| `microsoft.entityframeworkcore.compiled_query_cache_hits` | クエリキャッシュにヒットした回数 |
-| `microsoft.entityframeworkcore.compiled_query_cache_misses` | クエリキャッシュを外した回数 |
-| `microsoft.entityframeworkcore.execution_strategy_operation_failures` | 再試行戦略が捉えた失敗の回数 |
-| `microsoft.entityframeworkcore.optimistic_concurrency_failures` | 楽観的同時実行制御の競合回数 |
-
-特に重要なのが **クエリキャッシュのヒット率** です。EF Core は LINQ 式から SQL への変換結果をキャッシュしており、起動直後を過ぎればヒット率はほぼ 100% になるはずです。`compiled_query_cache_misses` は累積値なので、増え続けることだけでは効率を判断できません。同期間の `hits` と `misses` の増分から比率を調べ、新しい形のクエリが増えていないか確認します。
-
-次は、同じ処理を 50 回ずつ繰り返した条件でのヒット率の確認例です。
-
-| 書き方 | ヒット率 |
-| --- | --- |
-| 同じ形の LINQ クエリを繰り返す | 98% |
-| `EF.Constant()` で値をインライン化する | 98% |
-| 条件式を実行時に付け外しして形を変える | 92% |
-| `FromSqlRaw` に、値を直接埋め込んだ毎回異なる SQL を渡す | **0%** |
-
-> [!NOTE]
-> [EF Core 9 の破壊的変更](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-9.0/breaking-changes#efconstant-and-efparameter-no-longer-work-inside-compiled-queries)では、`EF.Constant()` の処理をクエリキャッシュより後の段階へ移し、定数値ごとの再コンパイルを避けると説明しています。この表でも同じ式の形で値だけを変える条件は、50 回中 49 ヒット・1 ミスです。式の形が変わる場合までヒット率を保証するものではなく、データベース側のプランキャッシュへの影響は別に確認します。
->
-> ただしこれは EF Core 9 以降の挙動です。EF Core 8 の実装では `EF.Constant()` がクエリキャッシュより前の段階で定数ノードを埋め込んでいたため、値が変わるたびに EF Core 側でもキャッシュミスが発生していました。EF Core 9 でこの処理はパイプラインの後段へ移されています。
->
-> [EF Core 10.0.11 の公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.Relational/Query/Internal/FromSqlQueryRootExpression.cs)は、生 SQL のクエリ式の等価比較に SQL 文字列を含めます。同版と SQLite で 50 回ずつ比較した結果は、同じ SQL の繰り返しとパラメーター化では各 1 回、毎回異なる SQL では 50 回のコンパイルです。**文字列連結を使うこと自体がヒット率 0% の条件ではありません。**
->
-> 同期間のヒット・ミスから求めた比率が低いなら、まず生 SQL の組み立て方と、条件を動的に付け外ししている箇所を疑ってください。パラメーター化を保ったまま生の SQL を書く方法は[付録3の「生の SQL を使う」](../appendix-efcore-03/index.md#生の-sql-を使う)を参照してください。
-
-`active_dbcontexts` が想定より多いままなら `DbContext` が破棄されずに残っている可能性があり、`optimistic_concurrency_failures` の増加は同時更新の競合が実際に起きていることを示します。これらは OpenTelemetry や Application Insights にそのまま送れます。
-
-> [!TIP]
-> **`active_dbcontexts` は「正常な状態」を先に知っておくと役に立ちます。** 次は、`AddDbContextPool` を使い、スコープごとにクエリを 1 回発行する処理を 10 分間で 2,800 回繰り返した条件での記録です。
->
-> | 経過 | 反復回数 | マネージドヒープ | ワーキングセット | `active_dbcontexts` |
-> | --- | --- | --- | --- | --- |
-> | 42 秒 | 200 | 8.6 MiB | 139.4 MiB | 1 |
-> | 292 秒 | 1,400 | 9.6 MiB | 141.1 MiB | 1 |
-> | 600 秒 | 2,800 | 8.9 MiB | 141.2 MiB | 1 |
->
-> この観測では、マネージドヒープは 4 MiB 台まで戻る変動があり、42 秒から 600 秒までのワーキングセット増加は約 1.8 MiB です（1 MiB = 1,048,576 バイト）。`active_dbcontexts` は**各記録時点で 1**ですが、この値だけで全インスタンスの正しい返却まで証明できるわけではありません。
->
-> この値が反復回数に比例して増えていく場合は、`DbContext` を `using` や DI スコープの外で作って破棄し忘れている可能性があります。負荷をかけた状態でこのメトリックが横ばいになるかどうかを、リリース前に一度確認しておくとよいでしょう。
 
 ### パラメーター名が EF Core 10 で変わった
 
