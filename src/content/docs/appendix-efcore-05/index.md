@@ -1639,6 +1639,9 @@ var textResults = await db.Blogs
     .ToListAsync();
 ```
 
+> [!NOTE]
+> **ここでは `OrderBy` のままで関連度の高い順になります。** EF Core は上の式を `ORDER BY RANK FullTextScore(...)` に翻訳します。[Cosmos DB の公式仕様](https://learn.microsoft.com/ja-jp/cosmos-db/query/fulltextscore)は、この構文で関連度の高い文書から返すと説明しています。通常の数値を昇順に並べる場合とは異なり、[EF Core 10.0.11 の公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.Cosmos/Query/Internal/Expressions/SelectExpression.cs#L382-L388)は、この用途の `OrderByDescending` をサポートせず、クエリ翻訳時に `InvalidOperationException` を送出します。
+
 [公式の全文検索ガイド](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/full-text-search)は、`FullTextScore` の用途を並べ替えに限定しています。この確認例でも `Select` への投影・`Where` 条件で HTTP 400 を確認できています。通常の数値計算メソッドとは異なります。
 
 既定言語は `en-US` です。[公式 API](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.cosmosmodelbuilderextensions.hasdefaultfulltextlanguage?view=efcore-10.0)の既定言語の設定先は `ModelBuilder` です。`EnableFullTextSearch("de-DE")` と `modelBuilder.HasDefaultFullTextLanguage("de-DE")` の確認例も成功ですが、[多言語対応の公式条件](https://learn.microsoft.com/ja-jp/azure/cosmos-db/gen-ai/full-text-search)の代わりにはなりません。全言語・全リージョンでの利用保証ではありません。
