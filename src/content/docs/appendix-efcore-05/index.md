@@ -141,7 +141,7 @@ options.UseSqlServer(connectionString)
               DbContextLoggerOptions.UtcTime | DbContextLoggerOptions.SingleLine);
 ```
 
-SQLite で同じ `CountAsync()` クエリを実行し、書式オプションを省略した場合と比べました（EF Core 10.0.11 で実測）。
+次は SQLite で同じ `CountAsync()` クエリを使い、書式オプションの有無を比較した確認例です（EF Core 10.0.11）。
 
 ```text
 --- 書式オプション未指定（既定） ---
@@ -157,26 +157,26 @@ info: 2026/09/10 09:55:23.500 RelationalEventId.CommandExecuted[20101] (Microsof
 `UtcTime` を付けると ISO 8601 の UTC タイムスタンプが先頭に付き、`SingleLine` を付けると改行が取り除かれて 1 行になります。
 
 > [!WARNING]
-> `SingleLine` は改行を**取り除くだけ**で、空白に置き換えるわけではありません。実測のとおり `...CommandTimeout='30']SELECT` のように語がつながります。構造化ログへ変換する機能ではないため、出力先でこの形式を正しく扱えることを確認して使ってください。
+> [公式のログ書式の説明](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/simple-logging#single-line-logging)では、`SingleLine` はメッセージを 1 行で出力する設定です。この確認例では `...CommandTimeout='30']SELECT` のように区切りの空白がありません。特定の空白や改行の置換規則を一般契約とせず、出力先で形式を扱えることを確認してください。
 
 > [!TIP]
 > `LogTo` の書式オプションを省略した場合、既定は `DefaultWithLocalTime` で、現在のカルチャーに従ったローカル時刻が出力されます。[公式のログ書式の説明](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/simple-logging#message-contents-and-formatting)も同じです。ほかのメタデータを維持して UTC 時刻へ変えるには `DefaultWithUtcTime` を指定します。
 
 ### EF Core が公開しているメトリックを見る
 
-ログよりも軽量に、アプリケーション全体の傾向をつかみたいときはメトリックが使えます。EF Core 9 以降、EF Core は `System.Diagnostics.Metrics` API で **`Microsoft.EntityFrameworkCore`** という名前のメーターを公開しています。公式ドキュメントに記載されているのは次の 7 つです。
+[公式のメトリックガイド](https://learn.microsoft.com/ja-jp/ef/core/logging-events-diagnostics/metrics)では、EF Core 9 以降に `System.Diagnostics.Metrics` API で **`Microsoft.EntityFrameworkCore`** というメーターを公開すると説明しています。アプリケーション全体の傾向を把握するための 7 つの計測器は次のとおりです。
 
 | メトリック | 種類 | 意味 |
 | --- | --- | --- |
-| `microsoft.entityframeworkcore.active_dbcontexts` | UpDownCounter | 現在アクティブな `DbContext` の数 |
-| `microsoft.entityframeworkcore.queries` | Counter | 実行されたクエリの累計 |
-| `microsoft.entityframeworkcore.savechanges` | Counter | `SaveChanges` の累計 |
-| `microsoft.entityframeworkcore.compiled_query_cache_hits` | Counter | クエリキャッシュにヒットした回数 |
-| `microsoft.entityframeworkcore.compiled_query_cache_misses` | Counter | クエリキャッシュを外した回数 |
-| `microsoft.entityframeworkcore.execution_strategy_operation_failures` | Counter | 実行戦略が捉えた操作の失敗回数 |
-| `microsoft.entityframeworkcore.optimistic_concurrency_failures` | Counter | 楽観的同時実行制御の失敗回数 |
+| `microsoft.entityframeworkcore.active_dbcontexts` | ObservableUpDownCounter | 現在アクティブな `DbContext` の数 |
+| `microsoft.entityframeworkcore.queries` | ObservableCounter | 実行されたクエリの累計 |
+| `microsoft.entityframeworkcore.savechanges` | ObservableCounter | `SaveChanges` の累計 |
+| `microsoft.entityframeworkcore.compiled_query_cache_hits` | ObservableCounter | クエリキャッシュにヒットした回数 |
+| `microsoft.entityframeworkcore.compiled_query_cache_misses` | ObservableCounter | クエリキャッシュを外した回数 |
+| `microsoft.entityframeworkcore.execution_strategy_operation_failures` | ObservableCounter | 実行戦略が捉えた操作の失敗回数 |
+| `microsoft.entityframeworkcore.optimistic_concurrency_failures` | ObservableCounter | 楽観的同時実行制御の失敗回数 |
 
-`MeterListener` で購読して実測してみます。**同じ形のクエリを 3 回、別の形のクエリを 1 回、`SaveChanges` を 1 回**実行した結果です。
+次は `MeterListener` による確認例です。**同じ形のクエリを 3 回、別の形を 1 回、`SaveChanges` を 1 回**実行した条件の結果を示します。
 
 ```text
 microsoft.entityframeworkcore.active_dbcontexts = 1
@@ -213,9 +213,9 @@ meterListener.RecordObservableInstruments();
 > [!WARNING]
 > **落とし穴が 2 つあります。どちらも「メトリックが取れない」という同じ症状になります。**
 >
-> 1 つ目は、EF Core のメトリックがすべて**観測可能な計測器 (observable instrument)** であることです。値を取り出すには `RecordObservableInstruments()` を明示的に呼ぶ必要があります。これを忘れるとコールバックが 1 度も呼ばれません（実測で確認）。
+> 1 つ目は、上のメトリックが**観測可能な計測器 (observable instrument)** であることです。[公式の `RecordObservableInstruments` API](https://learn.microsoft.com/ja-jp/dotnet/api/system.diagnostics.metrics.meterlistener.recordobservableinstruments?view=net-10.0)で値を取得します。上のように `MeterListener` を直接使う確認例でも、同呼び出しなしではコールバックの通知はありません。
 >
-> 2 つ目は、**計測器によって値の型が違う**ことです。EF Core のソースコードを見ると、`active_dbcontexts` だけが `ObservableUpDownCounter<int>` で、残りの 6 つは `ObservableCounter<long>` として作られています。`SetMeasurementEventCallback<long>` だけを登録すると、**`active_dbcontexts` の行だけが黙って出てきません。** 上のコードで `<int>` 版も登録しているのはこのためです（実測で確認）。
+> 2 つ目は、[EF Core 10.0.11 の公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore/Infrastructure/Internal/EntityFrameworkMetrics.cs)で、`active_dbcontexts` が `ObservableUpDownCounter<int>`、残りが `ObservableCounter<long>` であることです。この版の確認例でも `<long>` のコールバックだけでは前者を取得できず、上のコードは `<int>` も登録しています。
 
 > [!TIP]
 > `compiled_query_cache_misses` と `optimistic_concurrency_failures` は累積カウンターです。前者の増分は同期間のヒット数や実行状況と比較し、後者の増分は観測時間で割るなどして競合の発生頻度を調べます。累積値だけをヒット率や発生頻度と読み替えず、アプリケーションの通常時の値に合わせてアラート条件を決めてください。
@@ -284,7 +284,7 @@ SQL Server のクエリストアや実行計画の分析ツールでは、この
 
 特に重要なのが **クエリキャッシュのヒット率** です。EF Core は LINQ 式から SQL への変換結果をキャッシュしており、起動直後を過ぎればヒット率はほぼ 100% になるはずです。`compiled_query_cache_misses` は累積値なので、増え続けることだけでは効率を判断できません。同期間の `hits` と `misses` の増分から比率を調べ、新しい形のクエリが増えていないか確認します。
 
-同じ処理を 50 回ずつ繰り返してヒット率を実測すると、次のようになりました。
+次は、同じ処理を 50 回ずつ繰り返した条件でのヒット率の確認例です。
 
 | 書き方 | ヒット率 |
 | --- | --- |
@@ -294,18 +294,18 @@ SQL Server のクエリストアや実行計画の分析ツールでは、この
 | `FromSqlRaw` に、値を直接埋め込んだ毎回異なる SQL を渡す | **0%** |
 
 > [!NOTE]
-> **この測定では、同じ式の形で `EF.Constant()` に渡す値を変えても、50 回中 49 ヒット・1 ミスでした。** SQL に値を埋め込むことと、EF Core のクエリキャッシュでミスが起きることは同義ではありません。ただし式の組み立て方や形が変わる場合までヒット率が不変だとはいえません。値を埋め込んだ SQL がデータベース側のプランキャッシュへ与える影響は、EF Core のメトリックとは別に確認します。
+> [EF Core 9 の破壊的変更](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-9.0/breaking-changes#efconstant-and-efparameter-no-longer-work-inside-compiled-queries)では、`EF.Constant()` の処理をクエリキャッシュより後の段階へ移し、定数値ごとの再コンパイルを避けると説明しています。この表でも同じ式の形で値だけを変える条件は、50 回中 49 ヒット・1 ミスです。式の形が変わる場合までヒット率を保証するものではなく、データベース側のプランキャッシュへの影響は別に確認します。
 >
 > ただしこれは EF Core 9 以降の挙動です。EF Core 8 の実装では `EF.Constant()` がクエリキャッシュより前の段階で定数ノードを埋め込んでいたため、値が変わるたびに EF Core 側でもキャッシュミスが発生していました。EF Core 9 でこの処理はパイプラインの後段へ移されています。
 >
-> 表の生 SQL の実測では、各回で SQL 文字列そのものを変えています。**文字列連結を使うだけで、必ずヒット率が 0% になるわけではありません。** EF Core 10.0.11 と SQLite で 50 回ずつ対照実測すると、同一の SQL 文字列を繰り返した場合とパラメーター化した場合のクエリコンパイルはそれぞれ 1 回、毎回異なる SQL では 50 回でした。[EF Core 10.0.11 の公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.Relational/Query/Internal/FromSqlQueryRootExpression.cs)でも、生 SQL のクエリ式の等価比較に SQL 文字列を含めることが確認できます。
+> [EF Core 10.0.11 の公式実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.Relational/Query/Internal/FromSqlQueryRootExpression.cs)は、生 SQL のクエリ式の等価比較に SQL 文字列を含めます。同版と SQLite で 50 回ずつ比較した結果は、同じ SQL の繰り返しとパラメーター化では各 1 回、毎回異なる SQL では 50 回のコンパイルです。**文字列連結を使うこと自体がヒット率 0% の条件ではありません。**
 >
 > 同期間のヒット・ミスから求めた比率が低いなら、まず生 SQL の組み立て方と、条件を動的に付け外ししている箇所を疑ってください。パラメーター化を保ったまま生の SQL を書く方法は[付録3の「生の SQL を使う」](../appendix-efcore-03/index.md#生の-sql-を使う)を参照してください。
 
 `active_dbcontexts` が想定より多いままなら `DbContext` が破棄されずに残っている可能性があり、`optimistic_concurrency_failures` の増加は同時更新の競合が実際に起きていることを示します。これらは OpenTelemetry や Application Insights にそのまま送れます。
 
 > [!TIP]
-> **`active_dbcontexts` は「正常な状態」を先に知っておくと役に立ちます。** `AddDbContextPool` を使い、スコープごとに `DbContext` を取得してクエリを 1 回発行する処理を 10 分間で 2,800 回繰り返しながら、定期的に値を記録したところ、次のようになりました。
+> **`active_dbcontexts` は「正常な状態」を先に知っておくと役に立ちます。** 次は、`AddDbContextPool` を使い、スコープごとにクエリを 1 回発行する処理を 10 分間で 2,800 回繰り返した条件での記録です。
 >
 > | 経過 | 反復回数 | マネージドヒープ | ワーキングセット | `active_dbcontexts` |
 > | --- | --- | --- | --- | --- |
@@ -313,7 +313,7 @@ SQL Server のクエリストアや実行計画の分析ツールでは、この
 > | 292 秒 | 1,400 | 9.6 MiB | 141.1 MiB | 1 |
 > | 600 秒 | 2,800 | 8.9 MiB | 141.2 MiB | 1 |
 >
-> マネージドヒープには 4 MiB 台まで戻る変動があり、ワーキングセットの増加は最初の記録（42 秒）から最後の記録（600 秒）までで約 1.8 MiB でした。ここで 1 MiB は 1,048,576 バイトです。`active_dbcontexts` は**各記録時点で 1**でした。スコープの終了時に確実にプールへ返却されているためです。
+> この観測では、マネージドヒープは 4 MiB 台まで戻る変動があり、42 秒から 600 秒までのワーキングセット増加は約 1.8 MiB です（1 MiB = 1,048,576 バイト）。`active_dbcontexts` は**各記録時点で 1**ですが、この値だけで全インスタンスの正しい返却まで証明できるわけではありません。
 >
 > この値が反復回数に比例して増えていく場合は、`DbContext` を `using` や DI スコープの外で作って破棄し忘れている可能性があります。負荷をかけた状態でこのメトリックが横ばいになるかどうかを、リリース前に一度確認しておくとよいでしょう。
 
@@ -347,7 +347,7 @@ WHERE [b].[City] = @city
 
 公式ドキュメントは「**本番環境でコマンドの実行ログを有効にしたままにするのは、たいてい悪い考えだ**」と述べています。理由は 2 つあり、**ログの出力自体がアプリケーションを遅くすること**と、**巨大なログファイルが短時間でサーバーのディスクを埋めること**です。公式は、データを集めるなら「アプリケーションを注意深く監視しながら短時間だけ有効にする」か「本番前の環境で採取する」ことを勧めています。
 
-どちらもどの程度なのかを実測しました。まず出力量です。SQL Server 2022 に対してウォームアップのクエリ 1 回と主キー検索 2,000 回を実行し、`LogTo` の出力をファイルに書き出しました。
+以下は公式の注意点に対する条件付きの補足です。まず、SQL Server 2022 にウォームアップ 1 回と主キー検索 2,000 回を実行した場合の、`LogTo` のファイル出力量を示します。
 
 | 項目 | 実測値 |
 | --- | --- |
@@ -363,16 +363,16 @@ WHERE [b].[City] = @city
 | SQL Server 2022（コンテナー、2,000 クエリ） | 1,431 ms | 1,392 ms | 差を検出できず |
 | SQLite インメモリ（5,000 クエリ） | 243 ms | 324 ms | 約 1.33 倍遅い |
 
-ログなしの総時間をクエリ数で割ると、SQL Server は約 0.7 ミリ秒、SQLite は約 0.05 ミリ秒です。SQLite のこの測定ではログありの時間が約 33% 長くなりましたが、SQL Server 側の差が小さい理由や統計的な有意差まではこの結果だけで判断できません。
+ログなしの総時間をクエリ数で割ると、SQL Server は約 0.7 ミリ秒、SQLite は約 0.05 ミリ秒です。この SQLite の測定点ではログありの時間が約 33% 長いものの、SQL Server 側との差の理由や統計的な有意差は、この結果だけでは判断できません。
 
 > [!NOTE]
-> この 2 条件ではログによる時間差が異なりましたが、データベースの速さだけを原因とは断定できません。SQL Server 側は `StreamWriter`（計時後に `Flush`）、SQLite 側はメモリ上の `StringWriter` への出力で、後者はディスク書き込みを測っていません。ファイルへ保存する場合の容量・書き込み時間も、実際の出力先で別途確認してください。本番の詳細ログは必要な期間に限定します。
+> この 2 条件の時間差を、データベースの速さだけに帰属させることはできません。SQL Server 側は `StreamWriter`（計時後に `Flush`）、SQLite 側はメモリ上の `StringWriter` への出力で、後者はディスク書き込みを含みません。ファイルの容量・書き込み時間も実際の出力先で確認し、本番の詳細ログは必要な期間に限定します。
 
 ---
 
 ### ログとセキュリティ
 
-EF Core は、既定ではパラメーター値をログに出力しません。パラメーター名やサイズなどのメタデータは残りますが、値は `?` に置き換えられます。実際に SQL Server 2022 に対して `city` というローカル変数で絞り込んだところ、次のように出力されました（実測で確認）。
+EF Core は、既定ではパラメーター値をログに出力しません。パラメーター名やサイズなどのメタデータは残りますが、値は `?` に置き換えられます。次は SQL Server 2022 に対し、`city` というローカル変数で絞り込む確認例です。
 
 ```text
 [Parameters=[@city='?' (Size = 4000)], CommandType='Text', CommandTimeout='30']
@@ -386,9 +386,9 @@ WHERE [b].[City] = @city
 >
 > ほとんどのアプリケーションではこの変更を意識する必要はありませんが、**生成された SQL の文字列を比較するスナップショットテストや、`DbCommand.CommandText` を解析するインターセプター・ロガーのうち、変更された名前に依存するものは修正が必要**です。
 >
-> なお、この簡素化が適用されるのは LINQ クエリのパラメーターです。`SaveChanges` が発行する `INSERT` / `UPDATE` は実測でも従来どおり `@p0`、`@p1` という名前でした。
+> なお、この簡素化は LINQ クエリのパラメーターについての変更です。この確認例の `SaveChanges` による `INSERT` / `UPDATE` では、`@p0`、`@p1` を確認できています。
 
-ただし EF Core は、状況によってはパラメーターを送らずに値を SQL に **インライン化** することがあります。`EF.Constant()` を明示的に使った場合が代表例です。EF Core 9 まではインライン化された値がログにそのまま出力されていましたが、EF Core 10 以降は既定で `?` に置き換えられるようになりました。次は SQL Server 形式で示した模式例です。直接リテラル・`EF.Constant()`・通常のパラメーターの対照実測は EF Core 10.0.11 / SQLite で行いました。
+ただし EF Core は、状況によっては値を SQL に **インライン化** します。`EF.Constant()` が代表例です。[EF Core 10 の新機能](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-10.0/whatsnew)では、このような本来パラメーターになる値のログ上のリダクションを説明しています。次は SQL Server 形式の模式例です。直接リテラル・`EF.Constant()`・通常のパラメーターの比較は EF Core 10.0.11 / SQLite で確認できています。
 
 ```text
 -- EF.Constant(name) を使ったクエリ
@@ -426,7 +426,7 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 
 #### EF Core 10 は接続文字列に Application Name を追加する
 
-EF Core 10 からは、接続文字列に `Application Name` が指定されていない場合、EF Core が自身のバージョンと OS 情報を含む値を **自動的に追加** します。実際に SQL Server プロバイダーで確認すると、次のように書き換えられます。
+[EF Core 10 の破壊的変更](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-10.0/breaking-changes#application-name-is-now-injected-into-the-connection-string)では、未指定の `Application Name` の自動追加と、EF 以外のアクセスとの接続プールの分離・分散トランザクションへの昇格の可能性を説明しています。次は SQL Server プロバイダーでの接続文字列の確認例です。
 
 ```text
 [渡した接続文字列]
@@ -440,7 +440,7 @@ Trust Server Certificate=True;Application Name="EFCore/10.0.11 (macOS 26.6.2 Arm
 ほとんどの場合は影響しませんが、**同じデータベースに EF Core と Dapper や ADO.NET などを併用している場合は注意が必要です。** SqlClient は接続文字列が異なると別の接続プールを使うため、両者が別々のプールに分かれます。同一の `TransactionScope` 内で別プールの接続を使うと、**分散トランザクションへの昇格** が必要になる可能性があります。以下は接続を 2 本開いた条件での観測です。
 
 > [!WARNING]
-> **.NET 7 以降、暗黙の昇格は既定で無効化されています。** そのため実際に起きるのは「昇格して動き続ける」ことではなく、昇格が必要になった操作で例外が発生することです。Windows Server 2022 + SQL Server 2022 + .NET 10 で `TransactionScope` の中から接続文字列の違う接続を 2 本開いたところ、2 本目の `Open()` で次の例外が発生しました。
+> **暗黙の分散トランザクションへの昇格は既定で無効です。** [公式 API](https://learn.microsoft.com/ja-jp/dotnet/api/system.transactions.transactionmanager.implicitdistributedtransactions?view=net-10.0)は既定値 `false` と Windows 限定の設定であることを示しています。Windows Server 2022 + SQL Server 2022 + .NET 10 の確認例では、異なる接続文字列で 2 本開くと、2 本目の `Open()` で次の例外を確認できています。
 >
 > ```text
 > System.NotSupportedException: Implicit distributed transactions have not been enabled.
@@ -448,9 +448,9 @@ Trust Server Certificate=True;Application Name="EFCore/10.0.11 (macOS 26.6.2 Arm
 > TransactionManager.ImplicitDistributedTransactions to true.
 > ```
 >
-> `TransactionManager.ImplicitDistributedTransactions = true`（Windows 専用の API です）を設定したうえで同じコードを実行すると、2 本目の `Open()` の直後に `Transaction.Current.TransactionInformation.DistributedIdentifier` が `Guid.Empty` から実際の GUID に変わり、MSDTC (Microsoft Distributed Transaction Coordinator) への昇格が起きたことを確認できました。Linux や macOS では、このプロパティを `true` に設定する時点で `PlatformNotSupportedException` になります。macOS / .NET 10 で設定時の例外を確認しました。
+> 同じ Windows 環境で `TransactionManager.ImplicitDistributedTransactions = true` を設定した確認例では、2 本目の `Open()` 後に `DistributedIdentifier` が `Guid.Empty` 以外となり、MSDTC への昇格を確認できています。macOS / .NET 10 の確認例は、同プロパティの設定時に `PlatformNotSupportedException` です。
 
-同じ環境で条件を変えて測ったところ、昇格するかどうかは次のように分かれました。
+次は同じ環境で接続文字列と開閉順序を変えた確認例です。表の結果は、あらゆる接続プールの状態で同じ動作を保証するものではありません。
 
 | `TransactionScope` 内での操作 | 昇格するか |
 | --- | --- |
@@ -459,9 +459,9 @@ Trust Server Certificate=True;Application Name="EFCore/10.0.11 (macOS 26.6.2 Arm
 | `Application Name` だけが違う接続を 2 本同時に開く | 昇格する |
 | `Application Name` だけが違う接続を、1 本目を閉じてから 2 本目を開く | **昇格する** |
 
-つまり、接続を律儀に閉じてから次を開く書き方をしていれば以前は昇格しなかったのに、EF Core 10 が `Application Name` を自動で足したことで昇格するようになる、というのがこの破壊的変更の実害です。
+[公式の破壊的変更](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-10.0/breaking-changes#application-name-is-now-injected-into-the-connection-string)が警告するのは、異なる接続文字列により接続プールが分かれ、以前は不要だった分散トランザクションへの昇格が必要になる**可能性**です。接続を順に閉じれば昇格しない、という一般契約を表の結果から導くことはできません。
 
-回避するには、接続文字列に `Application Name` を明示的に指定します。空でなく、ドライバーの既定名とも異なるアプリケーション固有の値を指定すると、EF Core はその名前を維持します。空文字列やドライバーの既定名は自動設定の対象なので、「何か指定すれば必ず維持される」とは考えないでください。SQL Server 2022 に接続して `sys.dm_exec_sessions` の `program_name` を確認したところ、指定しない場合は `EFCore/10.0.11 (macOS 26.6.2 Arm64)`、明示した場合は `BloggingApi` となり、サーバー側から見える値も切り替わることを確認しています。
+公式の回避策は `Application Name` の明示です。[EF Core 10.0.11 の実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore.SqlServer/Storage/Internal/SqlServerConnection.cs)では空文字列やドライバーの既定名も置換対象なので、アプリケーション固有の値を指定します。SQL Server 2022 の `program_name` の確認例では、未指定は `EFCore/10.0.11 (macOS 26.6.2 Arm64)`、明示指定は `BloggingApi` です。置換の細部はこの版の実装に対する補足です。
 
 ```json
 {
@@ -481,7 +481,7 @@ services.AddDbContext<BloggingContext>(o => o.UseSqlServer(second));
 // → second が使われる
 ```
 
-実際に接続文字列を変えて 2 回登録し、解決された `DbContext` の接続先を確認したところ、2 つ目の設定が使われました（実測）。公式ドキュメントは、競合しない構成を合成できる `ConfigureDbContext` との一貫性のための変更と説明しています。EF Core 10.0.11 と SQLite の対照実測でも、接続先は後の値へ変わりましたが、最初に指定した `NoTracking` は維持されました。**`DbContext` 本体の登録は `TryAdd` のままです。** [EF Core 10.0.11 の実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore/Extensions/EntityFrameworkServiceCollectionExtensions.cs#L597)では、コンテキスト本体の登録と構成処理の追加を分け、オプションを作るときに登録済みの構成を順に適用します。コンテキスト本体の DI 登録と、設定の合成・競合解決を混同しないでください。
+[公式の構成の優先順位](https://learn.microsoft.com/ja-jp/ef/core/dbcontext-configuration/#configuredbcontext-and-adddbcontext-precedence)では、登録順に構成を適用し、競合する項目だけ後の値を優先します。EF Core 10.0.11 / SQLite の確認例でも、接続先は後の値、最初の `NoTracking` は維持です。[この版の実装](https://github.com/dotnet/efcore/blob/v10.0.11/src/EFCore/Extensions/EntityFrameworkServiceCollectionExtensions.cs#L597)は、`TryAdd` によるコンテキスト本体の登録と、構成処理の追加を分けています。本体の DI 登録とオプションの合成を混同しないでください。
 
 > [!WARNING]
 > ライブラリが内部で `AddDbContext` を呼んでいる場合は、同じ設定項目をどちらが上書きするか、登録順を確認してください。ただし、**後から登録すれば以前のプロバイダーも外れる、という意味ではありません。** 異なるプロバイダーへの切り替えは、[付録6の構成の除去](../appendix-efcore-06/index.md#webapplicationfactory-で-api-ごとテストする)も確認してください。
@@ -498,14 +498,14 @@ public class GoodContext(DbContextOptions<GoodContext> options) : DbContext(opti
 public class BadContext(DbContextOptions options) : DbContext(options);
 ```
 
-厄介なのは、**壊れ方が登録順に依存する**ことです。2 つの `DbContext` を登録して実測すると、次のようになりました。
+次は 2 つの `DbContext` を登録する確認例です。非ジェネリックのオプションを受け取る側では、登録順による結果の違いを確認できています。
 
 | 登録順 | `GoodContext` の解決 | `BadContext` の解決 |
 | --- | --- | --- |
 | `GoodContext` → `BadContext` | 成功 | **たまたま成功** |
 | `BadContext` → `GoodContext` | 成功 | **失敗** |
 
-非ジェネリック版は「最後に登録された `DbContextOptions`」を拾うため、たまたま自分の登録が最後だったときだけ動いてしまいます。失敗する側では次の例外が出ました。
+この DI 構成では、非ジェネリック版は最後に登録された `DbContextOptions` を解決します。失敗側の確認結果は次の例外です。特定の登録順で成功しても、非ジェネリック版を使う根拠にはしないでください。
 
 ```text
 System.InvalidOperationException: The DbContextOptions passed to the BadContext constructor
@@ -523,9 +523,9 @@ than a non-generic DbContextOptions parameter.
 
 `AddDbContext` はコンテキスト自体を DI に登録し、同時にプロバイダーや接続文字列などのオプションも構成する呼び出しです。これに対して、**コンテキストの登録とは分けてログや診断だけを足したい**ことがあります。テストで `EnableSensitiveDataLogging` を付けたい、共通ライブラリでインターセプターを差したい、といった場面です。
 
-その用途には、EF Core 9 以降の **`ConfigureDbContext`** を使えます。[公式リファレンス](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.extensions.dependencyinjection.entityframeworkservicecollectionextensions.configuredbcontext?view=efcore-10.0)は、構成が呼び出し順に適用され、競合する設定は後の構成で上書きされると説明しています。**`AddDbContext` を再度呼ぶと、以前の構成全体が消えるわけではありません。** EF Core 10 と SQLite で、最初の `AddDbContext` で接続を指定し、2 回目でログと機密データの記録だけを追加すると、同じ接続でクエリを実行でき、追加したログ設定も有効でした。
+その用途には、EF Core 9 以降の **`ConfigureDbContext`** を使えます。[公式リファレンス](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.extensions.dependencyinjection.entityframeworkservicecollectionextensions.configuredbcontext?view=efcore-10.0)は、構成が呼び出し順に適用され、競合する設定は後の構成で上書きされると説明しています。**`AddDbContext` の再呼び出しも、以前の構成全体を消す操作ではありません。** EF Core 10 / SQLite の確認例でも、最初の接続設定を維持したまま、2 回目で追加したログ設定の有効化を確認できています。
 
-`ConfigureDbContext` 自体はコンテキストを DI に登録しないため、`AddDbContext` などとの併用が必要です。実測でも、`ConfigureDbContext` だけではコンテキストを解決できませんでした。次の例は、共通側の診断設定とアプリケーション側の登録を分けたものです。
+`ConfigureDbContext` 自体はコンテキストを DI に登録しないため、`AddDbContext` などとの併用が必要です。同 API だけでは解決できないことも確認できています。次は、共通側の診断設定とアプリケーション側の登録を分けた例です。
 
 ```csharp
 // ライブラリやテスト側：診断の設定だけを足す
@@ -538,7 +538,7 @@ services.AddDbContext<BloggingContext>(options =>
     options.UseSqlServer(connectionString));
 ```
 
-実際にこの順番で登録して解決した `DbContext` でクエリを実行したところ、プロバイダーは SQL Server のまま、`LogTo` も `EnableSensitiveDataLogging` も有効でした（実測）。
+この順番で登録した確認例では、プロバイダーは SQL Server のまま、`LogTo` と `EnableSensitiveDataLogging` の有効化を確認できています。
 
 ```text
 プロバイダー: Microsoft.EntityFrameworkCore.SqlServer
@@ -564,7 +564,7 @@ Executed DbCommand (36ms) [Parameters=[@name='test' (Size = 4000)], ...]
 | Scoped（既定） | 同じユーザーのコンポーネント間で同様の問題が起きる |
 | Transient | 要求ごとに新しいインスタンスになるが、コンポーネントが長寿命になり得るため、意図より長寿命なコンテキストになる |
 
-1 つの `DbContext` インスタンスに対して 2 つの操作を同時に実行すると、実際に次の例外になります（実測）。
+[公式のスレッドの問題の回避](https://learn.microsoft.com/ja-jp/ef/core/dbcontext-configuration/#avoiding-dbcontext-threading-issues)では、同じ `DbContext` の並行操作を禁止し、未検出でも安全ではないとしています。次は同じインスタンスの操作を重ねた確認例の例外です。常にこの型で検出されるという保証ではありません。
 
 ```text
 System.InvalidOperationException: A second operation was started on this context
@@ -572,7 +572,7 @@ instance before a previous operation completed. This is usually caused by
 different threads concurrently using the same instance of DbContext.
 ```
 
-対して、`IDbContextFactory<T>` から操作ごとにインスタンスを作れば、同じ 2 つの操作を並行実行しても例外は発生しませんでした。
+操作ごとに別の `IDbContextFactory<T>` 由来のインスタンスを使う確認例では、同じ 2 操作の成功を確認できています。これはデータベース上の競合を含むあらゆる例外を防ぐという意味ではありません。
 
 公式ドキュメントが示す指針は次のとおりです。
 
@@ -596,7 +596,7 @@ different threads concurrently using the same instance of DbContext.
 | 設定方法 | `AddDbContextPool` の `poolSize` | **接続文字列**（`Max Pool Size` など、ドライバーのドキュメントに従う） |
 | 既定 | 無効（`AddDbContext` を使うため） | 通常は有効 |
 
-EF Core は接続プーリングを自前では実装せず、下位のドライバーに任せます。そして **EF Core は操作の直前に接続を開き、直後に閉じてプールへ返します。** 必要以上に接続をプールの外に出しておかないためです。`IDbConnectionInterceptor` で開閉の回数を数えたところ、同じ `DbContext` インスタンスでクエリを 3 回実行すると 3 回開閉していました。
+EF Core は接続プーリングを下位のドライバーに任せ、通常は操作の直前に接続を開き、直後に閉じて返却します。次は `IDbConnectionInterceptor` で開閉を確認した例です。同じ `DbContext` の 3 クエリで 3 回、明示的に開く条件では 1 回の開閉を確認できています。
 
 | 操作 | 接続の開閉回数 |
 | --- | --- |
@@ -612,7 +612,7 @@ EF Core は接続プーリングを自前では実装せず、下位のドライ
 > - [付録 EF Core 2：モデル定義（キー・採番・SQL Server 固有）](../appendix-efcore-02/index.md) — キーとインデックス、採番、テンポラルテーブル、SQL Server 固有のマッピング
 
 > [!TIP]
-> DI のスコープ検証では、もう 1 つ「**Scoped サービスをルートのサービスプロバイダーから解決していないか**」も確認されます。`app.Services.GetRequiredService<BloggingContext>()` のようにスコープを作らずに解決すると、次の例外になります（実測）。
+> [公式の DI スコープ検証](https://learn.microsoft.com/ja-jp/dotnet/core/extensions/dependency-injection#scope-validation)では、**Scoped サービスをルートから解決していないか**も確認します。検証有効の確認例では、`app.Services.GetRequiredService<BloggingContext>()` により次の例外を確認できています。検証なしで成功しても正しい寿命になるわけではありません。
 >
 > ```text
 > System.InvalidOperationException: Cannot resolve scoped service
@@ -623,7 +623,7 @@ EF Core は接続プーリングを自前では実装せず、下位のドライ
 
 #### サードパーティー製プロバイダーはバージョンを実際に確かめる
 
-EF Core のプロバイダーは **通常、異なるメジャーバージョンとの互換性はありません**。公式のプロバイダー一覧には各プロバイダーが対応する EF Core のバージョンが載っていますが、この一覧は Microsoft 以外が提供するプロバイダーの最新状況に追いついていないことがあります。次の指定バージョンを復元し、限定した操作を確かめました。復元成功は、そのパッケージの全機能の互換性を保証するものではありません。
+[公式のプロバイダー一覧](https://learn.microsoft.com/ja-jp/ef/core/providers/)は、**通常、異なる EF Core メジャーバージョンとの互換性はない**と注意しています。サードパーティー製の対応状況は提供元の案内と依存関係も確認してください。次は指定バージョンでの限定した操作の確認例です。復元や操作の成功を、提供元が示す対応範囲の拡張根拠にはしません。
 
 | パッケージ | 今回指定して復元した版 | EF Core 10 のプロジェクトで確認した範囲 |
 | --- | --- | --- |
@@ -650,7 +650,7 @@ System.MissingMethodException: Method not found:
 
 公式ドキュメントは、リレーショナルプロバイダーを使うときの注意として次を挙げています。EF Core のパッチリリースには `Microsoft.EntityFrameworkCore.Relational` の更新が含まれることが多い一方、**プロバイダーは EF Core とは独立してリリースされるため、新しいパッチ版に依存するよう更新されているとは限らない**、というものです。
 
-NuGet は推移的な依存関係について「条件を満たす最も低いバージョン」を選ぶため、プロバイダーが古いパッチ版を指していると、そのまま古い `Relational` が使われます。実測すると次のようになりました。
+NuGet は推移的な依存関係について「条件を満たす最も低いバージョン」を選ぶため、プロバイダーが古いパッチ版を指していると、そのまま古い `Relational` が使われます。次はその確認例です。
 
 ```text
 # SqlServer 10.0.0 だけを参照した状態
@@ -671,7 +671,7 @@ Microsoft.EntityFrameworkCore.SqlServer      10.0.0   10.0.0
 
 公式は、独立してリリースされるプロバイダーの依存指定が追いつかない場合に備え、`Microsoft.EntityFrameworkCore.Relational` のパッチ版をアプリケーションの**直接の依存関係として追加する**ことを推奨しています。ただし、上の混在例は NuGet の解決結果を示すもので、Microsoft 製パッケージを異なるバージョンで運用する推奨構成ではありません。
 
-**Microsoft が提供する `Microsoft.EntityFrameworkCore.*` パッケージは同じバージョンに揃えてください。** これは公式の NuGet パッケージ案内に明記されています。`SqlServer` 自体を 10.0.11 に更新して復元すると、直接参照していない `Relational` も 10.0.11 になりました。`Relational` だけの更新を、プロバイダー自身の修正まで取り込む方法と取り違えないでください。
+**Microsoft が提供する `Microsoft.EntityFrameworkCore.*` パッケージは同じバージョンに揃えてください。** これは公式の NuGet パッケージ案内に明記されています。`SqlServer` 自体を 10.0.11 とする確認例では、推移的な `Relational` も 10.0.11 です。`Relational` だけの更新を、プロバイダー自身の修正まで取り込む方法と取り違えないでください。
 
 > [!NOTE]
 > 公式は、パッケージのバージョンについて「**NuGet はパッケージバージョンの一貫性を強制しない。参照しているパッケージのバージョンを `.csproj` で必ず注意深く確認すること**」とも警告しています。EF Core 関連のパッケージがすべて同じバージョンになっているかは、`dotnet list package --include-transitive` で確認できます。
@@ -695,7 +695,7 @@ Microsoft.EntityFrameworkCore.SqlServer      10.0.0   10.0.0
 
 プロバイダーだけでなく、EF Core の**拡張ライブラリ**も公式ドキュメントに一覧があります。各項目には「対応する EF Core: 5-9」のような対応バージョンが併記されていますが、公式ドキュメント自身が「拡張はさまざまな提供元によって構築されており、EF Core プロジェクトの一部として保守されていない。品質・ライセンス・互換性・サポートなどが要件を満たすか評価すること。特に古いバージョン向けに作られた拡張は、最新バージョンで動かすには更新が必要な場合がある」と注意しています。
 
-ここで注意したいのは、**ズレは「一覧が新しすぎる」方向だけでなく「一覧が古すぎる」方向にも起きる**ことです。EF Core 10 のプロジェクトへ次の指定バージョンを復元し、2 つの拡張の DDL 生成を確認しました。
+次は、EF Core 10 のプロジェクトに指定版を復元した確認例です。2 つの拡張の DDL 生成も確認できていますが、これを互換性・サポートの根拠にはしません。掲載時の一覧の表記と、提供元の対応範囲を区別してください。
 
 | パッケージ | 公式一覧の記載 | 実際に復元されたバージョン |
 | --- | --- | --- |
@@ -703,7 +703,7 @@ Microsoft.EntityFrameworkCore.SqlServer      10.0.0   10.0.0
 | `EFCore.NamingConventions` | 3-9 | **10.0.1** |
 | `EFCore.BulkExtensions` | 2-8 | **10.0.1** |
 
-指定した 3 パッケージの復元は成功しました。ただし、これだけで全機能の対応を保証することはできません。実際に `UseSnakeCaseNamingConvention()` と `UseEnumCheckConstraints()` を併用して `GenerateCreateScript()` を実行したところ、期待どおりの DDL が生成されました（実測）。
+指定した 3 パッケージの復元と、`UseSnakeCaseNamingConvention()` / `UseEnumCheckConstraints()` の併用による次の DDL 生成を確認できています。全機能の対応を保証するものではありません。
 
 ```sql
 -- SQL Server
@@ -717,7 +717,7 @@ CREATE TABLE [products] (
 );
 ```
 
-**一覧に「未対応」と書かれていても、それだけで諦めないでください。** 逆に一覧に載っていても、実際に復元して動かすまでは対応済みとみなさないでください。判断には公式一覧、依存バージョン、アプリケーションで必要な操作の実行結果を組み合わせてください。
+採用時は提供元が示す対応バージョン、依存関係、ライセンスとサポートを確認します。アプリケーションでの動作確認は、その対応範囲内で必要な操作を確かめるためのものであり、非対応の構成を対応済みと読み替える根拠にはしません。
 
 ### Singleton やバックグラウンドサービスから DbContext を使う
 
@@ -757,7 +757,7 @@ builder.Services.AddDbContextFactory<BloggingContext>(options =>
 ```
 
 > [!IMPORTANT]
-> ここで示した既定の `AddDbContextFactory` 登録では、`IDbContextFactory<BloggingContext>` を **Singleton** として登録すると同時に、`BloggingContext` そのものも **Scoped** で登録します（実測で確認）。したがって、コントローラーで `BloggingContext` を直接受け取ることも、バックグラウンドサービスでファクトリからインスタンスを作ることも、両方できます。ただし **ファクトリで作ったインスタンスは DI コンテナーが破棄してくれない**ため、下の例のように `await using` で必ず自分で破棄してください。
+> [公式の `AddDbContextFactory` API](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.extensions.dependencyinjection.entityframeworkservicecollectionextensions.adddbcontextfactory?view=efcore-10.0)では、既定のファクトリは **Singleton**、コンテキスト型自体も **Scoped** で登録します。ここでの確認例も同じです。直接注入とファクトリ生成を使い分けられますが、**ファクトリ生成のインスタンスは呼び出し側で破棄**してください。
 
 ```csharp
 public class ReportGenerator(IDbContextFactory<BloggingContext> contextFactory)
@@ -778,7 +778,7 @@ builder.Services.AddPooledDbContextFactory<BloggingContext>(options =>
     options.UseSqlServer(connectionString));
 ```
 
-EF Core 10.0.11 / SQLite を構成した最小 Context で、ハッシュ値ではなく参照の同一性を比較しました。`AddDbContextFactory` では 4 回続けて `CreateDbContextAsync()` を呼ぶと 4 つの別インスタンスが返りましたが、`AddPooledDbContextFactory` では**同じインスタンスが 4 回とも返りました**（破棄するたびにプールへ戻り、次の要求で再利用されるため）。また破棄前に 1 件のエンティティを追跡させておいても、プールから取り出し直したインスタンスの追跡数は 0 に戻っていました。
+[公式のプーリングの説明](https://learn.microsoft.com/ja-jp/ef/core/performance/advanced-performance-topics#dbcontext-pooling)では、返却したインスタンスの状態をリセットし再利用します。EF Core 10.0.11 / SQLite で取得と破棄を 4 回逐次繰り返す確認例では、通常のファクトリは別インスタンス、プール対応は同じインスタンスです。後者の再取得時の追跡数は 0 と確認できています。毎回同じインスタンスが返る保証ではありません。
 
 | 登録方法 | 実装型 | 4 回取得したときのインスタンス数 |
 | --- | --- | --- |
@@ -815,7 +815,7 @@ modelBuilder.Entity<Post>().HasIndex(p => p.Title).HasFilter("[Title] IS NOT NUL
 
 #### インデックスが効く条件と効かない条件
 
-SQL Server 2022 の 20,000 行のテーブルで統計を更新し、手書きの `SELECT Id` に対して `SET SHOWPLAN_ALL ON` で推定プランの物理演算子を確認しました。次の LINQ 欄は条件を対応づけるための表記で、掲載した LINQ が生成する全 SQL をそのまま実行した結果ではありません。
+[公式のインデックス利用の指針](https://learn.microsoft.com/ja-jp/ef/core/performance/efficient-querying#use-indexes-properly)は、複合インデックスの列順や、列に式を適用する条件に注意し、実行プランを調べるよう案内しています。次はその補足として、SQL Server 2022 の 20,000 行・統計更新済みのテーブルで、手書きの `SELECT Id` を `SET SHOWPLAN_ALL ON` で確認した結果です。LINQ 欄は条件の対応づけであり、LINQ 生成 SQL の実行結果ではありません。
 
 | 条件に対応する書き方 | 手書き SQL で調べた条件 | 推定プランの物理演算子 |
 | --- | --- | --- |
@@ -826,10 +826,10 @@ SQL Server 2022 の 20,000 行のテーブルで統計を更新し、手書き�
 | 同じインデックスを両方で絞る | `BlogId = 7 AND Price = 7` | **Index Seek** |
 | 列に対する式で絞る | `Price / 2 = 7` | Index Scan |
 
-ここから読み取れることは 2 つあります。
+公式の指針に沿って、次の点を検討します。
 
-1. **複合インデックスでは先頭列が重要です。** この測定では `(BlogId, Price)` の先頭列 `BlogId` を含む条件でシーク、`Price` だけではスキャンになりました。ただし `Index Scan` もインデックスを読み取る演算子であり、「インデックスがまったく使われていない」という意味ではありません。`Price` 単独の検索を効率化したい場合は、列順序や別インデックスを実際のプランで検討します。
-2. **列に式を適用すると、通常の列インデックスで条件をシークできない場合があります。** この測定の `Price / 2 = 7` はスキャンでした。公式は、永続化された計算列にインデックスを作る方法や、対応するデータベースで式インデックスを使う方法を挙げています。
+1. **複合インデックスの列順を検索条件に合わせる。** 表のシーク・スキャンはこのデータと SQL の結果です。`Index Scan` もインデックスを読む演算子で、「未使用」という意味ではありません。
+2. **列に式を適用する場合は計算列や式インデックスを検討する。** 公式は、永続化された計算列へのインデックスや、対応するデータベースの式インデックスを挙げています。表の `Price / 2 = 7` はスキャンですが、その演算子をすべての環境の固定結果とはしません。
 
 この節と次の付加列のコード例には、本編とは別の `IndexQuerySample` モデルを使います。旧計算列の推定プラン実測には別データベースの `Post2` を使っており、上の手書き SQL の表と同一モデルではありません。以下の `db` は SQL Server を構成した `IndexContext` です。`Price` / `HalfPrice` を本編の `Post` へ追加する必要はありません。
 
@@ -862,7 +862,7 @@ public class IndexContext(DbContextOptions<IndexContext> options) : DbContext(op
 }
 ```
 
-別データベースの計算列用テーブル `Post2` に 20,000 行を用意し、`HalfPrice` のインデックスに対して `WHERE [HalfPrice] = 7` を実行すると、物理演算子は **Index Seek** に変わりました。計算列については「[計算列](../appendix-efcore-02/index.md#計算列)」も参照してください。
+別データベースの計算列用テーブル `Post2`（20,000 行、`HalfPrice` にインデックスあり）では、`WHERE [HalfPrice] = 7` の **Index Seek** を確認できています。計算列については「[計算列](../appendix-efcore-02/index.md#計算列)」も参照してください。
 
 #### インデックスに列を含める（付加列）
 
@@ -876,13 +876,13 @@ modelBuilder.Entity<Post>()
     .IncludeProperties(p => p.Title);
 ```
 
-SQL Server 2022 に対してこのモデルで `GenerateCreateScript()` を実行すると、次の DDL が生成されました。
+次は、SQL Server 2022 向けのこのモデルで `GenerateCreateScript()` により確認できている DDL です。
 
 ```sql
 CREATE INDEX [IX_Posts_Price] ON [Posts] ([Price]) INCLUDE ([Title]);
 ```
 
-効果を確かめるため、20,000 行の `Posts` テーブルに対して `Price` で絞り込み `Title` と `Price` を取得するクエリを、`INCLUDE` の有無だけを変えて `SET SHOWPLAN_ALL ON` で比較しました。
+次は、20,000 行の `Posts` から `Price` で絞り込み `Title` と `Price` を取得する条件で、`INCLUDE` の有無を `SET SHOWPLAN_ALL ON` により比較した確認例です。
 
 ```csharp
 var matches = await db.Posts
@@ -896,10 +896,10 @@ var matches = await db.Posts
 | `([Price])` | Index Seek ＋ **Clustered Index Seek** ＋ **Nested Loops** |
 | `([Price]) INCLUDE ([Title])` | **Index Seek のみ** |
 
-`INCLUDE` がない場合、SQL Server はインデックスで該当行を見つけたあと、`Title` を取りに行くためにクラスター化インデックスを引き直しています（キー参照）。`Title` をインデックスに含めるとこの往復がなくなり、インデックスだけでクエリが完結しました。
+この推定プランでは、`INCLUDE` なしの場合は `Title` を取得するキー参照があり、付加列に含める場合はインデックスだけで完結します。クライアントとサーバーの通信往復を比較した結果ではありません。
 
 > [!NOTE]
-> 付加列はインデックスのサイズや更新コストに影響します。追試では付加列の追加後にキー検索が不要になり、結果も一致しましたが、所要時間や I/O の改善率は測っていません。「絞り込みには使わないが、そのクエリで必ず一緒に取得する列」に絞って指定してください。
+> 付加列はインデックスのサイズや更新コストに影響します。この確認例ではキー検索なしのプランと結果の一致を確認できていますが、所要時間や I/O の改善率は対象外です。対象クエリに必要な列に絞って指定してください。
 
 #### SQL Server 固有のインデックス構成
 
@@ -911,7 +911,7 @@ modelBuilder.Entity<Blog>().HasIndex(b => b.PublishedOn).IsClustered();
 modelBuilder.Entity<Blog>().HasIndex(b => b.PublishedOn).HasFillFactor(80);
 ```
 
-`IsClustered(false)` と `HasFillFactor(80)` を指定したモデルで `GenerateCreateScript()` を実行すると、次の DDL が生成されました。
+次は `IsClustered(false)` と `HasFillFactor(80)` を指定したモデルの `GenerateCreateScript()` の確認結果です。
 
 ```sql
 CREATE NONCLUSTERED INDEX [IX_Posts_Price] ON [Posts] ([Price]) WITH (FILLFACTOR = 80);
@@ -920,7 +920,7 @@ CREATE NONCLUSTERED INDEX [IX_Posts_Price] ON [Posts] ([Price]) WITH (FILLFACTOR
 > [!NOTE]
 > クラスター化インデックスはテーブルごとに 1 つだけです。EF Core は主キーに対してクラスター化インデックスを既定で作成するため、別の列を `IsClustered()` にする場合は主キー側を `IsClustered(false)` にする必要があります。
 
-オンラインで作成する場合は、`HasIndex(...).IsCreatedOnline()` を指定します。SQL Server 2022 Developer Edition で実測したモデルからは、次の DDL が生成され、実際の作成も成功しました。
+オンラインで作成する場合は、`HasIndex(...).IsCreatedOnline()` を指定します。SQL Server 2022 Developer Edition で、このモデルからの次の DDL 生成と作成成功を確認できています。
 
 ```sql
 -- SQL Server
@@ -929,9 +929,9 @@ ON [OnlineItems] ([Name]) WITH (ONLINE = ON);
 ```
 
 > [!WARNING]
-> **`ONLINE = ON` は、ロックも待機も発生しないという意味ではありません。** 別トランザクションにスキーマロックを保持させた実測では、オンライン作成も待機し、ロックタイムアウトで SQL エラー 1222 になりました。ロックを解放すると同じ DDL が成功しました。公式も、オンライン操作の終盤には共有ロックやスキーマ変更ロックを保持すると説明しています。利用可否は SQL Server のエディションにも依存するため、Developer Edition の結果をすべての運用環境へ当てはめないでください。
+> [公式のオンライン操作の指針](https://learn.microsoft.com/ja-jp/sql/relational-databases/indexes/guidelines-for-online-index-operations?view=sql-server-ver16)では、終盤に共有ロックやスキーマ変更ロックを保持すると説明しています。**`ONLINE = ON` はロック・待機なしの保証ではありません。** 別トランザクションにスキーマロックを保持させた確認例では SQL エラー 1222、解放後は同じ DDL の成功を確認できています。利用可否はエディションにも依存します。
 
-同じインデックス設定に `SortInTempDb()` と `UseDataCompression(DataCompressionType.Page)` を追加すると、DDL は次のようになります。この組み合わせも SQL Server 2022 Developer Edition で作成と読み書きを実測しました。
+同じインデックス設定に `SortInTempDb()` と `UseDataCompression(DataCompressionType.Page)` を追加すると、DDL は次のようになります。SQL Server 2022 Developer Edition で、この組み合わせの作成と読み書きを確認できています。
 
 ```sql
 -- SQL Server
@@ -939,13 +939,13 @@ CREATE INDEX [IX_OnlineItems_Name] ON [OnlineItems] ([Name])
 WITH (ONLINE = ON, SORT_IN_TEMPDB = ON, DATA_COMPRESSION = PAGE);
 ```
 
-`DataCompressionType.None` / `Row` / `Page` の 3 条件で、`sys.partitions.data_compression_desc` はそれぞれ `NONE` / `ROW` / `PAGE` になりました。これは**設定が反映されたことの確認**であり、圧縮率や tempdb 使用量、性能改善を測定したものではありません。
+`DataCompressionType.None` / `Row` / `Page` の 3 条件で、`sys.partitions.data_compression_desc` はそれぞれ `NONE` / `ROW` / `PAGE` と確認できています。**設定の反映の確認**であり、圧縮率や tempdb 使用量、性能改善の測定ではありません。
 
 ### 実行プランはデータの量で変わる
 
 公式ドキュメントは、実行プランを分析するときの前提として「**データベースは、実際に入っているデータに応じて異なるクエリプランを生成することがある**。たとえばテーブルに数行しかなければ、インデックスを使わずにテーブル全体をスキャンすることを選ぶかもしれない。**テスト用データベースでプランを分析するなら、本番と似たデータが入っていることを必ず確認すること**」と述べています。ベンチマークについても同じ注意が繰り返されています。
 
-追加追試では SQL Server 2022 CU26 で同じクエリとインデックスを使い、5 行と 100,005 行で統計を更新してプランを比べました。`Filler` は `varchar(8000)` に 8,000 文字、`Rating` は 1〜5 の繰り返しとし、両条件で `UPDATE STATISTICS ... WITH FULLSCAN` を実行しました。列の幅や値の分布もプラン選択に関わるため、行数だけで一般化しないでください。これは推定プランの対照で、経過時間を比較したものではありません。
+次は SQL Server 2022 CU26 で同じクエリ・インデックスを使い、5 行と 100,005 行の推定プランを比較した結果です。`Filler` は `varchar(8000)` に 8,000 文字、`Rating` は 1〜5 の繰り返しで、両条件とも統計は `FULLSCAN` で更新済みです。列幅や値の分布も関わるため、行数だけで一般化しないでください。経過時間の比較ではありません。
 
 ```sql
 -- SQL Server（Rating には非クラスター化インデックスがある）
@@ -957,7 +957,7 @@ SELECT Id, Rating, Filler FROM Blogs WHERE Rating = 3;
 | 5 行 | `Clustered Index Scan` |
 | 100,005 行（`Rating = 3` は 20,001 件） | `Index Seek` + `Key Lookup` |
 
-この追加追試では、少量側がスキャン、多量側がシークとキー検索になりました。20% という一致率だけでプランを予測することはできません。また `Clustered Index Scan` はクラスター化インデックスを読み取る演算子で、インデックス不使用を意味しません。
+この条件では、少量側はスキャン、多量側はシークとキー検索です。20% という一致率だけでプランは予測できません。また `Clustered Index Scan` はインデックス不使用を意味しません。
 
 > [!WARNING]
 > **数十行しか入っていない開発用データベースで「インデックスが効いている」ことを確認しても、本番の保証にはなりません。** 逆もまた真で、開発環境でスキャンになっていたクエリが本番ではシークになることもあります。インデックスの効果を検証するときは、**行数と値の分布の両方を本番に近づけてから**実行プランを確認してください。統計情報が古いままだと同じことが起きるため、必要に応じて統計を更新し、検証条件を記録してください。統計更新だけで本番と同じプランになる保証はありません。
@@ -997,7 +997,7 @@ WHERE [b].[Id] IN (
 )
 ```
 
-個別パラメーター方式はコレクションの件数をプラン選択に利用できる一方、異なる SQL が増える可能性もあります。ただし EF Core 10 はパラメーター数をパディングするため、要素数が変わるたびに SQL の形が変わるわけではありません。EF Core 10.0.11 の生成確認では、6・7・8・9 要素はいずれも 10 パラメーターで同じ SQL になりました。どの方式が有利かは対象データベースのプランと実行結果で比較します。
+[公式の EF Core 10 の説明](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-10.0/whatsnew)では、個別パラメーター方式は件数をプラン選択に利用できる一方、SQL の種類を抑えるためパラメーター数をパディングします。10.0.11 の確認例では、6・7・8・9 要素はいずれも 10 パラメーターの同じ SQL です。具体的なパディング数を将来の版の保証とはせず、プランと実行結果で方式を比較してください。
 
 翻訳方法は `DbContext` 全体でも、クエリ単位でも切り替えられます。
 
@@ -1045,11 +1045,13 @@ WHERE [b].[Id] IN (1, 2, 3)
 | `Constant` | 値を SQL に直接埋め込む。EF Core 7 までの既定 |
 
 > [!TIP]
-> 定数方式では、値や要素数の違いによって異なる SQL が生成され、データベース側のプランキャッシュへ影響する可能性があります。EF Core 側のクエリキャッシュとは別に確認してください。掲載した 50 回の測定では、同じ式の形を保った通常のパラメーター化と `EF.Constant()` はどちらも 49 ヒット・1 ミス（98%）でしたが、あらゆる式の組み立て方でヒット率が不変という保証ではありません。
+> 定数方式では値ごとに異なる SQL が生成され、データベース側のプランキャッシュへ影響する可能性があります。EF Core 側のキャッシュとは別です。掲載した 50 回の同じ式の形での確認例は、通常のパラメーター化・`EF.Constant()` ともに 49 ヒット・1 ミスですが、あらゆる式の組み立て方でヒット率が不変という保証ではありません。
 
 ### コンパイル済みクエリ
 
-EF Core は同じ形のクエリに対して内部でクエリプランをキャッシュしますが、LINQ 式ツリーの走査とキャッシュキーの計算コストは毎回発生します。ホットパスのクエリでは **コンパイル済みクエリ** によりこのコストを削減できます。ただし削減されるのはこの前処理だけであり、効果は控えめです。SQLite に対する 1 件検索を 3,000 回繰り返して測ると、0.162 ミリ秒が 0.124 ミリ秒（約 1.3 倍速）になる程度でした。同じクエリを高頻度で再利用し、この前処理が実際にボトルネックになっている場合に検討してください。毎秒の実行回数だけを適用の境界とは考えないでください。
+[公式のコンパイル済みクエリの説明](https://learn.microsoft.com/ja-jp/ef/core/performance/advanced-performance-topics#compiled-queries)では、通常のクエリキャッシュでも必要な式ツリーの比較・検索を、デリゲートの直接呼び出しで省くとしています。多くのアプリケーションではこの前処理の影響は小さく、採用前に自分の環境で計測するよう案内されています。
+
+条件付きの補足として、SQLite の 1 件検索を 3,000 回繰り返した確認例では、1 回あたり通常 0.162 ミリ秒、コンパイル済み 0.124 ミリ秒です。この比率を一般的な効果や採用基準にはせず、実際のボトルネックを確認してください。
 
 ```csharp
 public class BlogQueries
@@ -1078,27 +1080,17 @@ public class BlogQueries
 - パラメーターには単純なスカラー値を使います。インスタンスのメンバーアクセスやメソッド呼び出しのような、より複雑なパラメーター式はサポートされません
 
 > [!NOTE]
-> 2 つ目の制限は **ラムダの中に書くパラメーター式の形** に対するものであり、「パラメーターの型がコレクションであってはいけない」という意味ではありません。実際に `EF.CompileAsyncQuery((BloggingContext context, int[] ids) => context.Blogs.Where(b => ids.Contains(b.Id)))` を定義して `new[] { 1, 3 }` を渡したところ、SQL Server 2022・SQLite のどちらでも該当する 2 件が正しく返りました（EF Core 10.0.11、実測で確認）。一方、`(BloggingContext context, Filter f) => context.Blogs.Where(b => b.Name == f.Name)` のようにパラメーターのメンバーへアクセスする式を書くと、実行時に `InvalidOperationException`（`The LINQ expression ... could not be translated.`）になります。値は変数としてそのまま渡し、ラムダの中に `obj.Property` や `obj.GetValue()` のような式を書かない、と理解してください。
+> 公式の制限に従い、引数には**単純なスカラー値**を使います。`Filter` などのオブジェクトを渡してラムダ内でメンバーを読む代わりに、必要なスカラー値を引数として渡してください。
 
 #### コンパイル済みクエリの中では `EF.Constant` と `EF.Parameter` が使えない
 
-[コレクションのパラメーター化と IN 句の翻訳](#コレクションのパラメーター化と-in-句の翻訳)で紹介した `EF.Constant` と `EF.Parameter` は、**コンパイル済みクエリの中では使えません。** EF Core 9 の破壊的変更です。
+[公式の EF Core 9 の破壊的変更](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-9.0/breaking-changes#efconstant-and-efparameter-no-longer-work-inside-compiled-queries)では、**`EF.Constant` と `EF.Parameter` はコンパイル済みクエリ内で使用できない**としています。[IN 句の翻訳](#コレクションのパラメーター化と-in-句の翻訳)で使う通常クエリとは区別してください。
 
-```csharp
-var query = EF.CompileAsyncQuery(
-    (AppDbContext context, int[] ids) => context.Customers.Where(c => EF.Constant(ids).Contains(c.Id)));
-```
-
-```text
-InvalidOperationException: The 'EF.Constant<T>' method may only be used with an argument
-that can be evaluated client-side and does not contain any reference to database-side entities.
-```
-
-`EF.Parameter` でも同じ例外になることを確認しました。コンパイル済みクエリはクエリの形を一度だけ確定させる仕組みなので、呼び出しごとに SQL の形が変わりうるこれらの指定とは両立しません。片方を諦める必要があります。
+公式が挙げる理由は、定数値ごとの再コンパイルを避けるために、これらのメソッドの処理をクエリキャッシュより後の段階へ移し、その実装がコンパイル済みクエリと非互換になったことです。これらの指定が必要なら通常のクエリを使います。
 
 #### 値変換に使うメソッドを private にしてはいけない
 
-コンパイル済みモデルには、値変換 (value converter) と組み合わせたときの落とし穴があります。EF Core 9 以降、生成されるコードは**変換メソッドそのものを直接参照します**。そのメソッドが `private` だと、生成されたコードがコンパイルできません。
+[公式の EF Core 9 の破壊的変更](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-9.0/breaking-changes#compiled-models-now-reference-value-converter-methods-directly)では、NativeAOT 対応のため、コンパイル済みモデルが**値変換メソッドを直接参照する**ようになったと説明しています。`private` では生成コードのコンパイルが失敗するため、`public` または `internal` にします。
 
 ```csharp
 public sealed class BooleanToCharConverter()
@@ -1111,24 +1103,24 @@ public sealed class BooleanToCharConverter()
 }
 ```
 
-このモデルで `dotnet ef dbcontext optimize` を実行すると、コマンド自体は成功します。**失敗するのは、その後のビルドです**（実測）。
+このモデルの確認例では、`dotnet ef dbcontext optimize` は成功し、**生成コードを含むビルドで次の失敗**を確認できています。
 
 ```text
 CompiledModels/FlaggedEntityType.cs(64,124): error CS0122:
 'BooleanToCharConverter.ConvertToChar(bool)' はアクセスできない保護レベルになっています
 ```
 
-生成されたコードを覗くと、確かにメソッドが直接呼ばれています。
+この条件の生成コードでは、メソッドが次のように直接参照されています。
 
 ```csharp
 string (bool v) => string.Format(CultureInfo.InvariantCulture, "{0}",
     ((object)(BooleanToCharConverter.ConvertToChar(v)))),
 ```
 
-公式ドキュメントによれば、これは **NativeAOT に対応するために必要だった変更**です。対処は単純で、変換メソッドを `public` か `internal` にします。実測でも `internal` に変えるだけでビルドが通りました。
+公式の対処に沿って `internal` に変更した条件では、ビルドの成功を確認できています。
 
 > [!WARNING]
-> この例ではコンパイル済みモデルの生成自体は成功し、生成コードを含めたプロジェクトのビルドで `private` メソッドへのアクセスが失敗しました。一方、通常モデルを使う SQL Server プロバイダーの SQL 生成は、同メソッドが `private` のままで成功しました。この対照は SQL 生成とビルドの確認であり、通常モデルでの保存・再読み込みを測ったものではありません。
+> この対照は、コンパイル済みモデルのビルドと、通常モデルの SQL 生成の確認です。通常モデルでは同メソッドが `private` のまま SQL Server 向けの SQL 生成に成功していますが、保存・再読み込みの確認とは区別してください。
 
 ### コンパイル済みモデル
 
@@ -1149,14 +1141,14 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 > [!IMPORTANT]
 > コンパイル済みモデルにはいくつかの制限があります。グローバルクエリフィルター、遅延読み込みプロキシ、変更追跡プロキシ、カスタムの `IModelCacheKeyFactory` はサポートされません。また、モデルを変更するたびに再生成が必要で、再生成を忘れると実行時に古いモデルが使われます。公式ドキュメントも、小さいモデルでは通常、コンパイルに見合う効果が得にくいと案内しています。エンティティ数だけで判断せず、起動時間を実測し、モデルを再生成・管理する手間も含めて採用を検討してください。
 >
-> グローバルクエリフィルターを設定したモデルに対して `dotnet ef dbcontext optimize` を実行すると、実際に次のエラーで失敗することを確認しています。
+> グローバルクエリフィルターを設定したモデルの確認例では、`dotnet ef dbcontext optimize` で次のエラーを確認できています。
 >
 > ```text
 > System.InvalidOperationException: The entity type 'Blog' has a query filter configured.
 > Compiled model can't be generated, because query filters are not supported.
 > ```
 >
-> つまり「生成はできたが一部の機能が無視される」のではなく、**生成そのものが失敗します**。[グローバルクエリフィルターと名前付きクエリフィルター](../appendix-efcore-02/index.md#グローバルクエリフィルターと名前付きクエリフィルター)を使っている場合は、コンパイル済みモデルを併用できない点に注意してください。
+> この確認例は生成自体の失敗です。例外の発生段階を一般化するのではなく、公式が示す併用の制限に従ってください。[グローバルクエリフィルター](../appendix-efcore-02/index.md#グローバルクエリフィルターと名前付きクエリフィルター)を使うモデルでは、この制限を確認します。
 
 ### NativeAOT と事前コンパイル済みクエリ
 
@@ -1165,7 +1157,7 @@ builder.Services.AddDbContext<BloggingContext>(options =>
 > [!WARNING]
 > 公式ドキュメントは「NativeAOT とクエリの事前コンパイルはきわめて実験的な機能であり、まだ本番運用に適していない」「将来のバージョンでリリースされる最終的な機能に向けた基盤とみなすべき」と明記しています。**本番環境の EF Core アプリケーションを NativeAOT で発行することは推奨されていません。**
 
-仕組みは **クエリの事前コンパイル (query precompilation)** です。ソースコードを静的に解析して EF Core の LINQ クエリを見つけ、C# の **インターセプター (interceptor)** を生成します。生成されたインターセプターには、そのクエリの最終的な SQL がリテラルとして埋め込まれます。実測で生成されたコードを確認すると、確かに SQL がそのまま入っていました。
+仕組みは **クエリの事前コンパイル (query precompilation)** です。ソースコードを静的に解析して EF Core の LINQ クエリを見つけ、C# の **インターセプター (interceptor)** を生成します。次の確認例でも、生成コードに SQL の埋め込みを確認できています。
 
 ```csharp
 new RelationalCommand(
@@ -1190,7 +1182,7 @@ new RelationalCommand(
 </ItemGroup>
 ```
 
-`Microsoft.EntityFrameworkCore.Tasks` は MSBuild タスクを提供するパッケージで、`PublishAot` が `true` なら **発行時に自動でコンパイル済みモデルと事前コンパイル済みクエリの生成処理を実行します**。旧 `dotnet publish` のログには `Optimizing DbContext...` が出ましたが、その後にクエリ事前コンパイルのエラーで失敗しています。この開始ログだけを発行成功の根拠にはできません。生成のタイミングは MSBuild プロパティで制御できます。
+`Microsoft.EntityFrameworkCore.Tasks` は MSBuild タスクを提供するパッケージで、`PublishAot` が `true` なら **発行時にコンパイル済みモデルと事前コンパイル済みクエリの生成処理を実行します**。確認記録の `Optimizing DbContext...` は開始ログで、その実行は後続の事前コンパイルで失敗です。開始ログを発行成功と取り違えないでください。生成時期は MSBuild プロパティで制御できます。
 
 | MSBuild プロパティ | 意味 |
 | --- | --- |
@@ -1209,7 +1201,7 @@ new RelationalCommand(
 dotnet ef dbcontext optimize --precompile-queries --nativeaot
 ```
 
-実測では `CompiledModels/` 配下にコンパイル済みモデルが、`Generated/Program.EFInterceptors.AppDb.cs` にインターセプターが生成されました。
+この確認例の出力先は、モデルが `CompiledModels/`、インターセプターが `Generated/Program.EFInterceptors.AppDb.cs` です。
 
 #### 最大の制約は「動的クエリが書けない」こと
 
@@ -1222,7 +1214,7 @@ if (applyFilter) q = q.Where(b => b.Name != "foo");
 return await q.ToListAsync();
 ```
 
-このコードのまま `dotnet ef dbcontext optimize --precompile-queries` を実行すると、次のエラーで失敗します（実測）。
+このコードの確認例では、`dotnet ef dbcontext optimize --precompile-queries` で次のエラーを確認できています。公式が示す非対応条件の補足であり、すべての動的クエリで同じエラー形式になる保証ではありません。
 
 ```text
 Query precompilation failed with errors:
@@ -1242,32 +1234,34 @@ IAsyncEnumerable<Blog> GetBlogs(BlogContext context, bool applyFilter)
 このほかに、クエリ式構文（`from x in ...` の書き方）が未対応であること、生成されるコードが大きく生成に時間がかかること、キャプチャした状態を使う値変換器が未対応であることが公式に制約として挙げられています。
 
 > [!WARNING]
-> 実測では、`EnsureCreated()` を含むコードを NativeAOT で発行すると `IL3050` の警告が出ました。マイグレーション操作は設計時モデルの構築を必要とするため NativeAOT ではサポートされておらず、マイグレーションバンドルなど別の手段で適用する必要があります。**現時点の NativeAOT 対応は多数の警告を伴うことが公式にも明記されており、発行が通らない場面もあります。** 実験目的にとどめてください。
+> [公式の NativeAOT ガイド](https://learn.microsoft.com/ja-jp/ef/core/performance/nativeaot-and-precompiled-queries)は、現状ではトリミング・NativeAOT の警告があり、正常動作を保証できないとしています。また [`EnsureCreated` の API](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.infrastructure.databasefacade.ensurecreated?view=efcore-10.0)は、設計時モデルを必要とするマイグレーション操作が NativeAOT 非対応で、バンドルなどを使うよう案内しています。同 API を含む確認例でも `IL3050` を確認できています。実験目的にとどめてください。
 
 #### NativeAOT なしで事前コンパイルだけ使う
 
-NativeAOT を使わない通常の発行でも、対応するクエリを事前コンパイルして起動時のクエリコンパイルを省く方法があります。以下の追試は `PublishAot=false` で行いました。
+[公式の NativeAOT なしの事前コンパイル](https://learn.microsoft.com/ja-jp/ef/core/performance/nativeaot-and-precompiled-queries#precompiled-queries-without-nativeaot)では、通常発行でも対応クエリの事前コンパイルを利用できるとしています。次は `PublishAot=false` の確認例です。
 
 ```bash
 dotnet ef dbcontext optimize --precompile-queries
 ```
 
-静的クエリだけの最小アプリケーションでは、生成・通常発行・実行が成功し、実行時の `QueryCompilationStarting` は 0 件でした。一方、動的クエリを混在させた対照では生成コマンドが失敗し、通常発行後の静的・動的クエリはいずれも実行時にコンパイルされました。動的クエリを含むアプリケーションで「対応する部分だけ自動的に事前化される」とは考えないでください。
+公式は、通常発行では動的クエリなども利用しながら、事前コンパイルできるクエリの起動コストを省けると説明しています。静的クエリだけの最小構成でも、生成・通常発行・実行の成功と、実行時の `QueryCompilationStarting` 0 件を確認できています。この観測は、動的クエリとの併用可否を一般的に制限する根拠ではありません。生成結果と実際の実行経路を確認してください。
 
 ## 3. 実行時のコストを下げる
 
 ### DbContext プーリングでインスタンスを使い回す
 
-`AddDbContext` の代わりに `AddDbContextPool` を使うと、`DbContext` インスタンスを再利用するプールが有効になります。インスタンスの生成と内部サービスの初期化を繰り返すコストを抑える仕組みですが、効果の大きさは処理内容によって変わります。スコープを作って `DbContext` を取得し、`Blogs.Local.Count` にアクセスして破棄する処理を 3,000 回繰り返して測ったところ、1 回あたり 0.141 ミリ秒・約 62 KB の割り当てが、0.0015 ミリ秒・512 バイトになりました。ただしこれはデータベースへクエリを送らず、コンテキストを使える状態にして返却・破棄する処理を比較した数値です。この測定だけで、エンドポイント全体の応答時間の改善率を判断することはできません。
+[公式の DbContext プーリング](https://learn.microsoft.com/ja-jp/ef/core/performance/advanced-performance-topics#dbcontext-pooling)では、`AddDbContextPool` によりインスタンスと内部サービスの初期化コストを削減できるとしています。一方、`DbContext` は通常軽量で、多くのアプリケーションでは生成・破棄の影響は小さいと説明しています。採用は実際の処理全体の計測に基づいて判断します。
 
-エンドポイント全体でどれだけ変わるかも負荷試験で確かめました。ASP.NET Core から SQL Server に対して主キー 1 件を読むだけの軽いエンドポイントを用意し、`AddDbContext` と `AddDbContextPool` だけを入れ替えて、同時 100 リクエストで 15 秒ずつ測定した結果です。
+補足として、取得・`Blogs.Local.Count` へのアクセス・破棄を 3,000 回繰り返す確認例では、1 回あたり通常 0.141 ミリ秒・約 62 KB、プーリングあり 0.0015 ミリ秒・512 バイトです。**データベースへのクエリを含まない**ため、エンドポイント全体の改善率ではありません。
+
+次は、ASP.NET Core から SQL Server の主キー 1 件を読むエンドポイントで、登録だけを入れ替えた確認例です。同時 100 リクエスト、15 秒ずつの条件を示します。
 
 | 登録方法 | スループット（測定が安定したあとの 2 回） |
 | --- | --- |
 | `AddDbContext` | 8,186 req/s / 8,482 req/s |
 | `AddDbContextPool` | 9,506 req/s / 9,550 req/s |
 
-**2 回の平均では、スループットは約 14 パーセント高くなりました。** 前述のクエリを発行しない測定で、表示した時間の比を計算した差（約 94 倍）とは桁が違います。この測定では軽いクエリを高い並列数で実行しました。効果をこの条件だけに限定したり、重いクエリでは必ず効果がないと考えたりせず、実際のエンドポイント全体で測定してください。公式ドキュメントも「`DbContext` は一般に軽いオブジェクトで、生成と破棄にデータベース操作は伴わず、**ほとんどのアプリケーションでは性能に目立った影響なく生成できる**」としたうえで、内部サービスの初期化コストが問題になるのは**高性能が求められる場面**だと限定しています。
+この 2 回の平均では、プーリングありのスループットが約 14% 高い結果です。前のクエリを含まない測定とは指標も処理範囲も異なります。比率や順位をほかの条件へ一般化せず、自分のエンドポイントで評価してください。
 
 ```csharp
 builder.Services.AddDbContextPool<BloggingContext>(
@@ -1275,7 +1269,7 @@ builder.Services.AddDbContextPool<BloggingContext>(
     poolSize: 1024);
 ```
 
-`poolSize` は保持するインスタンスの最大数で、既定は 1024 です。プールが空の場合は新しいインスタンスが生成されるため、上限を超えても動作は継続します。実際に `poolSize: 2` を指定して 5 つのスコープを同時に保持したところ、3 つ目以降も例外にならず、待機によるブロックも発生しませんでした。プールの上限は「同時実行数の上限」ではなく「使い回すために保持しておく数の上限」だと理解してください。
+`poolSize` は保持するインスタンスの最大数で、既定は 1024 です。公式は上限を超えるとキャッシュされず、非プーリングの動作に戻ると説明しています。`poolSize: 2` で 5 スコープを同時に保持する確認例でも、上限による待機や例外なしを確認できています。同時実行数を制限する設定ではありません。
 
 > [!WARNING]
 > プールされた `DbContext` インスタンスは再利用されるため、実質的に Singleton のように扱われます。`OnConfiguring` は最初の 1 回しか呼ばれず、リクエストごとに変化する状態（テナント ID や現在のユーザーなど）をコンストラクターやフィールドに保持する設計とは相性が悪くなります。そのような場合は、`AddDbContext` を使うか、状態をリセットするフックを実装してください。
@@ -1293,7 +1287,7 @@ EF Core の既定は **スナップショット変更追跡 (snapshot change tra
 この自動呼び出しは `ChangeTracker.AutoDetectChangesEnabled` で無効にできますが、**安易に触ってはいけません。**
 
 > [!WARNING]
-> `AutoDetectChangesEnabled = false` のままプロパティを書き換えても、EF Core はその変更に気づきません。**例外は出ず、保存されないまま処理が成功します。** 10,000 件を追跡して 1 件だけ書き換え、無効のまま `SaveChangesAsync` を呼んだところ、影響行数は **0** でした。
+> [公式の変更検出の説明](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/change-detection)では、スナップショット方式で CLR プロパティを直接変更すると、検出処理が必要です。10,000 件中 1 件を書き換え、自動検出なし・明示検出なしで保存する確認例では、**例外なし、影響行数 0** を確認できています。通知方式や EF の状態設定 API を使う場合とは区別してください。
 >
 > さらに、状態を問い合わせる API も誤った答えを返します。
 >
@@ -1312,17 +1306,17 @@ EF Core の既定は **スナップショット変更追跡 (snapshot change tra
 > 無効にする場合は `try` / `finally` で元に戻してください。無効な区間でプロパティを変更するなら、必要な時点で明示的に `DetectChanges()` を呼ぶなど、保存前に変更状態が正しく反映されることを保証します。「プロパティを一切書き換えられない」という制限ではありません。
 
 > [!TIP]
-> 公式ドキュメントは「性能を出すために自動変更検出を無効にしなければならない、と決めつけないでください」と述べています。実際に測ると、**10,000 件を追跡した状態で `DetectChanges()` にかかった時間は 6 ミリ秒**でした（SQL Server プロバイダー / Release ビルド / プロパティ 3 個のエンティティ）。これは読み込み直後、プロパティを変更する前に 1 回計測した値で、データ取得時間は含みません。ただし、件数だけでコストは判断できません。公式は、プロパティ数などの条件次第で数千件を追跡するアプリケーションでも問題になりうると説明しています。プロファイリングで変更検出が問題だと判明した場合にのみ検討してください。
+> [公式の自動変更検出の指針](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/change-detection#disabling-automatic-change-detection)では、性能のために無効化が必要と決めつけず、プロファイリングで判断します。SQL Server プロバイダー / Release ビルド / 3 プロパティの 10,000 件を追跡する補足例は、読み込み直後・変更前の `DetectChanges()` 1 回が 6 ミリ秒です。取得時間を含まず、件数だけでコストを判断する根拠にもなりません。
 
-エンティティ数が本当に多く、変更検出そのものを避けたい場合は、**変更追跡プロキシ (change-tracking proxies)** という選択肢があります。`Microsoft.EntityFrameworkCore.Proxies` パッケージを追加して `UseChangeTrackingProxies()` を呼ぶと、EF Core が `INotifyPropertyChanged` / `INotifyPropertyChanging` を実装する派生型を動的に生成し、プロパティが変わった瞬間に通知が飛ぶためスナップショットが不要になります。実測でも、`AutoDetectChangesEnabled = false` のままプロパティを書き換えて状態が `Modified` になることを確認しました。
+エンティティ数が多く、変更検出がボトルネックなら、[公式の変更追跡プロキシ](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/change-detection#change-tracking-proxies)も選択肢です。`Microsoft.EntityFrameworkCore.Proxies` と `UseChangeTrackingProxies()` により、通知インターフェイスを持つ派生型を動的に生成します。この確認例でも、`AutoDetectChangesEnabled = false` でプロパティを変更した直後に `Modified` を確認できています。
 
 導入時には、次の制約を確認してください。
 
 > [!WARNING]
-> 変更追跡プロキシを使うと、EF Core は **常にプロキシのインスタンスを追跡しなければなりません。** 元の型のインスタンスは通知を出さないため、変更が失われます。そのため新しいエンティティは `new` ではなく `CreateProxy` で作る必要があります。
+> 公式は、**常にプロキシのインスタンスを追跡する**よう求めています。元の型は必要な通知を出さず、変更を見逃すためです。新しいエンティティは `new` ではなく `CreateProxy` で作ります。次の例外は元の型を `Add` する確認例の結果で、誤用が必ず例外で検出される保証ではありません。
 >
 > ```csharp
-> // new で作ったインスタンスを Add すると実行時例外
+> // 通知を生成するプロキシのインスタンスを作る
 > var blog = context.CreateProxy<Blog>(b => { b.Name = "新しいブログ"; });
 > context.Blogs.Add(blog);
 > ```
@@ -1333,7 +1327,7 @@ EF Core の既定は **スナップショット変更追跡 (snapshot change tra
 > the required 'INotifyPropertyChanging' interface.
 > ```
 >
-> 加えて、エンティティ型は継承可能である必要があります。1 つでも条件を満たさないと、モデルの構築時点で失敗します。
+> 加えて、公式は継承可能な型とオーバーライド可能なプロパティを必要条件に挙げています。次は `Id` が `virtual` でない構成での確認例です。例外の時点・型を、すべての条件違反に共通する仕様とはしません。
 >
 > ```text
 > InvalidOperationException: Property 'Blog.Id' is not virtual. 'UseChangeTrackingProxies'
@@ -1342,7 +1336,7 @@ EF Core の既定は **スナップショット変更追跡 (snapshot change tra
 > properties be virtual.
 > ```
 >
-> 最後の一文のとおり、**`virtual` が必要なプロパティの範囲は、遅延読み込みプロキシではナビゲーション、変更追跡プロキシではすべてのマップされたプロパティであり**、変更追跡プロキシのほうが要求が厳しい点に注意してください。
+> **遅延読み込みプロキシでは対象のナビゲーション、変更追跡プロキシでは変更を通知するマップ済みプロパティがオーバーライド可能である必要があります。** 上のメッセージだけで判断せず、それぞれの[公式の変更追跡](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/change-detection#change-tracking-proxies)・[遅延読み込み](https://learn.microsoft.com/ja-jp/ef/core/querying/related-data/lazy#lazy-loading-with-proxies)の条件に従ってください。
 
 #### 通知を自分で実装する
 
@@ -1377,7 +1371,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
         ChangeTrackingStrategy.ChangedNotifications);
 ```
 
-実際に 3 パターンを比べました。いずれも `AutoDetectChangesEnabled = false` にした状態で、読み込んだエンティティのプロパティを書き換えた直後の状態です（実測）。
+次は 3 パターンの確認例です。いずれも `AutoDetectChangesEnabled = false` で、読み込んだエンティティのプロパティを書き換えた直後の状態です。
 
 | エンティティ | 書き換えた直後の状態 |
 | --- | --- |
@@ -1396,7 +1390,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 | `ChangingAndChangedNotifications` | 上記 + `INotifyPropertyChanging` | 不要 | しない |
 | `ChangingAndChangedNotificationsWithOriginalValues` | 上記 + `INotifyPropertyChanging` | 不要 | する |
 
-`ChangedNotifications` でも元の値は保持されます。実測でも、書き換えた直後に `OriginalValue` から書き換え前の値を取得できました。スナップショットまで不要にしたい場合は `ChangingAndChangedNotifications` を選びますが、その場合 `INotifyPropertyChanging` の実装が必須になります。
+`ChangedNotifications` でも元の値は保持されます。この確認例でも、書き換え直後の `OriginalValue` に元の値を確認できています。スナップショットまで省く `ChangingAndChangedNotifications` には、`INotifyPropertyChanging` の実装が必要です。
 
 > [!WARNING]
 > 公式ドキュメントは、EF Core が要求するのは**すべてのプロパティ（ナビゲーションを含む）の通知**だと述べています。一部のプロパティだけ通知する実装は、EF Core との組み合わせでは正しく動きません。
@@ -1407,7 +1401,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 
 `ToListAsync` は結果をすべてメモリに読み込みます（バッファリング）。大量の行を順次処理するだけなら、`await foreach` によるストリーミングでメモリ使用量を抑えられます。
 
-効果は行数や列の値、処理方法によって変わります。SQLite に `Name` が 200 文字のエンティティを 200,000 行用意し、同期の `ToList` と `AsEnumerable` を比較しました。`GC.GetTotalMemory` を約 1 ミリ秒間隔で読み取ったマネージドヒープ増加量の最大値は、`ToList` が +121 MiB、ストリーミングが +6 MiB（約 20 分の 1）でした。これはプロセス全体のピークメモリではありません。別の 2,000 行の測定では所要時間が 2.42 ミリ秒と 2.39 ミリ秒でしたが、列の値や計測指標も異なるため、この件数を効果の境界とは考えないでください。結果全体を保持せず順次処理できる場合にストリーミングを検討します。
+[公式のバッファリングとストリーミング](https://learn.microsoft.com/ja-jp/ef/core/performance/efficient-querying#buffering-and-streaming)は、結果全体を保持するか順次処理するかの違いを説明しています。SQLite の 200,000 行（`Name` は 200 文字）で同期の `ToList` と `AsEnumerable` を比較した補足例では、`GC.GetTotalMemory` を約 1 ミリ秒間隔で読むヒープ増加量の最大値は +121 MiB と +6 MiB です。プロセス全体のピークメモリではなく、この比率をほかのデータ量や処理へ適用することもできません。
 
 ```csharp
 await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
@@ -1422,7 +1416,7 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 >
 > また、`EnableRetryOnFailure` を有効にしている場合、公式ドキュメントは「再試行を有効にすると EF が結果セットを内部でバッファリングするため、大量の行を返すクエリではメモリ使用量が大きく増える可能性がある」と明記しています（[接続の回復性](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/connection-resiliency)）。つまり、再試行と併用すると、ストリーミングだけで結果セットの内部バッファーをなくすことはできません。
 >
-> これは実測でも明確に確認できます。SQL Server 上の 100,000 行（`Name` は 200 文字、`Url` は 1 文字）を `AsAsyncEnumerable` で列挙し、同じ方法で求めたマネージドヒープ増加量の最大値は次のとおりでした。
+> 次はその補足例です。SQL Server の 100,000 行（`Name` は 200 文字、`Url` は 1 文字）を `AsAsyncEnumerable` で列挙した条件のヒープ増加量を示します。
 >
 > | `EnableRetryOnFailure` | マネージドヒープ増加量の最大値 |
 > | --- | --- |
@@ -1431,7 +1425,7 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 >
 > この表は `AsAsyncEnumerable` で列挙するときの再試行の有無を比較したもので、`ToList` とのメモリ使用量の差を測ったものではありません。内部バッファーがあることから、ストリーミングと `ToList` のメモリ使用量が常に同じだとは結論できません。
 >
-> 再試行を有効にしただけで約 14 倍に膨れ上がっています。大量の行を扱うクエリでは、そのクエリだけ再試行を無効にした `DbContext` を用意するか、`Skip`／`Take` によるページングで 1 回あたりの取得件数を抑えてください。
+> [公式の内部バッファリングの説明](https://learn.microsoft.com/ja-jp/ef/core/performance/efficient-querying#internal-buffering-by-ef)では、再試行時に同じ結果を返せるよう結果を保持します。**メモリ使用量だけでなく接続の回復性も評価する必要があります。** この測定の倍率から再試行の無効化を勧めることはできません。まず取得列や件数、ページングを見直し、必要な回復性と実際のメモリ使用量を併せて判断してください。
 
 > [!WARNING]
 > **分割クエリでも EF Core は内部でバッファリングします。** 公式ドキュメントは、EF が結果セットを内部でバッファリングするケースとして再試行実行戦略と分割クエリの 2 つを挙げ、分割クエリでは「**SQL Server で MARS が有効になっていない限り、最後のクエリ以外のすべての結果セットがバッファリングされる**」と説明しています。複数の結果セットを同時に開いておくことが通常できないためです。
@@ -1443,7 +1437,7 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 > | 既定（MARS 無効） | **+58 MiB** |
 > | `MultipleActiveResultSets=True` | +1 MiB |
 >
-> MARS 無効のこの条件では、`AsAsyncEnumerable()` で列挙しても、1 件目を受け取った時点で大きなメモリ増加がありました。**分割クエリをストリーミングすれば、常に小さいメモリで処理できるわけではありません。**
+> MARS 無効のこの条件では、1 件目の受信時点で +58 MiB を確認できています。**分割クエリをストリーミングすれば、常に小さいメモリで処理できるわけではありません。**
 >
 > なお、この内部バッファリングは LINQ 演算子によるバッファリングとは別に発生します。公式ドキュメントも「再試行実行戦略が有効な状態で `ToList` を使うと、結果セットは**メモリに 2 回読み込まれる**（EF による内部の 1 回と `ToList` による 1 回）」と注意しています。
 
@@ -1451,7 +1445,7 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 
 同期版の `ToList()` や `SaveChanges()` は、データベースの応答を待つ間スレッドをブロックします。ASP.NET Core ではスレッドプールが枯渇し、スループットが大きく低下する原因になります。原則として非同期版を使い、`.Result` や `.Wait()` によるブロッキングを避けてください。公式ドキュメントも、**同期と非同期のコードを同じアプリケーションで混在させない**よう警告しています。気づかないうちにスレッドプールの枯渇を招きやすいためです。
 
-この差がどれくらいになるかを負荷試験で実測しました。ASP.NET Core に同期版と非同期版のエンドポイントを 1 つずつ用意し、どちらも SQL Server に対して同じクエリを実行します。データベース側の待ち時間をそろえるため、クエリの先頭に `WAITFOR DELAY '00:00:00.100'` を入れて 100 ミリ秒の入出力待ちを作りました。10 コアのマシンで同時リクエスト数を変えて測定しました。5 回のウォームアップ後、15 秒間は新しい要求を開始し、送信済みの要求がすべて完了するまで待ちます。スループットの分母は、この待機も含む総経過時間です。
+次は同期・非同期のエンドポイントで同じ SQL Server クエリを使う確認例です。`WAITFOR DELAY '00:00:00.100'` で 100 ミリ秒の待機を含め、10 コアのマシンで同時リクエスト数を変えています。5 回のウォームアップ後、15 秒間要求を開始し、送信済み要求の完了までを含む総経過時間からスループットを求めた結果です。
 
 | 同時リクエスト数 | 非同期のスループット | 同期のスループット | 非同期の p99 | 同期の p99 |
 | --- | --- | --- | --- | --- |
@@ -1460,28 +1454,28 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 | 100 | 948 req/s | 129 req/s | 114 ミリ秒 | 1,327 ミリ秒 |
 | 200 | 1,862 req/s | 107 req/s | 118 ミリ秒 | 2,958 ミリ秒 |
 
-**今回の測定では、同時 10 のスループットはほぼ同程度で、同時 50 以上の測定点で差が現れました。** 同時実行数が CPU のコア数を超えることを普遍的な境界とは考えないでください。測定した範囲では非同期版のスループットが伸びた一方、同期版は同時 50〜200 で約 107〜129 req/s にとどまり、並列数を増やした測定点ほど p99 応答時間が長くなりました。同時 200 では p99 応答時間が 25 倍に開きました。エラーは 1 件も出ていないので、監視していても「遅い」としか見えない点が厄介です。
+この確認例では、同時 10 のスループットは同程度、同時 50〜200 は非同期版が高い結果です。同時 200 の p99 は非同期 118 ミリ秒、同期 2,958 ミリ秒で、エラーは 0 件です。**順位・倍率や差が現れる同時実行数を、他のアプリケーションへ一般化しないでください。**
 
 公式ドキュメントはこの理由を「同期 API はデータベースの入出力の間スレッドをブロックするため、必要なスレッド数と、発生するスレッドのコンテキストスイッチの回数が増える」と説明しています。
 
 > [!WARNING]
 > **例外があります。** EF Core の公式パフォーマンスガイダンスは、SQL Server 用のドライバーである `Microsoft.Data.SqlClient` の非同期実装に**既知の問題がある**ことを明記しています。原因不明の性能問題が出ている場合、**特に大きなテキストやバイナリの値を扱うときは、同期のコマンド実行を試してみる**よう案内しています。公式が挙げている Issue は [dotnet/SqlClient#593](https://github.com/dotnet/SqlClient/issues/593)（大きなデータの非同期読み取りが極端に遅い）と [dotnet/SqlClient#601](https://github.com/dotnet/SqlClient/issues/601) で、**いずれも本書の執筆時点で未解決 (Open) のままです。**
 >
-> 実際に Azure 上の SQL Server 2022 に `varbinary(max)` の 4 MiB の行を 20 件（合計 80 MiB）格納し、`AsNoTracking()` で全件読み取って比較しました。
+> 次は Azure 上の SQL Server 2022 で、4 MiB の `varbinary(max)` を 20 行（計 80 MiB）、`AsNoTracking()` で読み取る条件の補足例です。
 >
 > | 読み取る内容 | 同期 `ToList()` | 非同期 `ToListAsync()` |
 > | --- | --- | --- |
 > | 4 MiB のバイナリ × 20 行（80 MiB） | 1,623 / 2,029 / 1,955 ミリ秒 | 2,327 / 2,515 / 2,599 ミリ秒 |
 > | 短い文字列の列だけを投影 | 9 ミリ秒 | 7 ミリ秒 |
 >
-> この測定では、大きなバイナリで 3 回とも非同期のほうが遅く、その比は 1.2〜1.4 倍でした。短い文字列だけを投影した測定では、同期 9 ミリ秒、非同期 7 ミリ秒で、同じ傾向は観測されませんでした。この結果だけで、ほかのクエリや環境での性能差は判断できません。
+> この条件ではバイナリの 3 回とも非同期が遅く、時間の比は 1.2〜1.4 倍です。短い文字列だけの投影は同期 9 ミリ秒、非同期 7 ミリ秒です。いずれも他のクエリ・環境での順位や性能差の根拠にはなりません。
 >
 > ただしこれは「非同期をやめてよい」という意味ではありません。同期版はスレッドをブロックするため、**Web アプリケーションでは既定を非同期のままにしてください。** 大きな BLOB を扱う特定のクエリで実測して差が大きい場合に限り、その箇所だけ同期実行を検討するというのが公式の趣旨です。なお測定値はネットワーク遅延を含む環境依存の値なので、必ず自分の環境で計測してから判断してください。
 
 > [!NOTE]
 > **Azure Cosmos DB は同期 I/O に対応せず、EF Core の同期 API は既定で例外になります。** Cosmos DB プロバイダーが内部で使う SDK は同期入出力を提供していません。EF Core 9.0 以降は、この利用を検出すると既定で例外にします。
 >
-> 実際に Azure 上の Azure Cosmos DB（NoSQL API）に対して EF Core 10 から実行したところ、次のようになりました。保存の比較では新しい `Order` を追加してから呼び出しています。例外欄は型とメッセージ要旨であり、全文の転記ではありません。
+> 次は実 Azure の Cosmos DB（NoSQL API）と EF Core 10 での確認例です。保存は新しい `Order` を追加した条件で、例外欄は型と要旨です。外側の例外型は、この経路での観測として扱ってください。
 >
 > | 呼び出し | 結果 |
 > | --- | --- |
@@ -1494,17 +1488,17 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 > [!NOTE]
 > **キャンセルトークンを渡すことと、処理の停止・保存状態の確認は別です。** EF Core は `CancellationToken` を下位のプロバイダーへ渡しますが、尊重されるかどうかはプロバイダーによると[公式の非同期ガイド](https://learn.microsoft.com/ja-jp/ef/core/miscellaneous/async)に明記されています。
 >
-> EF Core 10.0.11、Microsoft.Data.SqlClient 6.1.6、SQL Server 2022 で、`ExecuteSqlRawAsync` による 20 秒の `WAITFOR` を対象に、呼び出す前からキャンセル済みの場合と、サーバーで待機中と確認してからキャンセルする場合を試しました。どちらも待機時間より前に例外で終了しました。公式の[SqlClient の非同期キャンセル試験](https://github.com/dotnet/SqlClient/blob/v6.1.6/src/Microsoft.Data.SqlClient/tests/ManualTests/SQL/SqlCommand/SqlCommandCancelTest.cs#L534-L560)も、待機時間より前に例外終了することを確認しています。例外型や停止までの時間が、すべての呼び出し経路で同じとは仮定しないでください。
+> [SqlClient 6.1.6 の公式の非同期キャンセル試験](https://github.com/dotnet/SqlClient/blob/v6.1.6/src/Microsoft.Data.SqlClient/tests/ManualTests/SQL/SqlCommand/SqlCommandCancelTest.cs#L534-L560)は、待機終了より前の例外終了を検証しています。EF Core 10.0.11、同ドライバー、SQL Server 2022 の 20 秒の `WAITFOR` の確認例でも、開始前キャンセル・待機中キャンセルの両方で時間内の例外終了を確認できています。例外型や停止時間が全経路で同じという意味ではありません。
 >
-> この試験では、明示トランザクション内で先に 1 行を更新していました。対象操作の例外終了を待ち、キャンセル済みトークンではなく `CancellationToken.None` を使った `RollbackAsync` とトランザクションの破棄を完了してから、別の物理接続で元の値が残っていることを確認しました。**キャンセル要求だけでロールバックまで完了すると確認した結果ではありません。**
+> この確認例は、明示トランザクションで先に 1 行を更新する構成です。例外終了後に `CancellationToken.None` で `RollbackAsync` と破棄を完了した状態で、別の物理接続から元の値を確認できています。**キャンセル要求だけでロールバックまで完了するという結果ではありません。**
 
 ### プロバイダーを替えるとモデルの意味が変わる
 
 プロバイダーの差し替えは「接続先が変わるだけ」ではありません。Azure Cosmos DB のようなドキュメントデータベースでは、**同じ C# のモデルが別の意味に解釈されます。**
 
-公式ドキュメントは「**関連するエンティティ型は既定で所有型 (owned) として構成される**。特定のエンティティ型でこれを防ぐには `ModelBuilder.Entity` を呼ぶ」と述べています。つまり、リレーショナルデータベースなら別テーブルになる子エンティティが、Azure Cosmos DB では**親ドキュメントの中に埋め込まれます。**
+[公式の Cosmos DB モデリング](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/modeling)では、関連する型は既定で所有型として親文書に埋め込み、独立型にする場合は `ModelBuilder.Entity` で明示すると説明しています。一方、[公式の制限事項](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/limitations)では、別ドキュメント間の関連グラフの読み込みは非対応です。
 
-ここでは本編とは別に、`string` 型の `Id` を持つ最小の `Blog` / `Post` と、`DbSet<Blog>` だけを公開する Context を使いました。ブログ 1 件・投稿 1 件を保存し、新しい Context で読みます。独立型の対照では `b.Entity<Post>()` に加え、`HasMany(...).WithOne().HasForeignKey("BlogId")` で関係を明示しました。本編の両 `DbSet` を持つ Context の接続先だけを変更した実測ではありません。
+次の確認例は、`string` の `Id` を持つ最小の `Blog` / `Post` と、`DbSet<Blog>` だけを公開する Context を使います。ブログ・投稿各 1 件を保存し、新しい Context で読む条件です。独立型では `b.Entity<Post>()` と `HasMany(...).WithOne().HasForeignKey("BlogId")` を指定しています。本編の接続先だけを変更した結果ではありません。
 
 | モデルの構成 | `Post.IsOwned()` | `Post` のコンテナー | `Include()` | `Include` なしで読んだ子 |
 | --- | --- | --- | --- | --- |
@@ -1513,7 +1507,7 @@ await foreach (var post in context.Posts.AsNoTracking().AsAsyncEnumerable()
 
 既定のままなら、`Include` を書かなくても子は一緒に読み込まれます。1 つのドキュメントとして格納されているためです。
 
-一方、`ModelBuilder.Entity<Post>()` を呼んで独立したエンティティ型にすると、`Include` は次の例外になります。
+独立型を明示したこの確認例では、別文書の `Include` で次の例外を確認できています。
 
 ```text
 InvalidOperationException: Including navigation 'Navigation: Blog.Posts (List<Post>)
@@ -1533,7 +1527,7 @@ Collection ToDependent Post' is not supported as the navigation is not embedded 
 
 #### DI 登録の引数と接続モード
 
-`AddCosmos<TContext>(connectionString, databaseName)` の 2 つの文字列は、**接続文字列とデータベース名**です。エンドポイントとキーではありません。実測では、正しい組み合わせで Scoped のコンテキスト解決と読み取りに成功し、エンドポイントを接続文字列の位置へ渡す誤用は `ArgumentException` になりました。エンドポイントとキーを個別に渡す場合は、`AddDbContext` 内で対応する `UseCosmos(endpoint, key, databaseName)` を使います。接続値をソースコードへ埋め込まないでください。
+[公式の `AddCosmos<TContext>` API](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.extensions.dependencyinjection.cosmosservicecollectionextensions.addcosmos?view=efcore-10.0)の 2 つの文字列は、**接続文字列とデータベース名**です。この確認例でも正しい引数による Scoped の解決・読み取りと、エンドポイントを接続文字列の位置へ渡す誤用の `ArgumentException` を確認できています。エンドポイントとキーを個別に渡す場合は `UseCosmos(endpoint, key, databaseName)` を使い、接続値をソースコードへ埋め込まないでください。
 
 公式の[Cosmos DB プロバイダーの接続オプション](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/#azure-cosmos-db-options)には、一覧中のオプションを**すべて同時に使う意図ではない**と注意があります。
 
@@ -1543,36 +1537,36 @@ Collection ToDependent Post' is not supported as the navigation is not embedded 
 | `HttpClientFactory` と `GatewayModeMaxConnectionLimit` を併用 | 明示的な上限指定との併用で `ArgumentException`。ファクトリを使う場合の上限は `HttpClientHandler.MaxConnectionsPerServer` で構成する |
 | Direct の `IdleTcpConnectionTimeout` を 1 分に設定 | 設定値の読み返しは成功しても、初回の入出力で `ArgumentOutOfRangeException`。公式下限の 10 分に直すと読み取りに成功 |
 
-Gateway と Direct の両方で実通信を確認しましたが、接続数の上限まで負荷をかけたり、アイドル接続の回収時刻を測定したりした結果ではありません。**設定値を読み返せることだけを、通信まで成功する証拠にしないでください。**
+Gateway・Direct の両方で実通信を確認できていますが、接続上限までの負荷や回収時刻の測定ではありません。**設定値を読み返せることと通信の成功は別です。**
 
 #### コンテナーとパーティションキー
 
-`HasDefaultContainer` はモデルの既定コンテナー、`ToContainer` はエンティティごとの保存先、`ToJsonProperty` は保存する JSON 名を指定します。実測では既定・個別の保存先と、変更した JSON 名を実ドキュメントで確認しました。
+[公式のモデリングガイド](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/modeling)では、`HasDefaultContainer` は既定コンテナー、`ToContainer` は型ごとの保存先、`ToJsonProperty` は JSON 名を指定します。この確認例でも保存先と JSON 名の反映を確認できています。
 
-Cosmos DB では、異なるパーティションなら同じ `id` の文書を保存できます。単一パーティションキーのモデルで同じ `id` の文書を別々のパーティションへ保存し、`FindAsync` に **id とパーティションキーの両方**を渡して識別できることを確認しました。`WithPartitionKey` による検索先の限定も、[公式のクエリガイド](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/querying)と実測結果が一致しています。
+[公式のクエリガイド](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/querying)では、項目の識別に id とパーティションキーを使い、`WithPartitionKey` で検索先を限定します。単一キーの確認例でも、同じ `id` を異なるパーティションへ保存し、両値を渡した `FindAsync` による識別を確認できています。
 
-階層パーティションキーは、`HasPartitionKey(x => new { x.TenantId, x.UserId, x.SessionId })` のように構成します。`string` / `Guid` / `int` の 3 階層を構成し、同じ id の 4 文書を保存した実測では、id と全階層のキーを渡した `FindAsync` が目的の 1 件をポイント読み取りしました。
+階層パーティションキーは、`HasPartitionKey(x => new { x.TenantId, x.UserId, x.SessionId })` のように構成します。`string` / `Guid` / `int` の 3 階層・同じ id の 4 文書の確認例では、id と全階層のキーを渡す `FindAsync` により目的の 1 件のポイント読み取りを確認できています。
 
-また、LINQ の等値条件を **先頭から連続するキー**に指定すると、その値は SQL の条件から取り出され、実行ログの `Partition` に現れました。先頭 1 個・先頭 2 個・全 3 個でこの動作を確認しました。一方、中間だけ・末尾だけ・中間と末尾の条件は SQL 側に残り、同じパーティション指定にはなりませんでした。先頭キーの有無を無視して、同じ検索先に限定できると考えないでください。
+公式は、LINQ からパーティションキーの等値条件を取り出す最適化を説明しています。先頭から連続する 1 個・2 個・全 3 個の確認例では、値を実行ログの `Partition` に確認できています。中間・末尾だけの条件は SQL 側に残る結果であり、先頭キーの有無を無視して同じ検索先に限定できるとは考えないでください。
 
 #### ETag と SDK 経由の更新
 
-`UseETagConcurrency()` はシャドウ状態の `_etag` を同時実行トークンにし、`IsETagConcurrency()` は ETag を CLR プロパティへマッピングする場合に使います。両方式とも、別の `DbContext` が先に同じ文書を更新すると、古い ETag で保存した側は HTTP 412 に基づく `DbUpdateConcurrencyException` になりました。[公式の ETag による楽観的同時実行制御](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/modeling#optimistic-concurrency-with-etags)に対応する挙動です。
+[公式の ETag による楽観的同時実行制御](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/modeling#optimistic-concurrency-with-etags)では、シャドウ状態に `UseETagConcurrency()`、CLR プロパティへのマッピングに `IsETagConcurrency()` を使います。両方式の確認例でも、別 Context の先行更新後に古い ETag で保存すると、HTTP 412 に基づく `DbUpdateConcurrencyException` を確認できています。
 
-また、`Database.GetCosmosClient()` から取得した SDK で文書を更新しても、**コンテキストが追跡済みの値は自動更新されません**。実測では追跡値が古いまま、新しい `DbContext` は更新後の値を読みました。SDK 経由の更新を EF Core の変更追跡に通知する仕組みと考えないでください。
+[公式の ID 解決](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/identity-resolution#identity-resolution-and-queries)では、追跡済みインスタンスの再利用時にデータベースの値で上書きしません。SDK で文書を更新する確認例でも、既存の追跡値は古いまま、新しい `DbContext` は更新後の値です。`GetCosmosClient()` を使うだけで追跡状態も同期されるわけではありません。
 
 #### 有効期限とスループットの構成
 
-**TTL (Time to Live)** は最終更新からの有効期間を秒数で指定します。`HasDefaultTimeToLive` によるコンテナーの既定値と、JSON の `ttl` にマッピングした項目ごとの値を分けて扱います。既定 8 秒、個別 4 秒、個別 `-1` の 3 条件で保存すると、11 秒待機後の読み取りは前の 2 条件が HTTP 404、`-1` の項目は取得可能でした。`-1` は有効期限を無効にする指定です。この実測は、物理削除の完了時刻を測定したものではありません。
+[公式の TTL (Time to Live)](https://learn.microsoft.com/ja-jp/azure/cosmos-db/time-to-live)は最終更新からの有効期間を秒数で指定し、`-1` は無効化です。コンテナーの既定と項目の `ttl` を分けます。既定 8 秒・個別 4 秒・個別 `-1` の確認例では、11 秒後は前の 2 条件が HTTP 404、`-1` は取得可能です。物理削除の完了時刻の測定ではありません。
 
-スループットも、データベース共有とコンテナー専用では構成する対象が異なります。新規作成時の実測では、`ModelBuilder` の `HasManualThroughput(400)` と `HasAutoscaleThroughput(1000)` で、それぞれデータベースの手動 400 RU/s と自動スケール最大 1000 RU/s の設定を確認しました。エンティティ側の `HasManualThroughput(500)` ではコンテナー専用の手動 500 RU/s を確認しました。これは構成値の確認であり、負荷に応じたスケール動作や応答性能の測定ではありません。
+スループットも、データベース共有とコンテナー専用では構成対象が異なります。新規作成の確認例では、`ModelBuilder` の `HasManualThroughput(400)` / `HasAutoscaleThroughput(1000)` で共有の手動 400 RU/s / 自動最大 1000 RU/s、エンティティ側の `HasManualThroughput(500)` で専用の手動 500 RU/s を確認できています。構成値の確認であり、負荷に応じたスケールや性能の測定ではありません。
 
 #### トリガーは全クライアントに強制されない
 
-EF Core 10 の Cosmos DB プロバイダーでは、作成済みのトリガーを `HasTrigger` で Pre / Post と操作種別に対応付けられます。実測では、Pre の Create / Replace が文書を書き換え、Post の Delete で例外を発生させると削除がロールバックしました。
+[公式のデータベーストリガー](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/modeling#database-triggers)は、EF Core 10 の `HasTrigger` による Pre / Post と操作種別の指定を説明しています。この確認例でも、Pre の Create / Replace による書き換えと、Post の Delete での例外に伴うロールバックを確認できています。
 
 > [!WARNING]
-> **トリガーを認証や監査の強制機構にしないでください。** SDK からトリガーを指定せず実行した操作は成功しました。公式の[データベーストリガー](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/modeling#database-triggers)も、直接アクセスするクライアントはトリガーを省略できるため、セキュリティ関連機能の強制に使わないよう注意しています。SQL Server のトリガーと同じ強制力を想定しないでください。
+> **公式は、直接アクセスするクライアントがトリガーを省略できるため、認証や監査の強制に使わないよう警告しています。** この確認例でも、SDK から指定せずに操作した場合の成功を確認できています。SQL Server のトリガーと同じ強制力を想定しないでください。
 
 ### Cosmos DB の全文検索とベクトル検索
 
@@ -1607,10 +1601,10 @@ modelBuilder.Entity<Blog>(b =>
 });
 ```
 
-新しいコンテナーを作成し、`SaveChangesAsync()` で本文と 3 次元の `float[]` を持つ 6 文書を保存して、検索と再取得を確認しました。これは通常のインデックス指定とは異なる、全文検索用とベクトル検索用の設定です。既存コンテナーのポリシーを自動更新する手順ではありません。コンテナー作成時の認証上の注意は[付録3のマイグレーションの制限](../appendix-efcore-03/index.md#1-マイグレーションの詳細)を参照してください。
+この新規コンテナーの確認例では、本文と 3 次元の `float[]` を持つ 6 文書の保存・検索・再取得を確認できています。全文検索・ベクトル検索用の設定で、既存コンテナーのポリシーを自動更新する手順ではありません。作成時の認証は[付録3のマイグレーションの制限](../appendix-efcore-03/index.md#1-マイグレーションの詳細)を参照してください。
 
 > [!WARNING]
-> **`Flat` ベクトル索引の上限は 505 次元です。** 公式サービスガイドに明記されており、実測でも 505 次元は成功、506 次元と 1536 次元はコンテナー作成時に HTTP 400 になりました。EF の公式ページにある「1536 次元 + `Flat`」の組み合わせをそのまま使わないでください。`QuantizedFlat` の 1536 次元では作成と検索が成功しましたが、6 文書の結果から索引の性能や近似検索の利用まで判断することはできません。
+> [公式サービスガイド](https://learn.microsoft.com/ja-jp/azure/cosmos-db/vector-search)の **`Flat` 索引の上限は 505 次元**です。505 次元の成功、506・1536 次元での作成時 HTTP 400 を確認できています。例示コードよりサービスの制限に従ってください。`QuantizedFlat` の 1536 次元も作成・検索成功を確認できていますが、6 文書での結果は大規模データの性能や近似索引の利用を示すものではありません。
 
 #### 全文検索と関連度による順位付け
 
@@ -1631,9 +1625,9 @@ var textResults = await db.Blogs
     .ToListAsync();
 ```
 
-`FullTextScore` は通常の数値計算メソッドとして使うものではありません。**公式は並べ替えでの利用に限定**しており、`Select` に投影したり `Where` の条件に直接使ったりすると、実測でも HTTP 400 になりました。
+[公式の全文検索ガイド](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/full-text-search)は、`FullTextScore` の用途を並べ替えに限定しています。この確認例でも `Select` への投影・`Where` 条件で HTTP 400 を確認できています。通常の数値計算メソッドとは異なります。
 
-既定言語は `en-US` です。プロパティごとの `EnableFullTextSearch("de-DE")`、およびモデル全体の `modelBuilder.HasDefaultFullTextLanguage("de-DE")` も実測しました。**既定言語の設定先は `EntityTypeBuilder` ではなく `ModelBuilder`**です。多言語対応のプレビュー・リージョン条件は Azure 側の公式ガイドを確認してください。今回のドイツ語での成功を、全言語・全リージョンでの利用保証にはできません。
+既定言語は `en-US` です。[公式 API](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.cosmosmodelbuilderextensions.hasdefaultfulltextlanguage?view=efcore-10.0)の既定言語の設定先は `ModelBuilder` です。`EnableFullTextSearch("de-DE")` と `modelBuilder.HasDefaultFullTextLanguage("de-DE")` の確認例も成功ですが、[多言語対応の公式条件](https://learn.microsoft.com/ja-jp/azure/cosmos-db/gen-ai/full-text-search)の代わりにはなりません。全言語・全リージョンでの利用保証ではありません。
 
 #### ベクトル検索とハイブリッド検索
 
@@ -1656,10 +1650,10 @@ var hybridResults = await db.Blogs
     .ToListAsync();
 ```
 
-**RRF (Reciprocal Rank Fusion)** は、複数の検索結果の順位を統合する方法です。全文検索とベクトル検索を別々に実行してアプリケーション側で結合するのではなく、上の式を Cosmos DB の検索へ変換できます。重みを変えた実測では、全文検索を優先する場合とベクトル検索を優先する場合で上位の文書が変わりました。
+[公式のハイブリッド検索](https://learn.microsoft.com/ja-jp/ef/core/providers/cosmos/full-text-search)では、**RRF (Reciprocal Rank Fusion)** で複数の順位を統合します。上の式を Cosmos DB の検索へ変換でき、この確認例でも重みに応じた上位文書の違いを確認できています。
 
 > [!NOTE]
-> **重みには `double[]` を渡してください。** `new[] { 1, 2 }` は `int[]` と推論され、コンパイルエラーになります。公式 API リファレンスの引数型も `double[]` です。また、全文検索得点だけ、ベクトル検索得点だけ、3 つの得点関数を使った RRF も実行できました。ただし、ここで確認したのは設定と問い合わせの動作であり、AI の回答精度や大規模データでの性能向上ではありません。
+> [公式の `Rrf` API](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.cosmosdbfunctionsextensions.rrf?view=efcore-10.0)は、重みの型を **`double[]`** と定義しています。`new[] { 1, 2 }` は `int[]` のため使えません。得点・重みの配列による確認例は問い合わせの動作に限り、AI の回答精度や大規模データの性能向上を示すものではありません。
 
 ---
 
@@ -1667,14 +1661,14 @@ var hybridResults = await db.Blogs
 
 1 つの `DbContext` インスタンスで操作が重複すると、EF Core の **同時実行検出 (concurrency detection)** によって `InvalidOperationException` が発生することがあります。未検出なら安全という意味ではありません。この検出は `DbContextOptionsBuilder.EnableThreadSafetyChecks(false)` で無効にできます。公式ドキュメントは「わずかな性能向上が得られるが、`DbContext` インスタンスが同時に使われた場合の **動作は未定義になり、プログラムは予測できない形で失敗する可能性がある**」と説明し、「性能向上が相当なものであることを確認し、アプリケーションを同時実行のバグについて十分にテストしたうえでのみ無効化すること」と釘を刺しています。
 
-実際に SQL Server 2022 に対して、同じ `DbContext` インスタンスから 2 本のクエリを `Task.Run` で並行実行する処理を、検出の有無を変えて 3 回ずつ試したところ、次の結果になりました（実測）。例外メッセージは先頭行または要旨で、完全なスタックトレースではありません。
+次は SQL Server 2022 で、同じ `DbContext` から 2 本のクエリを `Task.Run` で並行実行し、検出の有無を変えて各 3 回確認した結果です。例外欄は先頭行または要旨で、完全なスタックトレースではありません。
 
 | 同時実行検出 | 発生した例外 |
 | --- | --- |
 | 有効（既定） | 3 回とも `InvalidOperationException: A second operation was started on this context instance before a previous operation completed.`（原因と対処ページへのリンク付き） |
 | 無効 | 1 回目: `InvalidOperationException`（接続が閉じられていない旨）<br>2 回目: `InvalidOperationException`（同上、接続状態の表示だけが異なる）<br>3 回目: `InvalidCastException: Unable to cast object of type 'Microsoft.Data.ProviderBase.DbConnectionClosedConnecting' to type 'Microsoft.Data.SqlClient.SqlInternalConnectionTds'.` |
 
-この 3 回の観測では、検出を無効にすると接続状態の例外や型変換の例外が出ました。ただし、実行ごとに必ず異なる例外が出るという仕様ではありません。公式は同時利用時の動作を未定義としているため、この例外の種類や順序に依存せず、原則として検出を既定のままにしてください。
+この 3 回で確認できているのは接続状態や型変換の例外であり、実行ごとに異なる例外が出るという仕様ではありません。公式は同時利用時の動作を未定義としているため、種類や順序に依存せず、原則として検出を既定のままにしてください。
 
 ## 4. 参考ドキュメント
 

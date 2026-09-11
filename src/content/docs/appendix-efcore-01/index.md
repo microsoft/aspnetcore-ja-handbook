@@ -41,7 +41,7 @@ description: "EF Core のエンティティ構成、リレーションシップ�
 
 ### パラメーター付きコンストラクターへのバインド
 
-EF Core は、エンティティを作るときに **パラメーター付きコンストラクターを呼ぶ**ことができます。公式ドキュメントによると、マップされたプロパティと名前・型が一致するパラメーターを持つコンストラクターが見つかれば、既定の引数なしコンストラクターの代わりにそちらが呼ばれます。
+EF Core は、エンティティを作るときに **パラメーター付きコンストラクターを呼ぶ**ことができます。[公式のコンストラクターの説明](https://learn.microsoft.com/ja-jp/ef/core/modeling/constructors#binding-to-mapped-properties)によると、マップされたプロパティと名前・型が一致するパラメーターを持つコンストラクターが見つかれば、既定の引数なしコンストラクターの代わりにそちらが呼ばれます。
 
 ```csharp
 public class Book
@@ -59,7 +59,7 @@ public class Book
 }
 ```
 
-実測すると、データベースから読み込んだときに `(int id, string title)` が呼ばれ、コンストラクターで受け取らない `Note` はその後に設定されました。**`private set` でも設定できます。**
+上のモデルの確認例では、読込時に `(int id, string title)` が呼ばれ、コンストラクターで受け取らない `Note` は後から設定されることを確認できています。**`private set` も EF Core による設定の対象です。**
 
 公式ドキュメントが挙げている注意点のうち、実務で効いてくるのは次の点です。
 
@@ -67,11 +67,11 @@ public class Book
 - パラメーターの型と名前はプロパティと一致する必要がある。ただしプロパティがパスカルケース、パラメーターがキャメルケースという違いは許される
 - **EF Core はナビゲーションプロパティをコンストラクター引数へバインドできない**（自分のコンストラクターのコードでコレクションを初期化することを禁止しているわけではない）
 - 通常の実体化では `private` や `internal` のコンストラクターも使用できます。遅延読み込みプロキシでは、派生プロキシから呼び出せる `public` / `protected` などのコンストラクターが必要です。
-- **セッターを持たないプロパティは規約でマップされない。** 上の `Computed` は実測でも列が作られませんでした。読み取り専用にしたい場合は `private set` を使ってください
+- **セッターを持たないプロパティは規約でマップされない。** 上のモデルの確認例でも `Computed` の列は生成されていません。読み取り専用にしたい場合は `private set` を使ってください
 - 自動生成のキー値を使う場合、キープロパティは読み書き可能である必要がある
 
 > [!WARNING]
-> どのパラメーターもマップされたプロパティに結び付けられない場合、モデル構築の時点で失敗します。実際にエンティティのプロパティと無関係なパラメーターだけを持つコンストラクターを書いたところ、次の例外になりました。
+> 次は、マップされたプロパティにも EF Core のサービスにも結び付かないパラメーターだけを持つコンストラクターの確認例です。この構成では、モデル構築時の例外を確認できています。
 >
 > ```text
 > No suitable constructor was found for the type 'WeirdBlog'. The following constructors had parameters
@@ -107,7 +107,7 @@ public class Blog
 }
 ```
 
-実測すると、EF Core がクエリの結果として生成したインスタンスでは `PostsCount` が **3** を返し、自分で `new Blog()` したインスタンスでは **0** になりました。上のコードが `Context?.` と null 条件演算子を使っているのは、**EF Core が作っていないインスタンスでは注入が行われない**ためです。
+投稿 3 件を持つブログの確認例では、EF Core がクエリ結果として生成したインスタンスの `PostsCount` は **3**、`new Blog()` したインスタンスでは **0** です。上のコードが `Context?.` と null 条件演算子を使うのは、自分で `new Blog()` する経路では `Context` が注入されないためです。
 
 > [!WARNING]
 > 公式ドキュメントは、この `DbContext` の注入について「**エンティティ型を EF Core に直接結合させてしまうため、アンチパターンと見なされることが多い。** 使う前に他の選択肢を慎重に検討すること」と警告しています。件数だけが欲しいのであれば、クエリ側で投影する（`Select(b => new { b.Id, Count = b.Posts.Count })`）ほうが、エンティティを永続化技術から独立させたまま同じ結果を得られます。
@@ -149,7 +149,7 @@ NRT を有効にすると、初期化されていない非 null プロパティ�
 | コレクションナビゲーション | **常に非 null。** 関連が無いことは空のコレクションで表す |
 
 > [!NOTE]
-> 省略可能なナビゲーションを含む式では、C# コンパイラーが null 参照の警告を出しても、EF Core が SQL に翻訳して実行する際には null が SQL の規則に従って扱われる場合があります。検証では、関連先の値による絞り込みは例外にならず、値だけの投影では関連先のない行に `null` が返りました。「関連のない行を常に無視する」という意味ではありません。`!` はコンパイラーの警告を抑えるだけで、取得後の LINQ to Objects で null 参照例外を防ぐものではありません。
+> 省略可能なナビゲーションを含む式では、C# コンパイラーが null 参照の警告を出しても、EF Core が SQL に翻訳して実行する際には null が SQL の規則に従って扱われる場合があります。関連先の値で絞り込む確認例は例外なく実行でき、値だけを投影する確認例では関連先のない行に `null` が返ることを確認できています。「関連のない行を常に無視する」という意味ではありません。`!` はコンパイラーの警告を抑えるだけで、取得後の LINQ to Objects で null 参照例外を防ぐものではありません。
 >
 > ```csharp
 > var orders = await context.Orders
@@ -277,7 +277,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 
 `OnModelCreating` の中でコンテキストのプロパティを見て、モデルの構築内容を切り替えたくなることがあります。ところが公式ドキュメントが説明しているとおり、**EF はモデルを一度だけ構築し、性能のために結果をキャッシュします。** そのため、素直に書いても切り替わりません。
 
-実際に、同じ DbContext 型でプロパティだけを変えた 2 つのインスタンスを作って比べたところ、**2 つ目も 1 つ目と同じモデルになりました。**
+次は、同じ DbContext 型でプロパティだけを変えた 2 つのインスタンスの確認例です。**2 つ目も 1 つ目と同じモデル**を使うことを確認できています。
 
 ```text
 ファクトリーなし UseIntProperty=true  → IntValue あり
@@ -332,7 +332,7 @@ public class DynamicModelCacheKeyFactory : IModelCacheKeyFactory
 
 `OnConfiguring` と `OnModelCreating` は、いずれも上の `DynamicContext` のメソッドです。`new DynamicContext(useIntProperty: true, replaceFactory: false)` と、`useIntProperty` だけを `false` にしたインスタンスが、上の既定キャッシュによる比較に対応します。`replaceFactory: true` にすると、`OnConfiguring` 内の `ReplaceService` が適用されます。
 
-差し替えた後に同じ検証を行うと、意図どおり別々のモデルになりました。
+キャッシュキーの生成処理を差し替えた確認例では、次のように別々のモデルが得られています。
 
 ```text
 UseIntProperty=true  → Value なし / IntValue: Int32
@@ -369,7 +369,7 @@ public record Post
 }
 ```
 
-SQL Server 2022 で実測したところ、値の同じ `Post` を 2 つ追加しても `Posts.Count` は **1** にしかならず、`SaveChanges` 後にデータベースへ入った行も **1 件**でした。例外は出ず、片方が黙って消えます。
+SQL Server 2022 を使うこの確認例では、値の同じ `Post` を 2 つ追加しても `Posts.Count` は **1**、保存後の行も **1 件**です。コレクションへの追加時に同じ値と扱われるため、2 件として保持されません。
 
 公式ドキュメントは**エンティティの等価性をオーバーライドしないこと**を推奨しています。どうしても使う場合は、コレクションナビゲーションに参照等価性を強制してください。.NET 5 以降は `ReferenceEqualityComparer` が BCL に含まれています。
 
@@ -378,10 +378,10 @@ public ICollection<Post> Posts { get; set; }
     = new HashSet<Post>(ReferenceEqualityComparer.Instance);
 ```
 
-同じ条件で比較子だけを差し替えて実測すると、`Posts.Count` は 2、保存された行も 2 件になりました。
+同じ条件で比較子だけを差し替えた確認例では、`Posts.Count` と保存後の行数がともに 2 であることを確認できています。
 
 > [!NOTE]
-> キーは等価比較だけでなく、更新順序を決める比較にも使われます。ただし、**独自のキー型自体が `IComparable<T>` と `IEquatable<T>` の両方を必ず実装しなければならない、とは限りません**。比較可能なプロバイダー型へ値変換する方法もあります。検証では、これらのインターフェイスを実装しない値型キーを `int` に変換し、保存と `Find` に成功しました。独自の型を使う場合は、モデル型・変換後の型・比較方法を一緒に確認してください。詳しくは[付録2の「代替キーと一意インデックス」](../appendix-efcore-02/index.md#代替キーと一意インデックス)を参照してください。
+> キーは等価比較だけでなく、更新順序を決める比較にも使われます。[公式のキー比較の説明](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/identity-resolution#comparing-key-properties)は、主キー・代替キー・外部キーおよび一意インデックスに使用する型に `IComparable<T>` と `IEquatable<T>` の実装を求めています。独自のキー型にも、この比較要件を満たす実装を用意してください。代替キーについては[付録2の「代替キーと一意インデックス」](../appendix-efcore-02/index.md#代替キーと一意インデックス)を参照してください。
 
 ### 組み上がったモデルを確認する
 
@@ -391,7 +391,7 @@ public ICollection<Post> Posts { get; set; }
 Console.WriteLine(context.Model.ToDebugString());
 ```
 
-`Blog` と `Post` の単純なモデルで出力すると、次のようになりました（実測）。
+次は、`Blog` と `Post` の単純なモデルの出力例です。
 
 ```text
 Model:
@@ -422,7 +422,7 @@ Model:
 Console.WriteLine(context.Model.ToDebugString(MetadataDebugStringOptions.LongDefault));
 ```
 
-長い形式では、短い形式の情報に加えて注釈も表示されます。検証では、短い形式にはないモデルのカスタム注釈が `LongDefault` に表示されました。
+長い形式では、短い形式の情報に加えて注釈も表示されます。この確認例でも、モデルのカスタム注釈は `LongDefault` に表示され、短い形式には含まれていません。
 
 ```text
       Id (int) Required PK AfterSave:Throw ValueGenerated.OnAdd
@@ -482,7 +482,7 @@ modelBuilder.Entity<Post>()
     .UsingEntity(join => join.ToTable("PostTags"));
 ```
 
-このとき生成される結合テーブルの列名は、**ナビゲーションプロパティの名前**から作られます。SQL Server で実測した DDL は次のとおりでした。
+このとき生成される結合テーブルの列名は、**ナビゲーションプロパティの名前**から作られます。次は、SQL Server での生成 DDL の確認例です。
 
 ```sql
 CREATE TABLE [PostTag] (
@@ -533,7 +533,7 @@ CREATE TABLE [PostTag] (
 ```
 
 > [!WARNING]
-> 結合エンティティのプロパティ名が外部キーの規約に合っていないと、EF Core は **その名前のシャドウプロパティ (shadow property) を別に作り、自分が定義したプロパティはただのデータ列になります。** 型名 `Article` に対して `PostId` というプロパティを定義したところ、`ArticlesId` というシャドウの外部キー列が追加で生成され、`PostId` は外部キーではない列として残りました。シャドウプロパティそのものの詳細は[付録2の「シャドウプロパティとバッキングフィールド」](../appendix-efcore-02/index.md#シャドウプロパティとバッキングフィールド)を参照してください。ただし、命名の不一致だけで保存が必ず失敗するわけではありません。EF Core 10.0.11 と SQLite の対照実測では、結合エンティティの `PostId` と `TagId` だけを設定して直接追加し、シャドウの外部キー `ArticlesId` に対応する主体を関連付けなかった場合に、次の例外になりました。一方、`article.Tags.Add(tag)` のようにスキップナビゲーションで関連付けた場合は外部キーが補完され、同じモデルでも保存できました。この場合も `PostId` は外部キーではないままです。
+> [外部キーの規約](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/conventions#shadow-foreign-key-properties)で対応する CLR プロパティが見つからない場合、EF Core はシャドウ外部キーを作成します。型名 `Article` に対して `PostId` を定義した確認例では、`ArticlesId` がシャドウ外部キーとなり、`PostId` は通常の列です。詳細は[付録2の「シャドウプロパティとバッキングフィールド」](../appendix-efcore-02/index.md#シャドウプロパティとバッキングフィールド)を参照してください。EF Core 10.0.11 / SQLite で結合エンティティの `PostId` と `TagId` だけを設定し、`ArticlesId` に対応する主体を関連付けない確認例では、次の例外が確認できています。同じモデルでも `article.Tags.Add(tag)` で関連付ける確認例は保存成功ですが、`PostId` が外部キーになるわけではありません。
 >
 > ```text
 > InvalidOperationException: The value of 'ArticleTag.ArticlesId' is unknown when attempting
@@ -548,7 +548,7 @@ CREATE TABLE [PostTag] (
 >     => optionsBuilder.ConfigureWarnings(b => b.Throw(CoreEventId.ShadowPropertyCreated));
 > ```
 >
-> 実測では、モデルを構築した時点で次のメッセージとともに例外が投げられました。
+> この設定でのモデル構築時に確認できている例外は、次のとおりです。
 >
 > ```text
 > The property 'ArticleTag.ArticlesId' was created in shadow state because there are
@@ -557,16 +557,16 @@ CREATE TABLE [PostTag] (
 
 #### スキップナビゲーションとペイロードの関係
 
-`Post.Tags` のように、結合エンティティを飛び越えて相手側を直接指すナビゲーションを **スキップナビゲーション (skip navigation)** と呼びます。結合エンティティへのナビゲーション（`Post.PostTags`）は、スキップナビゲーションと**併存できます**。実測でも、`Include(x => x.Tags)` と `Include(x => x.PostTags)` の両方が同じクエリで機能しました。
+`Post.Tags` のように、結合エンティティを飛び越えて相手側を直接指すナビゲーションを **スキップナビゲーション (skip navigation)** と呼びます。結合エンティティへのナビゲーション（`Post.PostTags`）は、スキップナビゲーションと**併存できます**。このモデルでも、`Include(x => x.Tags)` と `Include(x => x.PostTags)` を同じクエリで使えることを確認できています。
 
-ここに実務上の落とし穴があります。**ペイロードの値は、スキップナビゲーションを操作しただけでは自動的に推測されません。** この例で追加した `Note` の値は、結合エンティティに明示的に設定します。データベース側で生成される値とは区別してください。
+[公式のペイロードの説明](https://learn.microsoft.com/ja-jp/ef/core/modeling/relationships/many-to-many#many-to-many-and-join-table-with-payload)は、結合エンティティへのナビゲーションによる追加情報の読み書きと、タイムスタンプなどの生成値の構成を紹介しています。**この例の `Note` は結合エンティティに明示的に設定し、`TaggedOn` はデータベースの既定値で生成する**という違いがあります。
 
 ```csharp
 post.Tags.Add(tag);
 await context.SaveChangesAsync();
 ```
 
-実測では、この操作で結合行が 1 行挿入され、`GETUTCDATE()` を既定値に設定した `TaggedOn` にはデータベース側で値が入りましたが、既定値を設定していない `Note` は空文字のままでした。公式ドキュメントも「ペイロードのプロパティは自動生成される値と組み合わせて使うのが最も一般的」としています。
+上の操作の確認結果では、結合行が 1 行挿入され、`GETUTCDATE()` を構成した `TaggedOn` に値が入り、`Note` は初期値の空文字のままです。
 
 生成値にできないペイロードを設定する方法は 2 つあります。1 つは結合エンティティを自分で追加することです。
 
@@ -589,15 +589,15 @@ joinEntity!.Note = "手動で設定";
 await context.SaveChangesAsync();
 ```
 
-SQL Server 2022 で実測したところ、`DetectChanges()` の後に `Find` で結合エンティティを取得でき、`Note` に設定した値がそのまま保存されました。同時に、既定値を設定した `TaggedOn` にもデータベース側の値が入りました。
+SQL Server 2022 の確認例では、`DetectChanges()` 後の `Find` による結合エンティティの取得と、`Note` の指定値の保存を確認できています。`TaggedOn` にはデータベースの既定値が格納されています。
 
 > [!WARNING]
-> 結合エンティティ用のクラスを定義しない場合、EF Core は規約で暗黙の結合エンティティ型を作ります。EF Core 10 の実測では、その CLR 型は `Dictionary<string, object>` で、モデル上の名前は `PostTag` でした。
+> 結合エンティティ用のクラスを定義しない場合、EF Core は規約で暗黙の結合エンティティ型を作ります。EF Core 10 の確認例では、その CLR 型は `Dictionary<string, object>`、モデル上の名前は `PostTag` です。
 >
 > ただし**この CLR 型に依存したコードを書かないでください。** 公式ドキュメントは、規約で使われる結合エンティティ型の CLR 型がパフォーマンス改善のために将来のリリースで変わる可能性があると明記しています。結合エンティティを型として扱いたい場合は、上のように `UsingEntity<PostTag>` でクラスを明示的に構成してください。
 
 > [!TIP]
-> スキップナビゲーションから相手を外す操作（`post.Tags.Remove(tag)`）では、**変更検出後に結合エンティティだけが `Deleted` になり、`Tag` 本体は残ります。** 実測では明示的な `DetectChanges()` の後に状態を確認し、保存後は結合行が 1 件減り、`Tag` は 2 件のまま残りました。一方で `Tag` 本体を削除すると、結合テーブルの外部キーが既定でカスケード削除に設定されているため、関連する結合行もデータベース側で削除されます。
+> スキップナビゲーションから相手を外す操作（`post.Tags.Remove(tag)`）では、**変更検出後に結合エンティティだけが `Deleted` になり、`Tag` 本体は残ります。** 明示的に `DetectChanges()` する確認例でも、保存後は結合行が 1 件減り、`Tag` は 2 件のままです。一方、`Tag` 本体の削除では、既定のカスケード削除により関連する結合行も削除対象になります。
 
 削除時の動作は `OnDelete` で指定します。`DeleteBehavior` は **EF Core が追跡中の子に対して行うこと**と、**データベースに作られる外部キー制約**の 2 つを同時に決めます。
 
@@ -615,13 +615,13 @@ SQL Server 2022 で実測したところ、`DetectChanges()` の後に `Find` �
 
 `Client` で始まる 3 つはデータベース側にカスケード動作を設定せず、EF Core の追跡に作用します。上の表の制約は SQL Server 2022 向けに `GenerateCreateScript()` で実測したものです。`SetNull` は外部キー列が null 非許容だとデータベース作成時に失敗します。
 
-`NoAction` について、EF Core 10.0.11 / SQLite で子 2 件を追跡して親を削除する対照実験も行いました。任意 FK では親だけが削除され、子 2 件の FK は NULL になりました。一方、CLR の FK 型は `int?` のまま、`IsRequired(true)` でモデルと列を必須にした条件では保存が失敗し、親と子 2 件が残りました。**`NoAction` は「EF Core が何もしない」という意味ではなく、必須 FK にも上の NULL 更新が適用できるわけではありません。** 例外型も構成に依存するため、一律には扱わないでください。
+`NoAction` の確認例（EF Core 10.0.11 / SQLite、子 2 件を追跡して親を削除）では、任意 FK は親だけが削除され、子の FK は NULL です。一方、CLR の FK 型が `int?` でも `IsRequired(true)` でモデルと列を必須にする条件では、保存は失敗し親と子が残ることを確認できています。**`NoAction` は「EF Core が何もしない」という意味ではなく、必須 FK にも NULL 更新を適用できるわけではありません。** 例外型も構成に依存するため、一律には扱わないでください。
 
 > [!NOTE]
-> **SQL Server は `ON DELETE RESTRICT` をサポートしていません。** そのため `Restrict` を指定しても `ON DELETE NO ACTION` が使われます。公式ドキュメントにもこの旨が明記されており、実測でも `NO ACTION` になりました。多くのデータベースで `NO ACTION` と `RESTRICT` は同じか非常に近い動作をします（違いがあるとすれば制約を検査する**タイミング**です）。
+> **SQL Server は `ON DELETE RESTRICT` をサポートしていません。** そのため `Restrict` を指定しても `ON DELETE NO ACTION` が使われます。公式ドキュメントにもこの旨が明記されており、このモデルでも `NO ACTION` を確認できています。多くのデータベースで `NO ACTION` と `RESTRICT` は同じか非常に近い動作をします（違いがあるとすれば制約を検査する**タイミング**です）。
 
 > [!WARNING]
-> **同じ設定でも、子を読み込んでいるかどうかで結果が変わります。** null 許容の外部キーに `DeleteBehavior.Restrict` を指定して SQL Server 2022 で実測した結果は次のとおりでした。
+> **同じ設定でも、子を読み込んでいるかどうかで結果が変わります。** 次は、null 許容の外部キーに `DeleteBehavior.Restrict` を指定した SQL Server 2022 での確認結果です。
 >
 > | 親を削除するときの状態 | 結果 |
 > | --- | --- |
@@ -646,7 +646,7 @@ public class Person
 modelBuilder.Entity<Person>().HasMany(p => p.Friends).WithMany(p => p.FriendOf);
 ```
 
-SQL Server で実測すると、`PersonPerson` という結合テーブルが作られ、2 つの外部キーがどちらも `People` を指しました。
+このモデルの SQL Server での確認結果では、結合テーブルは `PersonPerson` で、2 つの外部キーがともに `People` を指しています。
 
 ```sql
 CREATE TABLE [PersonPerson] (
@@ -661,7 +661,7 @@ CREATE TABLE [PersonPerson] (
 > [!WARNING]
 > **「A と B は友達」のような対称な関係を、1 つのナビゲーションで表現することはできません。** 公式ドキュメントは「残念ながらこれは簡単にはマップできない。同じナビゲーションをリレーションシップの両端に使うことはできず、単方向の多対多としてマップするのが精一杯」と明言しています。
 >
-> 実測でも `a.Friends.Add(b)` としただけでは、`A.Friends = 1 / A.FriendOf = 0`、`B.Friends = 0 / B.FriendOf = 1` となり、`B` から見た `Friends` は空のままでした。公式が示しているとおり、双方向にしたい場合は両方のコレクションに手で追加する必要があります。
+> 公式が示すとおり、対称的な関係にしたい場合は両方の `Friends` コレクションに追加する必要があります。この確認例でも `a.Friends.Add(b)` だけでは、`A.Friends = 1 / A.FriendOf = 0`、`B.Friends = 0 / B.FriendOf = 1` で、`B.Friends` は空のままです。
 >
 > ```csharp
 > a.Friends.Add(b);
@@ -689,7 +689,7 @@ public class Post
 }
 ```
 
-公式ドキュメントは「何も構成しないと、EF の規約は 2 つの型のあいだのどのナビゲーションどうしを対にすべきかを判断できない」と説明しています。実測すると、`DbContext` を使った瞬間に次の例外になりました。
+公式ドキュメントは「何も構成しないと、EF の規約は 2 つの型のあいだのどのナビゲーションどうしを対にすべきかを判断できない」と説明しています。次は、このモデルを構成せずに使う場合の例外の確認例です。
 
 ```text
 System.InvalidOperationException: Unable to determine the relationship represented by
@@ -718,7 +718,7 @@ protected override void OnModelCreating(ModelBuilder modelBuilder)
 public List<Post> Posts { get; } = new();
 ```
 
-どちらの方法でも、実測したモデルは `Post.BlogId → Blog` と `Blog.FeaturedPostId → Post` の 2 本の外部キーになりました。
+どちらの構成でも、`Post.BlogId → Blog` と `Blog.FeaturedPostId → Post` の 2 本の外部キーを確認できています。
 
 > [!IMPORTANT]
 > 公式ドキュメントは `[InverseProperty]` について「**同じ型どうしのあいだにリレーションシップが 2 つ以上あるときにのみ必要**であり、1 つしかない場合は 2 つのナビゲーションが自動的に対にされる」と明記しています。リレーションシップが 1 本しかないモデルに予防的に付ける必要はありません。
@@ -727,40 +727,40 @@ public List<Post> Posts { get; } = new();
 
 リレーションシップを必須にする（外部キーを `NOT NULL` にする）ために `[Required]` を使うことがあります。ただし**付ける場所によって、効くか黙って無視されるかが変わります。**
 
-公式ドキュメントは、従属側（外部キーを持つ側）のナビゲーションに付けた場合は外部キーが `NOT NULL` になり、**主体側のナビゲーションに付けた場合は効果がない**と明記しています。実測でも次のとおりでした。
+公式ドキュメントは、従属側（外部キーを持つ側）のナビゲーションに付けた場合は外部キーが `NOT NULL` になり、**主体側のナビゲーションに付けた場合は効果がない**と明記しています。次は、その確認例です。
 
 | `[Required]` を付けた場所 | 外部キーの NULL 許容 |
 | --- | --- |
 | 従属側のナビゲーション（`Post.Blog`） | `NOT NULL` になる |
 | 主体側のナビゲーション（`Blog.Posts`） | **`NULL` のまま（無視される）** |
 
-主体側コレクションの `[Required]` は、この対照でも外部キーを必須にしませんでした。Debug レベルには `RequiredAttributeOnCollection` の診断が出ています。これは Warning レベルのログではないため、通常のログ設定では見落とし得ます。属性の見た目だけでなく、生成モデルの外部キーの必須性を確認してください。
+この確認例では、主体側コレクションに `[Required]` を付けても外部キーは任意のままです。Debug レベルには `RequiredAttributeOnCollection` の診断が出ています。これは Warning レベルのログではないため、通常のログ設定では見落とし得ます。属性の見た目だけでなく、生成モデルの外部キーの必須性を確認してください。
 
 > [!NOTE]
 > NRT が有効でも、**非 null 許容のナビゲーションだけで、明示的に宣言した nullable な外部キーが必須になるわけではありません**。たとえば `int? BlogId` と `Blog Blog` の組み合わせは、規約では任意リレーションシップです。一方、外部キーの CLR プロパティがなくシャドウプロパティが作られる場合は、従属側ナビゲーションの null 許容性が外部キーの必須性に使われます。必須にしたい場合は、外部キーの型と `[Required]` / Fluent API の構成も確認してください。
 
 #### カスケード削除は「子を読み込んでいるか」で主体が変わる
 
-`OnDelete` を明示しなかった場合の既定値は、外部キーが NULL 許容かどうかで決まります。実測で確認した既定値は次のとおりです。
+[公式のカスケード削除の説明](https://learn.microsoft.com/ja-jp/ef/core/saving/cascade-delete#impact-on-savechanges-behavior)では、必須リレーションシップの既定は `Cascade`、任意リレーションシップの既定は `ClientSetNull` です。明示的な構成がない場合、次の外部キー型はそれぞれの関係に対応します。
 
 | リレーションシップ | 外部キー | 既定の `DeleteBehavior` |
 | --- | --- | --- |
 | 必須 | `int` | `Cascade` |
 | 任意 | `int?` | `ClientSetNull` |
 
-そして、**同じ設定でも子エンティティを `DbContext` に読み込んでいるかどうかで削除の主体が変わります。** 必須リレーションシップで親 1 件・子 2 件を削除したときの実測結果です。
+公式は、追跡中の子には EF Core がカスケード削除を適用し、未読込の子にはデータベースの `ON DELETE CASCADE` が必要と説明しています。**既定の `Cascade` を使う必須リレーションシップ**で、親 1 件・子 2 件を削除する確認例は次のとおりです。
 
 | 操作 | `SaveChangesAsync` の戻り値 | 削除の主体 |
 | --- | --- | --- |
 | `Include` して親を `Remove` | 3 | EF Core（子を `Deleted` にして削除） |
 | `Include` せずに親を `Remove` | 1 | データベース（`ON DELETE CASCADE`） |
 
-`Include` した場合は、`Remove` を呼んだ時点で子の状態が `Deleted` に変わることを確認しました。EF Core が子の削除まで受け持つため、戻り値が 3 になります。読み込んでいない場合は EF Core は親の `DELETE` しか発行せず、データベース側の外部キー制約が子を削除します。
+この例では、`Include` した場合は `Remove` 直後の子の状態が `Deleted` で、保存の戻り値は 3 です。未読込の場合は EF Core が親の `DELETE` を発行し、子の削除はデータベース側の外部キー制約が受け持つことを確認できています。
 
 > [!WARNING]
-> **必須リレーションシップでは、親を削除しなくても子がコレクションから外れただけで削除されます。** 実測では `blog.Posts.Remove(post)` で関係を切ると、**変更検出後に**その `Post` の状態が `Deleted` になりました。通常の `List<Post>` から削除した瞬間に状態が変わるわけではありません。`Entry` や `SaveChanges` などによる自動検出、または明示的な `DetectChanges()` が必要です。外部キーが `int` である以上、親のいない子は存在できないためです。これを **孤児の削除 (delete orphans)** と呼びます。
+> [公式の関係変更の説明](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/relationship-changes#required-relationships)では、既定のカスケード削除を使う必須関係を切ると、子は **孤児の削除 (delete orphans)** の対象になります。`blog.Posts.Remove(post)` の確認例でも、**変更検出後に** `Post` が `Deleted` になることを確認できています。通常の `List<Post>` から削除した瞬間ではなく、自動検出または明示的な `DetectChanges()` で変更を検出した時点です。
 >
-> 任意リレーションシップ（`int?`）では挙動が変わり、親を削除しても子は `Modified` になって**外部キーが `null` に更新されるだけ**でした。実測でも 2 件の `Post` が残り、`BlogId` は両方とも `null` になりました。
+> 任意関係で既定の `ClientSetNull` を使い、子を追跡して親を削除する確認例では、子は `Modified` で **外部キーが `null` に更新されます**。保存後も 2 件の `Post` が残り、両方の `BlogId` が `null` であることを確認できています。
 
 > [!TIP]
 > 削除時の結果や例外は、外部キーの必須性、`DeleteBehavior`、子の追跡状態、データベース制約によって変わります。EF Core が追跡中の不整合を検出して `InvalidOperationException` になる場合も、保存時の制約違反が `DbUpdateException` になる場合もあります。**子を読み込んだかどうかだけで例外型を一律に決めることはできません**。
@@ -775,7 +775,7 @@ public List<Post> Posts { get; } = new();
 | `OnSaveChanges` | `SaveChanges` の一部としてカスケードの動作を行う |
 | `Never` | 自動的にはカスケードの動作を行わず、明示的な呼び出しで発生させる |
 
-実測した既定値はどちらも `Immediate` で、`Remove` を呼んだ直後に子が `Deleted` になりました。
+[公式のタイミングの説明](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/relationship-changes#cascade-delete-timing-and-re-parenting)では、既定のカスケード削除は親が `Deleted` になった時点、孤児の削除は関係変更を検出した時点で行われます。次は `CascadeDeleteTiming` を変え、追跡中の親に `Remove` を呼んだ直後の子の状態を確認した結果です。データベースへ DELETE を発行する時点ではありません。
 
 ```text
 既定 (Immediate):     Remove 直後の子の状態 = Deleted, Deleted
@@ -784,7 +784,7 @@ Never:                Remove 直後の子の状態 = Unchanged
 ```
 
 > [!WARNING]
-> `Never` にすると、必須リレーションシップの子を残したまま保存しようとして次の例外になりました。カスケードを止めるのではなく「タイミングをずらす」だけの目的であれば `OnSaveChanges` を使ってください。
+> 既定のカスケード削除を `Never` で無効にし、追跡中の必須リレーションシップの子を残したまま保存する確認例では、次の例外が確認できています。削除を無効にするのではなく「タイミングをずらす」目的であれば `OnSaveChanges` を使ってください。
 >
 > ```text
 > The association between entity types 'Parent' and 'Child' has been severed, but the relationship is
@@ -803,11 +803,11 @@ blog.Posts.Clear();
 await db.SaveChangesAsync();
 ```
 
-このとき子（`Post`）がどうなるかは、リレーションシップが**必須か省略可能か**で変わります。**省略可能なリレーションシップ（外部キーが `NULL` を許す）では、子は削除されず、外部キーが `NULL` になるだけ**です。SQL Server での実測でも、`Clear()` して保存したあとに発行された SQL は `UPDATE [Posts] SET [BlogId] = @p0` で、`Post` は 1 件残り `BlogId` が `NULL` になっていました。
+[公式の任意関係の切断の説明](https://learn.microsoft.com/ja-jp/ef/core/change-tracking/relationship-changes#optional-relationships)では、既定の構成で子をコレクションから外すと、子を削除せずに外部キーを `null` にします。SQL Server でのこの確認例でも、`Clear()` 後の保存 SQL は `UPDATE [Posts] SET [BlogId] = @p0` で、`Post` は 1 件残り、`BlogId` は `NULL` です。
 
-EF Core 10 の対照では、nullable な外部キーに `OnDelete(DeleteBehavior.Cascade)` を明示しても、コレクションを `Clear` して関係を切ると子は残り、外部キーが `null` になりました。同じ構成で親自体を削除すると、子も削除されます。公式の EF Core 7 の変更履歴も、この「任意の関係を切る操作」と「親の削除」を区別しています。
+[公式の EF Core 7 の変更履歴](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-7.0/breaking-changes)は、`Cascade` を構成した任意の関係でも、関係の切断では子を削除せず、親の削除ではカスケード削除することを説明しています。EF Core 10 の対照でも、nullable な外部キーに `Cascade` を明示した構成で、`Clear()` 後には子と `null` の外部キーが残り、親の削除では子も削除されることを確認できています。
 
-必須のリレーションシップ（外部キーが `NOT NULL`）であれば、外部キーを `NULL` にできないため、これまでどおり子も削除されます。また、**主体（親）そのものを `Remove` した場合は、省略可能なリレーションシップでもカスケード削除が働きます**。
+必須リレーションシップで既定の `Cascade` を使う場合は、関係を切ると孤児として子が削除対象になります。また、**任意リレーションシップで親を `Remove` したときに子も削除するには、`Cascade` などの構成が必要**です。任意関係の既定の `ClientSetNull` とは区別してください。
 
 ```csharp
 db.Blogs.Remove(blog);   // → Post も削除される（構成に従う）
@@ -823,7 +823,7 @@ await db.SaveChangesAsync();
 
 #### SQL Server では循環するカスケードを作れない
 
-必須リレーションシップは既定でカスケード削除になります。これらの外部キーが**循環または複数のカスケード経路**を作ると、SQL Server はその制約の作成を拒否します。ブログ・投稿・人物の検証モデルでは、人物から投稿へ直接たどる経路と、ブログを経由する経路が重なり、データベース作成時に次の例外になりました。
+必須リレーションシップは既定でカスケード削除になります。これらの外部キーが**循環または複数のカスケード経路**を作ると、SQL Server はその制約の作成を拒否します。次は、人物から投稿へ直接たどる経路と、ブログを経由する経路が重なるモデルでの、データベース作成時の例外の確認例です。
 
 ```text
 Introducing FOREIGN KEY constraint 'FK_Posts_People_AuthorId' on table 'Posts'
@@ -912,14 +912,14 @@ builder.Property(p => p.Status)
 >         v => JsonSerializer.Deserialize<List<string>>(v, (JsonSerializerOptions?)null)!);
 > ```
 >
-> この状態で `post.Keywords.Add("csharp")` を実行し `SaveChanges` を呼んでも、実測では次のようになりました。
+> 次は、この状態で `post.Keywords.Add("csharp")` を実行し `SaveChanges` を呼ぶ確認例です。
 >
 > | 構成 | `Entry(post).State` | `SaveChanges` の戻り値 | 再読み込みした結果 |
 > | --- | --- | --- | --- |
 > | 比較子なし | `Unchanged` | `0` | 追加した要素が**消える** |
 > | 比較子あり | `Modified` | `1` | 追加した要素が保存される |
 >
-> これは、すべてのミュータブルな型や変更方法に当てはまるわけではありません。EF Core 10.0.11 / SQLite で別のリストインスタンスへ差し替えた対照実験では、比較子なしでも `Modified` となり、`SaveChangesAsync()` は `1` を返し、再読取でも新しい要素が残りました。同じインスタンスへの `Add` と、インスタンスの差し替えを区別してください。
+> これは、すべてのミュータブルな型や変更方法に当てはまるわけではありません。EF Core 10.0.11 / SQLite で別のリストインスタンスへ差し替える確認例では、比較子なしでも `Modified`、`SaveChangesAsync()` の戻り値は `1` で、再読取でも新しい要素を確認できています。同じインスタンスへの `Add` と、インスタンスの差し替えを区別してください。
 >
 > 解決するには `HasConversion` の第 3 引数に `ValueComparer<T>`（`Microsoft.EntityFrameworkCore.ChangeTracking` 名前空間）を渡し、「等価判定」「ハッシュ計算」「スナップショット（複製）」の 3 つを指定します。
 >
@@ -944,7 +944,7 @@ modelBuilder.Entity<Author>()
 ```
 
 > [!NOTE]
-> コレクションを所有する `OwnsMany` では、同じ所有者に属する複数の要素を区別する必要があります。既定では所有者への外部キーと追加の `Id` による複合主キーが構成されます。EF Core 10 と SQLite で、`OwnsOne` のシャドウキーと `OwnsMany` の複合主キーを確認しました。コレクション要素の `Id` を明示して保存し、住所と 2 要素を再取得できました。一方、所有型を独立した `DbSet` としてクエリすると例外になりました。公式の[暗黙的なキー](https://learn.microsoft.com/ja-jp/ef/core/modeling/owned-entities#implicit-keys)・[所有型のコレクション](https://learn.microsoft.com/ja-jp/ef/core/modeling/owned-entities#collections-of-owned-types)が説明するように、「CLR 型にキーを書いていない」ことと「モデルにキーがない」ことは別です。
+> 公式の[暗黙的なキー](https://learn.microsoft.com/ja-jp/ef/core/modeling/owned-entities#implicit-keys)・[所有型のコレクション](https://learn.microsoft.com/ja-jp/ef/core/modeling/owned-entities#collections-of-owned-types)の説明では、`OwnsMany` は既定で所有者への外部キーと追加の `Id` による複合主キーを使い、同じ所有者の複数の要素を区別します。「CLR 型にキーを書いていない」ことと「モデルにキーがない」ことは別です。EF Core 10 / SQLite の確認例でも、`OwnsOne` のシャドウキーと `OwnsMany` の複合主キー、および要素の `Id` を明示した保存後の住所と 2 要素の再取得を確認できています。
 
 住所のように、それ自体は識別子を持たず、親エンティティのテーブルに展開したい値の集まりには **複合型 (Complex Type)** を使います。
 
@@ -981,7 +981,7 @@ modelBuilder.Entity<Author>()
 >
 > **1. ネストした複合型の列名がフルパスになる**
 >
-> `Entity.Complex.NestedComplex.Property` は、EF Core 9 までは直近の型名だけを使って `NestedComplex_Property` にマッピングされていましたが、EF Core 10 では途中の複合型もすべて含めた `Complex_NestedComplex_Property` になります。実際に SQL Server 2022 に対して生成された DDL は次のとおりでした（実測で確認）。
+> `Entity.Complex.NestedComplex.Property` は、EF Core 9 までは直近の型名だけを使って `NestedComplex_Property` にマッピングされていましたが、EF Core 10 では途中の複合型もすべて含めた `Complex_NestedComplex_Property` になります。次は、SQL Server 2022 向けの生成 DDL の確認例です。
 >
 > ```sql
 > CREATE TABLE [Holders] (
@@ -996,7 +996,7 @@ modelBuilder.Entity<Author>()
 >
 > 別々の複合型のプロパティの列名が衝突する場合、EF Core 10 では規約で生成する列名を一意化して、意図しない列の共有を避けます。具体的な生成名はモデルの形によるため、マイグレーションの列名を確認してください。複数のプロパティで同じ列を共有したい場合は、`HasColumnName` で明示的に構成します。
 >
-> どちらも、旧来の列名を維持したい場合は `Property(...).HasColumnName(...)` で明示します。逆に「複数のプロパティで意図的に同じ列を共有したい」場合も同じ方法で指定でき、実測では両方の複合型に `HasColumnName("Street")` を指定すると `Street` 列 1 本だけが生成されました。
+> どちらも、旧来の列名を維持したい場合は `Property(...).HasColumnName(...)` で明示します。逆に「複数のプロパティで意図的に同じ列を共有したい」場合も同じ方法で指定できます。次の両方の複合型に `HasColumnName("Street")` を指定する確認例では、生成される `Street` 列は 1 本です。
 >
 > ```csharp
 > modelBuilder.Entity<Customer>(b =>
@@ -1020,7 +1020,7 @@ public enum Status { Pending, Shipped, Delivered }
 {"Note":"出荷済み","Status":1}
 ```
 
-実測でもこのとおりでした。文字列で保存したい場合は、変換を明示的に構成します。
+上の JSON は、このモデルでの確認結果です。文字列で保存したい場合は、変換を明示的に構成します。
 
 ```csharp
 modelBuilder.Entity<Order>().OwnsOne(x => x.Detail, b =>
@@ -1038,7 +1038,9 @@ modelBuilder.Entity<Order>().OwnsOne(x => x.Detail, b =>
 
 #### JSON コレクションに LINQ 演算子を使うときは追跡動作に注意する
 
-`ToJson()` でマップしたコレクションに対して、射影の中で `OrderBy` や `Take` などの LINQ 演算子を使う場合、`AsNoTrackingWithIdentityResolution()` は使えません。
+[EF Core 9 の破壊的変更](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-9.0/breaking-changes#some-notrackingwithidentityresolution-queries-are-now-prohibited-for-json-collections)では、JSON にマップしたエンティティのコレクションへ直接 LINQ 演算子を適用するクエリと、`AsNoTrackingWithIdentityResolution()` の組み合わせが禁止されています。次の `OrderBy` と `Take` を使う射影が該当します。
+
+この組み合わせは EF Core 8 までは許可されていましたが、ストリーミングされる JSON の入れ子の要素と、ID の解決に必要なキー値の扱いにより、誤った結果やデータの破損を招く可能性がありました。公式は、これを防ぐために EF Core 9 で制限を加えたと説明しています。
 
 ```csharp
 var blogs = await db.Blogs
@@ -1047,24 +1049,22 @@ var blogs = await db.Blogs
     .ToListAsync();
 ```
 
-このクエリは EF Core 9 以降、次の例外になります（実測）。
+次は、上のクエリで確認できている例外です。
 
 ```text
 InvalidOperationException: Projecting queryable operations on JSON collection is not
 supported for 'NoTrackingWithIdentityResolution'.
 ```
 
-EF Core 8 まではこの組み合わせが許可されていましたが、**エンティティが実体化される順序によっては黙って誤った結果やデータの破損を招く**可能性がありました。JSON はデータベースからストリーミングされ、入れ子の要素は親の実体化の一部として処理されるため、ID の解決に使うキー値をマテリアライザーへ確実に渡せないことが原因です。EF Core 9 で、危険な組み合わせは実行前に例外を投げるよう変更されました。
-
-同じクエリを `AsNoTracking()`（ID の解決なし）で実行した場合は成功します。
+公式は回避策として、通常の追跡クエリ、または ID の解決を行わない `AsNoTracking()` を案内しています。上の確認例でも `AsNoTracking()` での実行は成功しています。
 
 #### EF Core 10 の JSON 列は `json` 型になる（Azure SQL の破壊的変更）
 
-`OwnsMany(...).ToJson()` の所有コレクションや `string[]` のプリミティブコレクションについて、公式の変更履歴は、EF Core 9 までの SQL Server プロバイダーが**既定で** `nvarchar(max)` 列を使用していたと説明しています。今回の EF Core 10 の対照でも、互換性レベル 160 の構成ではこれらが `nvarchar(max)`、`UseAzureSql` の構成では `json` となりました。これは SQL Server 2025 上の現行 EF Core の構成対照であり、旧 EF Core の再実行ではありません。
+`OwnsMany(...).ToJson()` の所有コレクションや `string[]` のプリミティブコレクションについて、[公式の変更履歴](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-10.0/breaking-changes#sql-server-json-data-type-used-by-default-on-azure-sql-and-compatibility-level-170)は、EF Core 9 までの SQL Server プロバイダーが**既定で** `nvarchar(max)` 列を使用していたと説明しています。SQL Server 2025 上の EF Core 10 の確認例では、互換性レベル 160 の構成は `nvarchar(max)`、`UseAzureSql` の構成は `json` です。旧 EF Core の再実行ではなく、現行版の構成による違いの確認です。
 
-EF Core 10 では、`UseAzureSql` を使っているか、**互換性レベル 170 以上**を構成している場合に限り、SQL Server の新しい `json` データ型にマッピングされます。逆に言えば、この条件を満たさない環境では EF Core 10 でも従来どおり `nvarchar(max)` のままです。実際に SQL Server 2022（互換性レベル 160）に対して `ToJson()` を使った所有型を作成したところ、列は `nvarchar(max)` になり、`{"Author":"x","Tags":["t1","t2"]}` という JSON がそのまま格納されることを確認しています。
+EF Core 10 では、`UseAzureSql` を使うか、**互換性レベル 170 以上**を構成すると、既定で SQL Server の `json` データ型にマッピングされます。SQL Server 2022（互換性レベル 160）で `ToJson()` を使う所有型の確認例では、列は `nvarchar(max)` で、`{"Author":"x","Tags":["t1","t2"]}` の格納を確認できています。
 
-一方、Azure SQL Database に対する `UseAzureSql` の検証では、JSON 所有型 `Meta` とベクトルを持つ別の `Doc` モデルを使用しました。生成された DDL と `sys.columns` の両方で `Meta` は `json` 型となり、`Where(d => d.Meta.Author == "x")` も動作しました。前述の SQL Server 2022 の `Blog` / `Meta` モデルとは、プロパティ構成が異なります。
+次の Azure SQL Database / `UseAzureSql` の確認例は、JSON 所有型 `Meta` とベクトルを持つ別の `Doc` モデルによるものです。DDL と `sys.columns` の両方で `Meta` が `json` 型となり、`Where(d => d.Meta.Author == "x")` が実行できることを確認できています。前述の SQL Server 2022 のモデルとは、プロパティ構成が異なります。
 
 ```sql
 -- Azure SQL に UseAzureSql で作成したときの実際の DDL
@@ -1084,7 +1084,7 @@ CREATE TABLE [Docs] (
 [Tags] json
 ```
 
-列の型が変わると、**JSON 内のプロパティを条件にしたクエリの翻訳も変わります。** 複合型を `ToJson()` でマップした `Details` に対して `Where(b => b.Details.Viewers > 3)` を実行し、同じモデル・同じ LINQ で両方の環境の SQL を比較しました（実測）。
+次は、複合型を `ToJson()` でマップした `Details` に対する `Where(b => b.Details.Viewers > 3)` の確認例です。同じモデル・同じ LINQ でも、以下の構成では生成 SQL が異なることを確認できています。
 
 | 実行環境 | 生成された SQL |
 | --- | --- |
@@ -1094,9 +1094,9 @@ CREATE TABLE [Docs] (
 `json` 型では `JSON_VALUE()` の `RETURNING` 句が使われ、`CAST` が不要になります。**生成される SQL を文字列として比較するスナップショットテストを書いている場合は、接続先によって結果が変わる**点に注意してください。
 
 > [!WARNING]
-> EF Core 10 で `UseAzureSql` などの新しい JSON マッピングが有効になると、**規約による JSON 列の型が `nvarchar(max)` から `json` に変わる**マイグレーションが生成される場合があります。明示的に `HasColumnType("nvarchar(max)")` を指定した列まで無条件に変わるわけではありません。SQL Server 2025 の対照では、モデル差分から列型変更の SQL を生成して適用し、既存データの保持と、明示した列が `nvarchar(max)` のままであることを確認しました。実環境でも生成 SQL と既存データへの影響を確認してください。
+> EF Core 10 で `UseAzureSql` などの新しい JSON マッピングが有効になると、**規約による JSON 列の型が `nvarchar(max)` から `json` に変わる**マイグレーションが生成される場合があります。明示的に `HasColumnType("nvarchar(max)")` を指定した列まで無条件に変わるわけではありません。SQL Server 2025 の列型変更の確認例では、既存データの保持と、明示指定した列が `nvarchar(max)` のままであることを確認できています。実環境でも生成 SQL と既存データへの影響を確認してください。
 >
-> `json` 型と `nvarchar(max)` では動作に差があります。検証では、**JSON 列全体を投影して `Distinct()` する形**は `json` 型で比較不能のエラーになり、`nvarchar(max)` では成功しました。一方、`SelectMany` で JSON 配列の文字列要素を展開してから `Distinct()` する形は、両方で成功しました。JSON を含むクエリなら一律に `DISTINCT` が使えない、という意味ではありません。
+> [公式の変更履歴](https://learn.microsoft.com/ja-jp/ef/core/what-is-new/ef-core-10.0/breaking-changes#sql-server-json-data-type-used-by-default-on-azure-sql-and-compatibility-level-170)は、`json` 型への移行でクエリの挙動に差が生じ、JSON 配列に対する `DISTINCT` がサポートされないことを注意点に挙げています。今回の確認でも、**JSON 列全体を投影して `Distinct()` する形**は `json` 型で比較不能のエラーになっています。`nvarchar(max)` で動作するクエリを、そのまま使用できるとは考えないでください。
 >
 > 従来どおり `nvarchar(max)` を使いたい場合は、`UseAzureSql` ではなく `UseSqlServer` を使うか、次のように互換性レベルを明示的に 170 未満に構成します。
 >
@@ -1123,13 +1123,13 @@ CREATE TABLE [Docs] (
 >     .ToListAsync(cancellationToken);
 > ```
 >
-> `SqlVector<T>` は `Microsoft.Data.SqlTypes` 名前空間にあります。Azure SQL Database に対して実際に動かしたところ、`vector(3)` 型の列が作られ、`VectorDistance("cosine", ...)` が距離を返して並べ替えが機能することを確認しました。
+> `SqlVector<T>` は `Microsoft.Data.SqlTypes` 名前空間にあります。Azure SQL Database で次元数を 3 にした確認例では、`vector(3)` 列の作成と、`VectorDistance("cosine", ...)` による距離計算・並べ替えを確認できています。
 >
-> `VectorDistance` は 2 つのベクトルの距離を計算します。この例のように事前に候補を絞らず距離順で選ぶ場合は、候補行ごとの距離計算が必要です。ただし、関数を使うだけで常にテーブル全行を読むわけではありません。SQL Server 2025 の 3 行の対照では、主キー 1 件の条件を付けたクエリの実行計画はインデックスシークとなり、読み取りは 1 行でした。大規模な検索では実行計画を確認してください。`VECTOR_SEARCH()` やベクトルインデックスなど別の機能を採用する場合は、対応する SQL Server / EF Core のバージョンと実験的機能についての注意を確認してください。
+> `VectorDistance` は 2 つのベクトルの距離を計算します。この例のように事前に候補を絞らず距離順で選ぶ場合は、候補行ごとの距離計算が必要です。ただし、関数を使うだけで常にテーブル全行を読むわけではありません。SQL Server 2025 の 3 行から主キー 1 件に絞る確認例では、実行計画はインデックスシーク、読み取りは 1 行です。大規模な検索では実行計画を確認してください。`VECTOR_SEARCH()` やベクトルインデックスなど別の機能を採用する場合は、対応する SQL Server / EF Core のバージョンと実験的機能についての注意を確認してください。
 
 #### 日付と時刻の型は使い分ける
 
-.NET 6 で追加された `DateOnly` と `TimeOnly` は、データベースの日付型・時刻型と 1 対 1 で対応します。SQL Server 2022 と SQLite で `GenerateCreateScript()` を実行し、生成される列型を実測しました。
+.NET 6 で追加された `DateOnly` と `TimeOnly` は、日付だけ・時刻だけを表す型です。次は SQL Server 2022 と SQLite の `GenerateCreateScript()` で確認できている列型です。
 
 | .NET の型 | SQL Server の列型 | SQLite の列型 |
 | --- | --- | --- |
@@ -1182,7 +1182,7 @@ CREATE TABLE [Payments] (
 派生型だけが持つ列は自動的に NULL 許容になります。公式ドキュメントにも「TPH マッピングを使う場合、データベースの列は必要に応じて自動的に NULL 許容になる」と記載されています。
 
 > [!NOTE]
-> **識別子列に、モデルが知らない値が入っている場合に注意してください。** 既定の基底型クエリはその行も読み込み、対応する型を決められず例外になることがあります。テーブルの一部の型だけをモデル化する設計なら、`HasDiscriminator(...).IsComplete(false)` で不完全なマッピングであると指定できます。公式の継承ガイドが説明するように、基底型へのクエリにも識別子のフィルターが加わります。既知の `Cat` と未登録の `Dog` を含む表で実測すると、既定では例外、`IsComplete(false)` では既知の 1 行だけが返りました（EF Core 10.0.11、SQL Server 2022）。意図せず混入したデータを隠すためではなく、モデルの対象範囲を限定する場合に使ってください。
+> **識別子列に、モデルが知らない値が入っている場合に注意してください。** 既定の基底型クエリはその行も読み込み、対応する型を決められず例外になることがあります。テーブルの一部の型だけをモデル化する設計なら、`HasDiscriminator(...).IsComplete(false)` で不完全なマッピングであると指定できます。公式の継承ガイドが説明するように、基底型へのクエリにも識別子のフィルターが加わります。既知の `Cat` と未登録の `Dog` を含む表の確認例（EF Core 10.0.11 / SQL Server 2022）では、既定は例外、`IsComplete(false)` は既知の 1 行のみという結果です。意図せず混入したデータを隠すためではなく、モデルの対象範囲を限定する場合に使ってください。
 
 `UseTptMappingStrategy()` を指定すると **TPT (table-per-type)** になり、基底型と派生型がそれぞれのテーブルに分かれます。派生テーブルの主キーは基底テーブルへの外部キーを兼ねます。SQL Server での DDL は次のとおりです。
 
@@ -1227,7 +1227,7 @@ CREATE TABLE [CreditCardPayments] (
 | TPC | 具象型の数だけ | 結合が不要。公式は「TPT で起きがちな性能問題に対処するもの」と説明 |
 
 > [!WARNING]
-> 基底型だけを `DbSet` に登録し、派生型をモデルに含めないと、次の実行時エラーになります（実測で確認済み）。
+> [公式の継承マッピングの説明](https://learn.microsoft.com/ja-jp/ef/core/modeling/inheritance#entity-type-hierarchy-mapping)では、基底型の登録だけで派生型がすべてモデルに含まれるわけではありません。次は、**抽象基底型 `Payment` のみを登録し、具象派生型を含めない構成**で確認できているエラーです。具象の基底型だけを登録する場合まで、一律に失敗するという意味ではありません。
 >
 > ```text
 > The entity type 'Payment' cannot be instantiated because its corresponding CLR type is
@@ -1239,7 +1239,7 @@ CREATE TABLE [CreditCardPayments] (
 > 派生型ごとに `DbSet` を用意するか、`OnModelCreating` で `modelBuilder.Entity<CreditCardPayment>()` のように明示的に登録してください。
 
 > [!TIP]
-> EF Core の TPH では、識別子列は既定で `Discriminator` という名前のシャドウプロパティになり、値には **CLR のクラス名がそのまま入ります**（実測でも `CreditCardPayment` / `BankTransferPayment` が格納されました）。`HasDiscriminator<string>("payment_type").HasValue<CreditCardPayment>("card")` のように列名と値を変更でき、エンティティの実プロパティにマッピングすることもできます。
+> EF Core の TPH では、識別子列は既定で `Discriminator` という名前のシャドウプロパティになり、値には **CLR のクラス名が入ります**。このモデルの確認例でも `CreditCardPayment` / `BankTransferPayment` が格納されています。`HasDiscriminator<string>("payment_type").HasValue<CreditCardPayment>("card")` のように列名と値を変更でき、エンティティの実プロパティにマッピングすることもできます。
 
 派生型を絞り込むクエリでは、EF Core が識別子列の条件を自動的に付け加えます。SQL Server で実測した SQL は次のとおりです。
 
@@ -1252,7 +1252,7 @@ WHERE [p].[Discriminator] = N'CreditCardPayment'
 
 #### 識別子列には最大長が設定される
 
-TPH の識別子列は、EF Core 8 以降、**既知の識別子値をすべて収められる最大長**で作られます。それより前は `nvarchar(max)` でした。実際に生成される DDL を型名の長さを変えて比べると、次のようになりました（実測）。
+TPH の識別子列は、EF Core 8 以降、**既知の識別子値をすべて収められる最大長**で作られます。それより前は `nvarchar(max)` でした。次は、型名の長さを変えた場合の生成 DDL の確認例です。
 
 ```text
 識別子の値: Animal, Cat, Dog
