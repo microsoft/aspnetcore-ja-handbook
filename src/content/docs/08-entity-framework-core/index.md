@@ -1340,7 +1340,7 @@ Azure SQL Database の[公式のリソース制限](https://learn.microsoft.com/
 
 インスタンスが増えれば、**別々のインスタンスが同じ行をほぼ同時に更新する**可能性も上がります。これは EF Core 固有の問題ではなくデータベースの同時実行制御の話で、対処は[付録 EF Core 4](../appendix-efcore-04/index.md)で扱う楽観的同時実行制御（`IsRowVersion`）です。
 
-また、PaaS のデータベースは計画メンテナンスやフェールオーバーで短時間切断されることがあります。`EnableRetryOnFailure` による再試行の設定は[DI への登録と接続文字列](#di-への登録と接続文字列)で扱っています。
+また、PaaS のデータベースは計画メンテナンスやフェールオーバーで短時間切断されることがあります。`EnableRetryOnFailure` による再試行の設定は、[付録 EF Core 4「接続の回復性とトランザクションの併用」](../appendix-efcore-04/index.md#接続の回復性とトランザクションの併用)で扱っています。
 
 > [!TIP]
 > **さらに詳しく**
