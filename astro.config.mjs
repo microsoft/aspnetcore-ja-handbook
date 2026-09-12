@@ -85,11 +85,14 @@ export default defineConfig({
 			components: {
 				Sidebar: './src/components/Sidebar.astro',
 				SocialIcons: './src/components/PanelToggles.astro',
+				MobileMenuToggle: './src/components/MobileMenuToggle.astro',
 			},
 			customCss: [
 				'./src/styles/panel-toggle.css',
 				// 狭い画面で表がはみ出して横スクロールになるのを防ぐ。
 				'./src/styles/table-wrap.css',
+				// 印刷時にコードブロックが用紙の右端で切れるのを防ぐ。
+				'./src/styles/print.css',
 			],
 			head: [
 				{
