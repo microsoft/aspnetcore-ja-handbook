@@ -26,7 +26,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # Astro 7 は Node 22.12 以上が必須。20 ではインストールに失敗する。
+          # 間接依存の undici に合わせて Node 22.19.0 以上が必要。22 系の最新版を使う。
           node-version: 22
           cache: npm
 
