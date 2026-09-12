@@ -1,0 +1,10 @@
+@* ドキュメント外: テスト用に追加（テンプレートのレイアウトを最小化） *@
+<!DOCTYPE html>
+<html lang="ja">
+<head><meta charset="utf-8" /><title>OidcWeb</title></head>
+<body>
+    <nav><a asp-controller="Account" asp-action="Profile">プロフィール</a></nav>
+    <main>@RenderBody()</main>
+    @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>

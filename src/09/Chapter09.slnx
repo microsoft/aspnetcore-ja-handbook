@@ -1,0 +1,10 @@
+<Solution>
+  <Project Path="AuthApi.Tests/AuthApi.Tests.csproj" />
+  <Project Path="AuthApi/AuthApi.csproj" />
+  <Project Path="IdentityApi.Tests/IdentityApi.Tests.csproj" />
+  <Project Path="IdentityApi/IdentityApi.csproj" />
+  <Project Path="IdentityWeb.Tests/IdentityWeb.Tests.csproj" />
+  <Project Path="IdentityWeb/IdentityWeb.csproj" />
+  <Project Path="OidcWeb.Tests/OidcWeb.Tests.csproj" />
+  <Project Path="OidcWeb/OidcWeb.csproj" />
+</Solution>

@@ -1,0 +1,14 @@
+@* ドキュメント外: テスト用に追加（テンプレートのレイアウトを最小化） *@
+<!DOCTYPE html>
+<html lang="ja">
+<head><meta charset="utf-8" /><title>IdentityWeb</title></head>
+<body>
+    <nav>
+        <a asp-controller="Home" asp-action="Index" asp-area="">Home</a>
+        <a asp-controller="Home" asp-action="Privacy" asp-area="">Privacy</a>
+        <partial name="_LoginPartial" />
+    </nav>
+    <main>@RenderBody()</main>
+    @await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>

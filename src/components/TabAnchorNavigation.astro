@@ -1,0 +1,39 @@
+<script>
+	function revealTabTarget(hash: string): HTMLElement | null {
+		if (!hash || hash === '#') return null;
+		let id: string;
+		try {
+			id = decodeURIComponent(hash.slice(1));
+		} catch (error) {
+			if (!(error instanceof URIError)) throw error;
+			console.warn('Invalid heading anchor:', hash);
+			return null;
+		}
+		const target = document.getElementById(id);
+		const panel = target?.closest<HTMLElement>('[role="tabpanel"][hidden]');
+		if (panel) {
+			const tab = document.getElementById(panel.getAttribute('aria-labelledby') ?? '');
+			// Starlight のクリック処理に委ね、キーボード操作時と同じ選択状態を保つ。
+			tab?.click();
+		}
+		return target;
+	}
+
+	function followHash() {
+		const target = revealTabTarget(location.hash);
+		target?.scrollIntoView();
+	}
+
+	document.addEventListener('click', (event) => {
+		if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+		if (!(event.target instanceof Element)) return;
+		const link = event.target.closest<HTMLAnchorElement>('a[href]');
+		if (!link || link.getAttribute('role') === 'tab' || link.target === '_blank' || link.hasAttribute('download')) return;
+		const url = new URL(link.href);
+		if (url.origin !== location.origin || url.pathname !== location.pathname) return;
+		revealTabTarget(url.hash);
+	}, true);
+
+	window.addEventListener('hashchange', followHash);
+	customElements.whenDefined('starlight-tabs').then(followHash);
+</script>

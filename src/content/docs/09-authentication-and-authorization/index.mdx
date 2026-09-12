@@ -1,0 +1,1604 @@
+---
+title: "第9章：認証と認可"
+description: "ASP.NET Core 10 の認証と認可を、Identity、外部ログインと OpenID Connect、JWT Bearer 認証、ポリシーとロール、ミドルウェアの設定順序から学びます。"
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import TabAnchorNavigation from '../../../components/TabAnchorNavigation.astro';
+
+<TabAnchorNavigation />
+
+この章では、**「誰からのリクエストか」を確かめる認証**と、**「その操作を許可してよいか」を判断する認可**を扱います。.NET 10 / ASP.NET Core 10 を前提に、MVC Web アプリケーションと Web API の両方で実装を確認します。
+
+> [!NOTE]
+> **「認可」と「承認」について**
+>
+> IT 業界で一般に「認可」と呼ぶ **Authorization** は、Microsoft Learn の日本語ドキュメントでは「承認」と表記されることがあります。本章では「認可」に統一します。公式ドキュメントの「ポリシーベースの承認」なども、本章の認可と同じ概念です。申請を人が承認する業務フローの意味ではありません。
+
+---
+
+## 目次
+
+1. [認証と認可とは](#1-認証と認可とは)
+   - [認証結果とクレーム](#認証結果とクレーム)
+   - [認証方式とアプリケーションの役割](#認証方式とアプリケーションの役割)
+2. [ASP.NET Core Identity 入門](#2-aspnet-core-identity-入門)
+   - [Identity が提供する機能](#identity-が提供する機能)
+   - [MVC プロジェクトを作成する](#mvc-プロジェクトを作成する)
+   - [サービス登録とログインを確認する](#サービス登録とログインを確認する)
+   - [MVC の画面に認可を設定する](#mvc-の画面に認可を設定する)
+   - [Minimal API プロジェクトを作成する](#minimal-api-プロジェクトを作成する)
+   - [Minimal API の登録とログインを確認する](#minimal-api-の登録とログインを確認する)
+3. [外部ログインと OAuth / OpenID Connect](#3-外部ログインと-oauth--openid-connect)
+   - [OAuth と OIDC の違い](#oauth-と-oidc-の違い)
+   - [OIDC を使う MVC アプリケーション](#oidc-を使う-mvc-アプリケーション)
+   - [ログアウトと Identity との使い分け](#ログアウトと-identity-との使い分け)
+4. [JWT Bearer 認証の導入](#4-jwt-bearer-認証の導入)
+   - [API が検証するもの](#api-が検証するもの)
+   - [JWT を受け取る API を実装する](#jwt-を受け取る-api-を実装する)
+   - [開発用トークンで動作確認する](#開発用トークンで動作確認する)
+5. [ポリシーベース認可とロールベース認可](#5-ポリシーベース認可とロールベース認可)
+   - [ポリシーとロールを適用する](#ポリシーとロールを適用する)
+   - [要件とハンドラーで条件を拡張する](#要件とハンドラーで条件を拡張する)
+   - [リソース単位の認可](#リソース単位の認可)
+6. [認証・認可ミドルウェアの設定](#6-認証認可ミドルウェアの設定)
+   - [サービス登録と実行順序](#サービス登録と実行順序)
+   - [認証スキームと既定のポリシー](#認証スキームと既定のポリシー)
+   - [本番環境への移行と確認項目](#本番環境への移行と確認項目)
+7. [参考ドキュメント](#7-参考ドキュメント)
+
+---
+
+## 1. 認証と認可とは
+
+**認証 (Authentication)** は、資格情報や認証チケットなどを検証して、アクセスしている主体を識別する処理です。主体は人に限らず、バッチなどのアプリケーションの場合もあります。**認可 (Authorization)** は、認証結果などに基づき、リソースへのアクセスや操作を許可するか判断する処理です。
+
+例えば、経費システムへのログインに成功した社員でも、全社員の経費を閲覧できるとは限りません。
+
+| 処理 | 問い | 例 |
+| --- | --- | --- |
+| 認証 | 誰がアクセスしているか | パスワードやトークンを検証して社員を識別する |
+| 認可 | 何をしてよいか | 本人の申請だけを閲覧でき、経理担当者は全体を閲覧できる |
+
+```mermaid
+flowchart LR
+    accTitle: 認証と認可の役割
+    accDescr: API は資格情報を検証し、未認証なら 401、認証済みでも権限不足なら 403 を返す。認可を満たしたリクエストだけを処理する。
+    Request["保護された API へのリクエスト"] --> Authentication{"認証できたか"}
+    Authentication -->|いいえ| Unauthorized["401 Unauthorized"]
+    Authentication -->|はい| Authorization{"認可条件を満たすか"}
+    Authorization -->|いいえ| Forbidden["403 Forbidden"]
+    Authorization -->|はい| Endpoint["エンドポイントを実行"]
+```
+
+この図は API の典型的な応答です。ブラウザー向け Web 画面では、未認証のアクセスに対してログイン画面や外部の認証サービスへリダイレクトする場合があります。
+
+### 認証結果とクレーム
+
+ASP.NET Core は、認証した主体を `HttpContext.User` の **`ClaimsPrincipal`** で表します。**クレーム (Claim)** は、主体についての情報を表す種類と値の組です。例えば、ユーザー ID、名前、ロール、許可された操作などがあります。
+
+```csharp
+var isAuthenticated = HttpContext.User.Identity?.IsAuthenticated == true;
+var displayName = HttpContext.User.Identity?.Name;
+var isAdministrator = HttpContext.User.IsInRole("Admin");
+```
+
+この断片は MVC コントローラー内での参照例です。`Name` が `null` だから未認証という意味ではありません。表示名のクレームがない場合や、名前に使うクレームの設定が異なる場合もあります。
+
+> [!WARNING]
+> リクエストの JSON に `"role": "Admin"` と書かれていても、管理者とは判断できません。認可には、**検証済みの認証結果やサーバー側の信頼できるデータ**を使います。JWT の内容をデコードするだけでも不十分です。
+
+### 認証方式とアプリケーションの役割
+
+| 用途 | 主な構成 | アプリケーションの役割 |
+| --- | --- | --- |
+| 自分のアプリでアカウントを管理する MVC サイト | ASP.NET Core Identity + Cookie | ユーザー・パスワードの管理とログイン |
+| 外部の認証サービスでログインする MVC サイト | OpenID Connect + Cookie | 外部ログインの開始と結果の検証、アプリ内のログイン状態の維持 |
+| クライアントから呼ばれる Web API | JWT Bearer | アクセストークンを検証し、操作を認可する |
+
+**Identity、OpenID Connect、JWT は、同じ層の代替製品ではありません。** Identity はアカウント管理の仕組み、OpenID Connect は認証プロトコル、JWT はトークン形式です。外部ログインと Identity を組み合わせることもできます。
+
+本章では設定の混在を避けるため、Identity の MVC 版 `IdentityWeb` と Minimal API 版 `IdentityApi`、外部認証の `OidcWeb`、JWT 検証の `AuthApi` を **独立したプロジェクト**として使用します。Identity 入門は、学びたい実装方式をタブで選べます。各作成コマンドは、別のサンプルのフォルダー内ではなく、作業用の親フォルダーで実行してください。第5章の[アプリ設定](../05-configuration/index.md)、第6章の[DI](../06-dependency-injection/index.md)、第8章の[EF Core](../08-entity-framework-core/index.md)も前提になります。
+
+## 2. ASP.NET Core Identity 入門
+
+### Identity が提供する機能
+
+ASP.NET Core Identity は、ユーザー、パスワードハッシュ、ロール、クレーム、外部ログインとの関連付け、メール確認、パスワードリセット、二要素認証などを扱います。
+
+Microsoft Entra ID などの Microsoft ID プラットフォームとは別の仕組みです。アプリ内でアカウントを管理するのか、外部サービスに認証を委ねるのかを先に決めます。
+
+| 型・サービス | 主な役割 |
+| --- | --- |
+| `IdentityUser` | ユーザー情報の標準モデル |
+| `UserManager<TUser>` | ユーザー作成、パスワードの管理、クレームやロールの割り当て |
+| `SignInManager<TUser>` | パスワードや外部ログインを使ったサインイン、サインアウト |
+| `RoleManager<TRole>` | ロールの作成・管理 |
+| `IdentityDbContext<TUser>` | Identity のデータを EF Core で永続化するためのコンテキスト |
+
+パスワードは平文で保存せず、`UserManager` などを通して扱います。アカウント用テーブルへ直接パスワードを書き込む処理は作りません。
+
+> [!NOTE]
+> Python / Django の `django.contrib.auth` にもユーザー、パスワード、権限、グループの管理があります。ASP.NET Core では Identity の管理サービスと、Cookie などの認証ハンドラー、認可ポリシーの役割を分けて理解すると見通しがよくなります。
+
+以下のタブで **MVC** と **Minimal API** を切り替えられます。MVC 版は画面操作、Minimal API 版は HTTP リクエストで確認します。どちらも SQLite にアカウントを保存しますが、プロジェクトとデータベースは別です。一方で作成したユーザーが、もう一方へ自動的に共有されるわけではありません。
+
+<Tabs>
+<TabItem label="MVC">
+
+### MVC プロジェクトを作成する
+
+.NET 10 SDK で次を実行します。`Individual` は、アプリケーションが個別のユーザーアカウントを管理するテンプレートの選択です。
+
+```bash
+dotnet new mvc --name IdentityWeb --framework net10.0 --auth Individual
+cd IdentityWeb
+```
+
+#### `--auth Individual` の有無による生成ファイルの違い
+
+上のコマンドから `--auth Individual` を省略すると、既定の `--auth None`（認証なし）で MVC プロジェクトが作成されます。`Individual` を指定した場合は、通常の MVC の構成に、Identity とユーザー情報の保存先を組み込むファイル・設定が追加されます。
+
+以下は .NET 10 SDK の MVC テンプレートを、ほかのオプションを変えずに比較した主な違いです。`--use-local-db` は指定せず、既定の SQLite を使う場合を示しています。
+
+| ファイル・フォルダー | `--auth` を省略 | `--auth Individual` を指定 |
+| --- | --- | --- |
+| `IdentityWeb.csproj` | Identity / EF Core の追加参照なし | Identity UI、Identity 用 EF Core ストア、SQLite、EF Core ツールなどのパッケージ参照と、開発用シークレットを識別する `UserSecretsId` を追加 |
+| `Program.cs` | MVC のサービス登録とルーティングなど | `AddDbContext<ApplicationDbContext>`、`AddDefaultIdentity`、`MapRazorPages`、開発用の DB エラー診断などを追加 |
+| `Data/ApplicationDbContext.cs` | 生成されない | `IdentityDbContext` を継承した、ユーザー情報などを保存するコンテキストを生成 |
+| `Data/Migrations/` | 生成されない | Identity のテーブルを作る初期マイグレーションと、モデルのスナップショットを生成 |
+| `appsettings.json` | Identity 用の接続文字列なし | `ConnectionStrings:DefaultConnection` に SQLite の接続文字列を追加 |
+| `app.db` | 生成されない | SQLite のデータベースファイルを生成 |
+| `Views/Shared/_LoginPartial.cshtml` | 生成されない | 登録・ログインのリンクや、ログイン後のユーザー名・ログアウトを表示する部分ビューを生成 |
+| `Views/Shared/_Layout.cshtml` | 通常のナビゲーションを表示 | `_LoginPartial` を読み込む記述を追加 |
+| `Areas/Identity/Pages/_ViewStart.cshtml` | 生成されない | Identity の画面で MVC 側の共通レイアウトを使う設定を生成 |
+
+`Controllers/HomeController.cs`、`Models/ErrorViewModel.cs`、`Views/Home/` など、通常の MVC のファイルはどちらにも生成されます。`--auth Individual` は、MVC を別の画面方式へ置き換えるオプションではありません。
+
+> [!NOTE]
+> MVC テンプレートの **Identity の既定 UI は、Razor Pages ベースのライブラリ**から提供されます。そのため、登録・ログイン画面を開けても、対応する `Register.cshtml` や `Login.cshtml` がプロジェクト内に生成されるわけではありません。生成される `_LoginPartial.cshtml` はナビゲーション用であり、ログインフォーム本体ではありません。画面本体を編集したい場合は、必要なページをスキャフォールディングしてプロジェクトに取り込みます。MVC アプリケーションの業務画面まで Razor Pages に変更するわけではありません。本ガイドではその既定 UI を利用し、Razor Pages 自体の実装方法は扱いません。
+
+#### ローカルツールを準備して起動する
+
+続けて、`IdentityWeb` フォルダー内で次を実行します。
+
+```bash
+dotnet new tool-manifest
+dotnet tool install dotnet-ef --version "10.0.*"
+dotnet ef database update
+dotnet run --launch-profile https
+```
+
+**`dotnet new tool-manifest` は、プロジェクトで使う .NET ローカルツールの一覧とバージョンを管理する「ツールマニフェスト」を作成するコマンド**です。ツールとは、ここでは EF Core のデータベース更新などを行う開発用のコマンドラインプログラムです。MVC プロジェクトやデータベースを作成するコマンドではなく、この時点ではツール自体もインストールされません。
+
+マニフェストのファイル名は `dotnet-tools.json` です。本章の検証に使用した .NET 10.0.400 SDK ではプロジェクト直下に生成されました。SDK / テンプレートのバージョンによっては、Microsoft Learn の手順のように `.config/dotnet-tools.json` に生成されます。いずれの場合も、生成されたマニフェストでツールを管理します。
+
+| コマンド | 役割 |
+| --- | --- |
+| `dotnet new tool-manifest` | ツールが未登録のマニフェストを作成する |
+| `dotnet tool install dotnet-ef --version "10.0.*"` | EF Core の CLI ツールをローカルツールとしてインストールし、解決された具体的なバージョンをマニフェストに記録する |
+| `dotnet ef database update` | インストールしたツールを使い、`Data/Migrations/` のマイグレーションを接続先のデータベースに適用する |
+
+`dotnet tool install` に `--global` を付けないため、この例ではプロジェクト単位のローカルツールとして管理されます。`IdentityWeb` フォルダーと、その配下から `dotnet ef` を実行できます。`IdentityWeb.csproj` の `PackageReference` はアプリケーションが参照するライブラリの管理であり、ツールマニフェストとは役割が異なります。
+
+> [!NOTE]
+> マニフェストをソース管理で共有すると、ほかの開発者も同じバージョンのツールを使えます。共有済みのプロジェクトを取得した場合は、マニフェストの新規作成やツールの追加を繰り返す代わりに、プロジェクトのフォルダーで `dotnet tool restore` を実行して、記録されたツールを復元します。
+
+`dotnet ef database update` で適用済みのマイグレーションがあれば、再適用はされません。HTTPS 開発証明書の設定がまだの場合は、[第1章](../01-setup-dev-env/index.md)の手順を先に行ってください。
+
+### サービス登録とログインを確認する
+
+まず、`--auth Individual` を指定して生成された直後の `Program.cs` を確認します。以下はテンプレートの処理をそのまま示したものです。読みやすいようにコメントを省略し、改行を整えています。
+
+```csharp
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
+using IdentityWeb.Data;
+
+var builder = WebApplication.CreateBuilder(args);
+
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseSqlite(connectionString));
+builder.Services.AddDatabaseDeveloperPageExceptionFilter();
+
+builder.Services.AddDefaultIdentity<IdentityUser>(options =>
+    options.SignIn.RequireConfirmedAccount = true)
+    .AddEntityFrameworkStores<ApplicationDbContext>();
+builder.Services.AddControllersWithViews();
+
+var app = builder.Build();
+
+if (app.Environment.IsDevelopment())
+{
+    app.UseMigrationsEndPoint();
+}
+else
+{
+    app.UseExceptionHandler("/Home/Error");
+    app.UseHsts();
+}
+
+app.UseHttpsRedirection();
+app.UseRouting();
+app.UseAuthorization();
+
+app.MapStaticAssets();
+
+app.MapControllerRoute(
+    name: "default",
+    pattern: "{controller=Home}/{action=Index}/{id?}")
+    .WithStaticAssets();
+
+app.MapRazorPages()
+    .WithStaticAssets();
+
+app.Run();
+```
+
+前半の `builder.Services` は、アプリケーションで使うサービスを DI コンテナーに登録する部分です。`builder.Build()` より後では、リクエストの処理順序や URL と処理の対応を設定し、最後の `app.Run()` でアプリケーションを起動します。
+
+| 処理 | この段階での役割 |
+| --- | --- |
+| `GetConnectionString` と `AddDbContext` | 設定から `DefaultConnection` を読み込み、`ApplicationDbContext` が SQLite を使うように登録する |
+| `AddDefaultIdentity<IdentityUser>` | ユーザー管理、既定の Identity UI、Cookie による認証などを登録する。ここでは既に、確認済みアカウントでのログインを要求している |
+| `AddEntityFrameworkStores<ApplicationDbContext>` | Identity のユーザー情報などを、指定した EF Core のコンテキストで保存・取得するように設定する |
+| `AddDatabaseDeveloperPageExceptionFilter` と `UseMigrationsEndPoint` | 開発時の DB 関連エラーの診断やマイグレーション適用を支援する。本番向けの分岐では、代わりに例外処理と HSTS を設定する |
+| `UseHttpsRedirection`、`UseRouting`、`UseAuthorization` | HTTPS へ誘導し、URL に対応する処理を選び、その処理に設定された認可条件を評価する |
+| `AddControllersWithViews` と `MapControllerRoute`、`MapRazorPages` | MVC のコントローラーとビューを利用可能にし、通常の MVC 画面と Identity の Razor Pages の URL をそれぞれ登録する |
+| `MapStaticAssets` と `WithStaticAssets` | CSS や JavaScript などの静的ファイルの配信と、各エンドポイントとの連携を設定する |
+
+> [!NOTE]
+> このテンプレートでは `UseAuthentication()` が明記されていませんが、`WebApplication` が登録済みの認証サービスに応じて認証ミドルウェアを自動追加します。認証処理が省略されているわけではありません。明示的に順序を指定する方法は、[第6節](#6-認証認可ミドルウェアの設定)で説明します。
+
+このように、**生成直後から Identity を使うための基本設定はそろっています**。ここから、パスワードの長さやロックアウトの条件を明示し、ロール管理も使えるように変更してみましょう。
+
+上の `AddDefaultIdentity<IdentityUser>(...)` から `.AddEntityFrameworkStores<ApplicationDbContext>();` までの登録を、次のコードに置き換えます。既存の登録に追加するのではなく、該当部分だけを置き換え、ほかの設定は残してください。
+
+```csharp
+builder.Services.AddDefaultIdentity<IdentityUser>(options =>
+{
+    options.SignIn.RequireConfirmedAccount = true;
+    options.Password.RequiredLength = 12;
+    options.Lockout.MaxFailedAccessAttempts = 5;
+    options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(5);
+})
+    .AddRoles<IdentityRole>()
+    .AddEntityFrameworkStores<ApplicationDbContext>();
+```
+
+確認済みアカウントでのログインという条件は維持し、パスワードを 12 文字以上に変更しています。ロックアウトの「5 回の失敗で 5 分間」は既定値ですが、ここでは設定箇所がわかるように明示しました。パスワードの数字・大文字・小文字・記号に関する既定の要件はそのまま残ります。`AddRoles<IdentityRole>()` はロール管理のサービスを追加するもので、この呼び出しだけで `Admin` などのロールが作成されるわけではありません。
+
+> [!WARNING]
+> ロックアウト設定だけで、すべてのログイン処理が失敗回数を加算するわけではありません。自作する場合や既定 UI をスキャフォールディングして変更する場合は、`PasswordSignInAsync` の `lockoutOnFailure: true` など、呼び出し側の動作も確認してください。大量試行への対策はレート制限などと組み合わせます。
+
+変更を保存したら、起動中のアプリケーションを `Ctrl+C` で停止し、`dotnet run --launch-profile https` で起動し直します。起動ログに表示された HTTPS URL をブラウザーで開きます。初期画面の右上には **Register** と **Login** が表示されています。以下の画面は、本節のコマンドで作成した MVC テンプレートを使った例です。
+
+![HTTPS URL を開いた初期画面。右上に Register と Login が表示されている](./images/09-01_identity-home.png)
+
+#### 1. ユーザーを登録する
+
+右上の **Register** を選択します。**Email** にテスト用メールアドレス、**Password** と **Confirm Password** に同じパスワードを入力し、フォームの **Register** ボタンを押します。パスワードは、前述の設定に合わせて 12 文字以上とし、大文字・小文字・数字・記号を含めてください。
+
+画面例ではメールアドレスに `reader@example.test` を使っています。パスワードは画面上で伏せられます。
+
+![Register 画面。テスト用メールアドレスと、伏せ字のパスワード・確認用パスワードを入力した状態](./images/09-02_identity-register.png)
+
+登録に成功すると **Register confirmation** 画面に移動します。メール確認リンクを選択する前に、データベースに何が保存されたかを確認してみましょう。
+
+![Register confirmation 画面。開発用の Click here to confirm your account リンクが表示されている](./images/09-03_identity-register-confirmation.png)
+
+#### 2. SQLite に保存されたユーザーを確認する
+
+ユーザー情報は、プロジェクトの `app.db` にある **`AspNetUsers` テーブル**へ保存されます。これは、前述の `ApplicationDbContext` と `AddEntityFrameworkStores` の設定により、Identity が EF Core を通して書き込んだものです。
+
+ここでは SQLite のコマンドラインツール `sqlite3` を使います。アプリケーションは起動したまま、別のターミナルで `IdentityWeb.csproj` と `app.db` があるフォルダーへ移動し、次を実行します。`-readonly` は、確認中にデータを変更しないための読み取り専用指定です。
+
+```bash
+sqlite3 -readonly app.db
+```
+
+> [!NOTE]
+> `sqlite3` コマンドは、.NET SDK や EF Core の NuGet パッケージとは別のツールです。コマンドが見つからない場合は、[SQLite のダウンロードページ](https://sqlite.org/download.html)から OS に合った `sqlite-tools` を入手し、`sqlite3`（Windows では `sqlite3.exe`）を実行できるようにしてください。
+
+`sqlite>` のプロンプトが表示されたら、まず列名と表形式の表示を有効にします。以下のドットで始まるコマンドは SQL ではなく、SQLite CLI の表示設定です。
+
+```text
+.headers on
+.mode column
+```
+
+続けて、登録したメールアドレスでユーザーを検索します。別のメールアドレスを使った場合は、`WHERE` の値を置き換えてください。
+
+```sql
+SELECT UserName, NormalizedUserName, EmailConfirmed,
+       CASE WHEN PasswordHash IS NOT NULL AND length(PasswordHash) > 0
+            THEN 1 ELSE 0 END AS HasPasswordHash
+FROM AspNetUsers
+WHERE Email = 'reader@example.test';
+```
+
+本節と同じ登録フォームからアカウントを作成し、メール確認前に実行した結果は次のとおりです。
+
+```text
+UserName             NormalizedUserName   EmailConfirmed  HasPasswordHash
+-------------------  -------------------  --------------  ---------------
+reader@example.test  READER@EXAMPLE.TEST  0               1
+```
+
+| 列・表示項目 | 読み取り方 |
+| --- | --- |
+| `UserName` | このテンプレートでは、登録したメールアドレスがユーザー名にも使われる。メールアドレス自体は `Email` 列にも保存される |
+| `NormalizedUserName` | 検索用に正規化されたユーザー名。この例では大文字になっている |
+| `EmailConfirmed` | メール確認の状態。`0` は未確認、`1` は確認済みを表す |
+| `HasPasswordHash` | この SQL で計算した表示用の名前であり、実際のテーブルの列ではない。`1` は `PasswordHash` に空でない値が保存されていることを示す |
+
+**アカウントの登録とメール確認は別の処理です。** この時点で既にユーザーの行は作成されていますが、`EmailConfirmed` は `0` のままです。前述の `RequireConfirmedAccount = true` により、この未確認アカウントでのログインはまだ許可されません。
+
+> [!WARNING]
+> `PasswordHash` に保存されるのは、入力したパスワードの平文ではなくハッシュです。ここではハッシュ自体を表示せず、保存の有無だけを確認しています。`SELECT *` などで認証関連の値をまとめて表示したり、実際のユーザーのデータベースやハッシュを記事・ログ・リポジトリで公開したりしないでください。また、確認のために `EmailConfirmed` や `PasswordHash` を SQL で直接書き換えず、Identity の画面や API を通して操作してください。
+
+#### 3. アカウントを確認する
+
+ブラウザーの **Register confirmation** 画面に戻ります。メール送信をまだ実装していない開発テンプレートでは、画面内の **Click here to confirm your account** リンクを選択してアカウントを確認できます。この例では実際のメールは送信されません。
+
+リンクを選択し、**Confirm email** 画面に **Thank you for confirming your email.** と表示されれば確認完了です。この時点ではまだログインしておらず、右上には **Register** と **Login** が表示されています。
+
+![Confirm email 画面。メールアドレスの確認が完了したメッセージが表示されている](./images/09-04_identity-confirm-email.png)
+
+SQLite のターミナルで、先ほどの `SELECT` 文をもう一度実行すると、同じユーザーの `EmailConfirmed` が `0` から `1` に変わったことを確認できます。
+
+```text
+UserName             NormalizedUserName   EmailConfirmed  HasPasswordHash
+-------------------  -------------------  --------------  ---------------
+reader@example.test  READER@EXAMPLE.TEST  1               1
+```
+
+確認が終わったら、SQLite のプロンプトで `.quit` を入力して終了します。
+
+#### 4. ログインする
+
+右上の **Login** を選択します。登録時のメールアドレスとパスワードを入力し、フォームの **Log in** ボタンを押します。
+
+![Log in 画面。登録済みのメールアドレスと伏せ字のパスワードを入力した状態](./images/09-05_identity-login.png)
+
+ログインに成功するとホーム画面に戻り、右上が **Hello reader@example.test!** と **Logout** に変わります。この表示から、ログイン済みの状態になったことを確認できます。
+
+![ログイン後のホーム画面。右上に Hello reader@example.test! と Logout が表示されている](./images/09-06_identity-signed-in.png)
+
+#### 5. ログアウトする
+
+右上の **Logout** を選択します。ユーザー名が消え、再び **Register** と **Login** が表示されれば、ログアウトできています。
+
+![ログアウト後のホーム画面。ユーザー名と Logout が消え、Register と Login に戻っている](./images/09-07_identity-signed-out.png)
+
+本番環境では実際にメールを送る実装を用意し、確認リンクを画面に直接表示する開発用の動作は使いません。確認済みという条件だけを無効にして公開するのではなく、メール確認・再送・パスワードリセットまで設計します。
+
+### MVC の画面に認可を設定する
+
+ここまでで登録・ログイン・ログアウトはできますが、**生成直後の `HomeController` には認可条件が設定されていません**。ホームや Privacy は、ログインしていなくても URL を直接開けます。つまり、ここまでの手順では、認証済みユーザーだけが使える **MVC の業務画面**はまだ用意していません。Identity のアカウント管理画面など、ライブラリ側で保護されている画面とは区別してください。
+
+Identity は「ユーザーの管理と認証」を提供しますが、「どの業務画面を誰に公開するか」はアプリケーション側で決めます。メニューを非表示にするだけでなく、サーバー側でアクセスを拒否する認可の設定が必要です。
+
+#### アクション単位で `[Authorize]` を指定する
+
+**認可フィルター (Authorization Filter)** は、アクションを実行する前にアクセス条件を評価し、許可されないリクエストをそこで止める仕組みです。MVC には、そのための組み込みの `AuthorizeFilter` があります。
+
+画面のアクセス条件を宣言する際は、通常 **`[Authorize]` 属性**を使います。属性そのものは `AuthorizeFilter` クラスとは別で、この章のようなエンドポイントルーティングでは、その属性を認可メタデータとして認可ミドルウェアが評価します。アクション内で毎回 `User.Identity.IsAuthenticated` を調べる処理を書く必要はありません。
+
+引数なしの `[Authorize]` は既定の認可ポリシーを使い、この構成では「認証済みユーザーであること」を要求します。まず、`Controllers/HomeController.cs` の `Privacy` アクションを次のように変更してみましょう。
+
+```csharp
+[Microsoft.AspNetCore.Authorization.Authorize]
+public IActionResult Privacy() => View();
+```
+
+アプリケーションを再起動して未ログインの状態で `/Home/Privacy` を開くと、Identity のログイン画面へリダイレクトされます。ログイン後は Privacy を表示できます。`Index` には指定していないので、ホームは引き続き未ログインでも表示できます。ロールや業務上の権限を要求する方法は、[第5節](#5-ポリシーベース認可とロールベース認可)で扱います。
+
+#### コントローラー単位でまとめて指定する
+
+同じコントローラーの画面をまとめて保護したい場合は、クラスに `[Authorize]` を付けます。各アクションに繰り返し書く必要はありません。公開したいアクションだけに **`[AllowAnonymous]`** を付ければ、未ログインでのアクセスを許可できます。
+
+例えば、`HomeController.cs` 全体を次のように置き換えます。`Privacy` の個別の `[Authorize]` は不要になります。ホームとエラー画面は公開し、それ以外のアクションにはクラスの認可条件を適用します。
+
+```csharp
+using System.Diagnostics;
+using IdentityWeb.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+
+namespace IdentityWeb.Controllers;
+
+[Authorize]
+public class HomeController : Controller
+{
+    [AllowAnonymous]
+    public IActionResult Index() => View();
+
+    public IActionResult Privacy() => View();
+
+    [AllowAnonymous]
+    [ResponseCache(Duration = 0, Location = ResponseCacheLocation.None, NoStore = true)]
+    public IActionResult Error()
+    {
+        return View(new ErrorViewModel
+        {
+            RequestId = Activity.Current?.Id ?? HttpContext.TraceIdentifier
+        });
+    }
+}
+```
+
+これなら、このクラスに新しいアクションを追加した場合も、原則としてログインが必要になります。ただし、別のコントローラーには適用されません。
+
+> [!WARNING]
+> `[AllowAnonymous]` は、そのアクションの認可をスキップします。同じ場所に `[Authorize]` を併記しても認可は復活しません。特にコントローラー全体へ `[AllowAnonymous]` を付けると、その配下のアクションに `[Authorize]` を付けても保護できないため、公開するアクションだけに限定してください。
+
+#### グローバルな `AuthorizeFilter` を登録する
+
+**MVC 全体を原則ログイン必須にする**場合は、`Program.cs` に認可フィルターを一括登録できます。コントローラーごとの指定も不要になるので、付け忘れを減らせます。
+
+この方法を試す場合は、上の `HomeController` のクラスから `[Authorize]` を外し、`Index` と `Error` の `[AllowAnonymous]` は残します。`Program.cs` の先頭に次の `using` を追加してください。
+
+```csharp
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc.Authorization;
+```
+
+続けて、既存の `builder.Services.AddControllersWithViews();` を次に置き換えます。`AddDefaultIdentity` などの登録はそのまま残します。
+
+```csharp
+builder.Services.AddControllersWithViews(options =>
+{
+    var policy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+    options.Filters.Add(new AuthorizeFilter(policy));
+});
+```
+
+`RequireAuthenticatedUser()` で認証済みユーザーを要求するポリシーを作り、`options.Filters` に登録しています。これで `Privacy` や、今後追加する別のコントローラーのアクションも、属性なしで保護されます。`[AllowAnonymous]` を付けたホームとエラー画面は公開されたままです。
+
+このグローバルフィルターは MVC / Razor Pages のフィルターパイプラインに適用されます。Identity の既定のログイン・登録ページには匿名アクセスの指定があるため、未ログインでも利用できます。一方、Minimal API や静的ファイルなど、**MVC の外にある処理をこのフィルターだけで保護することはできません**。
+
+#### アプリケーション全体の既定ルールには `FallbackPolicy` を使う
+
+MVC だけでなく、Minimal API なども含めて「明示的な指定がない処理はログイン必須」にしたい場合、Microsoft Learn は **`FallbackPolicy`（フォールバックポリシー）**を使う方法を推奨しています。グローバルな `AuthorizeFilter` とは別の選択肢です。次は、そのフィルター登録の代わりに使う設定です。
+
+`Program.cs` の `AddControllersWithViews` を引数なしの登録に戻し、`builder.Build()` より前に次を記述します。`using Microsoft.AspNetCore.Authorization;` は残し、`HomeController` の `Index` と `Error` の `[AllowAnonymous]` も残します。クラスの `[Authorize]` は不要です。
+
+```csharp
+builder.Services.AddControllersWithViews();
+builder.Services.AddAuthorization(options =>
+{
+    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+});
+```
+
+この構成では、テンプレートの `MapStaticAssets()` で配信する CSS や JavaScript も、匿名アクセスを明示しないと保護対象になります。ログイン画面でも利用する公開ファイルを配信できるように、既存の `app.MapStaticAssets();` を次に置き換えてください。
+
+```csharp
+app.MapStaticAssets().Add(endpointBuilder =>
+    endpointBuilder.Metadata.Add(new AllowAnonymousAttribute()));
+```
+
+これは静的ファイルのエンドポイントを公開する指定です。`wwwroot` に機密ファイルを置かないでください。また、自作のログイン画面やエラー画面など、未ログインでも到達する必要がある処理には `[AllowAnonymous]` を指定します。
+
+`FallbackPolicy` は、明示的な認可ポリシーなどがない場合に使われます。名前付きポリシーなどに認証済みという条件を自動加算するものではありません。ポリシーの優先関係とミドルウェアの順序は、[第6節](#6-認証認可ミドルウェアの設定)で説明します。
+
+| 指定方法 | 主な適用範囲 | 向いている場面 |
+| --- | --- | --- |
+| アクションの `[Authorize]` | そのアクション | 公開画面が多く、一部だけ保護したい |
+| コントローラーの `[Authorize]` | そのクラスのアクション | 機能単位でまとめて保護したい |
+| グローバルな `AuthorizeFilter` | MVC / Razor Pages | MVC 側で一括してログインを要求したい |
+| `FallbackPolicy` | 認可ミドルウェアを通り、明示的な認可指定がないリクエスト | アプリケーション全体を原則保護し、公開箇所だけ例外にしたい |
+
+各方法を試すときは、変更後にアプリケーションを再起動し、ログアウトした状態でホームは表示でき、`/Home/Privacy` はログイン画面へ遷移することを確認します。その後、ログインすると Privacy を表示できることも確認してください。**これらの方法をすべて重ねて設定する必要はなく、公開範囲に応じて選びます。**
+
+</TabItem>
+<TabItem label="Minimal API">
+
+### Minimal API プロジェクトを作成する
+
+Minimal API 版では、MVC のビューや Identity の既定 UI の代わりに、`AddIdentityApiEndpoints<IdentityUser>()` と `MapIdentityApi<IdentityUser>()` で登録・ログインなどの HTTP API を提供します。
+
+| MVC 版との違い | Minimal API 版 |
+| --- | --- |
+| 登録・ログインの操作 | HTML フォームではなく JSON を送る。既定のログイン画面は生成されない |
+| ユーザー情報の保存先 | このプロジェクト専用の SQLite ファイル `identity.db` |
+| 認証のサービス登録 | `AddIdentityApiEndpoints<IdentityUser>()` |
+| 認証のエンドポイント | `MapIdentityApi<IdentityUser>()` |
+| 業務 API の認可 | `RequireAuthorization()` を個別のエンドポイントやルートグループに指定する |
+
+この例は **Cookie を使う構成**です。自作のブラウザー画面から利用する際も、認証 Cookie を JavaScript に読み出して保存するのではなく、ブラウザーに送信を任せます。ここでは UI を追加せず、`curl` の Cookie ファイルで同じ流れを確認します。
+
+完成したコードを一度に貼り付けるのではなく、**追加 → 起動 → HTTP の応答を確認**という順で進めます。この手順は新しいプロジェクトで行ってください。リポジトリの `src/09/IdentityApi/` は最後の段階まで実装済みなので、途中の段階の応答とは異なります。
+
+| ステップ | この段階でできること |
+| --- | --- |
+| 1 | 空のアプリケーションから `Hello World!` を返す |
+| 2 | SQLite 用のコンテキストを登録する。まだユーザー登録 API はない |
+| 3 | 開発用メール送信のクラスを用意する。まだアプリには組み込まない |
+| 4 | Identity の API と空のデータベースを用意する |
+| 5 | ユーザー登録 → メール確認 → Cookie ログインを試す |
+| 6 | 自作 API を追加し、Cookie の有無で `401` / `200` が変わることを確認する |
+| 7 | ログイン済みユーザー用の CSRF トークン取得 API を追加する |
+| 8 | トークンを検証するログアウト API を追加する |
+
+以下のコマンドは Bash の例です。Windows では Git Bash などを利用するか、使用するシェルに合わせて調整してください。**コードを変更するときは起動中のアプリケーションを `Ctrl+C` で止め、保存後に同じ起動コマンドで起動し直します。** `curl` は別のターミナルで、同じ `IdentityApi` フォルダーから実行します。
+
+途中の再起動では `identity.db` を削除せず、同じユーザーを使い続けます。マイグレーションの作成・適用はステップ4で、ユーザー登録はステップ5で一度だけ行えば十分です。
+
+#### ステップ1：まず空のアプリケーションを動かす
+
+MVC 版のフォルダーの中ではなく、作業用の親フォルダーで次を実行します。
+
+```bash
+dotnet new web --name IdentityApi --framework net10.0
+cd IdentityApi
+```
+
+生成直後の `Program.cs` は、次の短いコードです。
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+
+app.MapGet("/", () => "Hello World!");
+
+app.Run();
+```
+
+`MapGet` は GET リクエストと処理を対応付けています。まだ認証もデータベースもありません。まず、そのまま起動します。
+
+```bash
+dotnet run --no-launch-profile -- --environment Development --urls https://localhost:7261
+```
+
+`--no-launch-profile` により IDE の起動設定に依存せず、開発環境と HTTPS URL を指定します。HTTPS 開発証明書は[第1章](../01-setup-dev-env/index.md)の手順で信頼してください。以下では証明書の検証を無効にする `curl -k` は使いません。
+
+```bash
+curl -i https://localhost:7261/
+curl -i https://localhost:7261/api/me
+```
+
+**この段階の結果**
+
+| リクエスト | ステータス | 本文・意味 |
+| --- | --- | --- |
+| `GET /` | `200 OK` | `Hello World!` |
+| `GET /api/me` | `404 Not Found` | まだエンドポイントがない。認証に失敗したという意味ではない |
+
+#### ステップ2：SQLite に接続する準備をする
+
+アプリケーションを止め、必要なパッケージを追加します。
+
+```bash
+dotnet add package Microsoft.AspNetCore.Identity.EntityFrameworkCore --version "10.0.*"
+dotnet add package Microsoft.EntityFrameworkCore.Sqlite --version "10.0.*"
+dotnet add package Microsoft.EntityFrameworkCore.Design --version "10.0.*"
+```
+
+それぞれ、Identity の EF Core 連携、SQLite の利用、マイグレーション作成時の機能を追加するパッケージです。MVC の `--auth Individual` と違い、`dotnet new web` では Identity 用のファイルは生成されないため、自分で用意します。
+
+`appsettings.json` のルートに、次の `ConnectionStrings` を追加します。既存の `Logging` などは残してください。
+
+```json
+{
+  "ConnectionStrings": {
+    "DefaultConnection": "Data Source=identity.db"
+  }
+}
+```
+
+`Data` フォルダーを作り、`Data/ApplicationDbContext.cs` を次の内容で作成します。`IdentityDbContext<IdentityUser>` を継承すると、Identity が利用するユーザーやロールなどのモデルを扱えます。
+
+```csharp
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
+
+namespace IdentityApi.Data;
+
+public class ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+    : IdentityDbContext<IdentityUser>(options);
+```
+
+`Program.cs` を次に置き換えます。追加した中心の処理は `AddDbContext` です。ここでは接続先を登録するだけで、まだデータベースへの読み書きは行いません。ルートの応答も、API の名前を示す JSON に変えてみます。
+
+```csharp
+using IdentityApi.Data;
+using Microsoft.EntityFrameworkCore;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")
+        ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.")));
+
+var app = builder.Build();
+
+app.UseHttpsRedirection();
+app.MapGet("/", () => TypedResults.Ok(new { name = "Identity Minimal API" }));
+
+app.Run();
+```
+
+ステップ1と同じ起動コマンドで起動し直し、次を実行します。
+
+```bash
+curl -i https://localhost:7261/
+curl -i -X POST https://localhost:7261/identity/register
+```
+
+**この段階の結果**
+
+| リクエスト | ステータス | 本文・意味 |
+| --- | --- | --- |
+| `GET /` | `200 OK` | `{"name":"Identity Minimal API"}` |
+| `POST /identity/register` | `404 Not Found` | DB の設定だけでは登録 API は作られない |
+
+新規プロジェクトでは、まだ `identity.db` も作られていません。**コンテキストの登録と、データベースの作成は別の操作**です。Identity の設定をそろえてから、ステップ4でマイグレーションを作成・適用します。
+
+#### ステップ3：開発用のメール送信クラスを用意する
+
+次は、登録したユーザーのメールアドレスを確認するための準備です。先にメール確認を無効化して動かすのではなく、確認用リンクを受け取れる仕組みを用意します。
+
+`Services` フォルダーを作り、`Services/DevelopmentEmailSender.cs` を作成します。`IEmailSender<IdentityUser>` は確認リンクやパスワードリセットの通知を送るためのインターフェイスです。この例では外部のメールサービスに接続せず、起動ターミナルへ表示します。
+
+> [!WARNING]
+> 確認リンクを知っている人がアカウントを確認できるため、このクラスは開発専用です。出力を共有ログへ転送したり、画面やリポジトリで公開したりしないでください。本番では実際にメールを配信する実装へ置き換えます。
+
+```csharp
+using System.Net;
+using Microsoft.AspNetCore.Identity;
+
+namespace IdentityApi.Services;
+
+// 開発専用。確認リンクやリセットコードを含むログは秘密情報のため、公開・共有しないでください。
+public sealed class DevelopmentEmailSender(ILogger<DevelopmentEmailSender> logger)
+    : IEmailSender<IdentityUser>
+{
+    public Task SendConfirmationLinkAsync(IdentityUser user, string email, string confirmationLink)
+    {
+        logger.LogInformation("Development-only confirmation link for {Email}: {Link}",
+            email, WebUtility.HtmlDecode(confirmationLink));
+        return Task.CompletedTask;
+    }
+
+    public Task SendPasswordResetLinkAsync(IdentityUser user, string email, string resetLink)
+    {
+        logger.LogInformation("Development-only password reset link for {Email}: {Link}",
+            email, WebUtility.HtmlDecode(resetLink));
+        return Task.CompletedTask;
+    }
+
+    public Task SendPasswordResetCodeAsync(IdentityUser user, string email, string resetCode)
+    {
+        logger.LogInformation("Development-only password reset code for {Email}: {Code}", email, resetCode);
+        return Task.CompletedTask;
+    }
+}
+```
+
+この節で使うのは `SendConfirmationLinkAsync` です。残りの 2 メソッドもインターフェイスに必要なので実装しています。`HtmlDecode` は、メール用に HTML エンコードされた URL を、ターミナルから開ける形へ戻します。
+
+起動し直しても、**この段階では応答はステップ2と同じ**です。`GET /` は `200`、`POST /identity/register` は `404` のままです。クラスを置くだけでは DI に登録されず、まだ呼び出されません。次のステップで Identity と接続します。
+
+#### ステップ4：Identity の API とデータベースを用意する
+
+ここでは `Program.cs` を丸ごと置き換えず、**サービスの登録**と**リクエストを受ける設定**に分けて追加します。
+
+まず、ファイル先頭に次の `using` を追加します。ステップ2の `using` は残してください。
+
+```csharp
+using IdentityApi.Services;
+using Microsoft.AspNetCore.Identity;
+```
+
+`var builder = WebApplication.CreateBuilder(args);` の直後に、開発環境以外では起動させない条件を追加します。開発用のメール送信を誤って公開するのを防ぐためです。
+
+```csharp
+if (!builder.Environment.IsDevelopment())
+{
+    throw new InvalidOperationException(
+        "This sample is Development-only. Replace DevelopmentEmailSender with a real email sender " +
+        "and review the deployment configuration before running outside Development.");
+}
+```
+
+既存の `AddDbContext` の後、**`var app = builder.Build();` より前**に、次のサービス登録を追加します。
+
+```csharp
+builder.Services.AddIdentityApiEndpoints<IdentityUser>(options =>
+{
+    options.SignIn.RequireConfirmedAccount = true;
+    options.Password.RequiredLength = 12;
+    options.Lockout.MaxFailedAccessAttempts = 5;
+    options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(5);
+})
+    .AddRoles<IdentityRole>()
+    .AddEntityFrameworkStores<ApplicationDbContext>();
+builder.Services.AddSingleton<IEmailSender<IdentityUser>, DevelopmentEmailSender>();
+builder.Services.ConfigureApplicationCookie(options =>
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always);
+builder.Services.AddAuthorization();
+```
+
+| 追加した設定 | 役割 |
+| --- | --- |
+| `AddIdentityApiEndpoints` | ユーザー管理や Cookie などの認証サービスを登録する。まだ URL は公開しない |
+| `RequireConfirmedAccount = true` | メール確認前のログインを許可しない |
+| `RequiredLength = 12` など | パスワードは12文字以上とし、ロックアウトの既定値も明示する |
+| `AddRoles` / `AddEntityFrameworkStores` | ロール管理と EF Core による保存を組み込む。ロールそのものの作成はしない |
+| `AddSingleton<IEmailSender<IdentityUser>, DevelopmentEmailSender>` | ステップ3のクラスを Identity のメール送信先として登録する |
+| `ConfigureApplicationCookie` | 認証 Cookie を HTTPS でのみ送信する |
+| `AddAuthorization` | 認可のサービスを登録する。すべての自作 API を自動的に保護する設定ではない |
+
+次に、既存の `app.UseHttpsRedirection();` の直後へ認証・認可ミドルウェアを追加します。この部分は次の並びになります。
+
+```csharp
+app.UseHttpsRedirection();
+app.UseAuthentication();
+app.UseAuthorization();
+```
+
+最後に、既存の `app.MapGet("/", ...)` の後、**`app.Run();` より前**に次を追加します。
+
+```csharp
+app.MapGroup("/identity").MapIdentityApi<IdentityUser>();
+```
+
+`MapIdentityApi` が `/identity/register` や `/identity/login` などの入口を作ります。`AddIdentityApiEndpoints` のサービス登録と、この URL の登録は両方必要です。MVC 版の `AddDefaultIdentity`、`AddControllersWithViews`、`MapRazorPages` は使いません。
+
+**起動して登録を試す前に、データベースを作成します。** `IdentityApi` フォルダーで次を実行してください。
+
+```bash
+dotnet new tool-manifest
+dotnet tool install dotnet-ef --version "10.0.*"
+ASPNETCORE_ENVIRONMENT=Development dotnet ef migrations add CreateIdentitySchema --output-dir Data/Migrations
+ASPNETCORE_ENVIRONMENT=Development dotnet ef database update
+```
+
+`dotnet new tool-manifest` は開発ツールの一覧とバージョンを管理するファイルを作成します。続く `dotnet tool install` で `dotnet-ef` を登録し、`migrations add` でテーブル作成の設計図、`database update` で実際のデータベースを作ります。EF Core のコマンドもアプリケーションのサービス登録を利用するため、環境を `Development` に指定しています。
+
+この段階で `Data/Migrations/` と `identity.db` ができます。テーブルはできましたが、ユーザーはまだ登録していません。実際のレコードはステップ5で登録した直後に確認します。
+
+再起動して、次を実行します。
+
+```bash
+curl -i https://localhost:7261/identity/manage/info
+curl -i https://localhost:7261/api/me
+```
+
+**この段階の結果**
+
+| リクエスト | ステータス | 意味 |
+| --- | --- | --- |
+| `GET /identity/manage/info` | `401 Unauthorized` | Identity のアカウント情報 API はできたが、認証が必要 |
+| `GET /api/me` | `404 Not Found` | 自作の業務 API はまだ追加していない |
+
+Identity 自体はユーザー管理の機能であり、すべての自作 API を自動的に保護するわけではありません。また、`/identity` のグループ全体に `.AllowAnonymous()` を付けないでください。登録・ログインだけでなく、認証が必要なアカウント管理 API まで公開してしまいます。
+
+### Minimal API の登録とログインを確認する
+
+#### ステップ5：ユーザー登録・メール確認・ログインを試す
+
+ここではコードを追加せず、ステップ4で組み込んだ Identity API を順に呼びます。アプリケーションは起動したままにしておきます。
+
+**まずアカウントを登録する**
+
+一時ファイル `credentials.json` を作成します。以下のパスワードは説明用であり、このローカル動作確認だけに使ってください。
+
+```json
+{
+  "email": "reader@example.test",
+  "password": "SamplePass123!"
+}
+```
+
+```bash
+curl -i https://localhost:7261/identity/register -H "Content-Type: application/json" --data-binary @credentials.json
+```
+
+正常に登録できると **`200 OK`** になります。短すぎるパスワードや重複登録などは `400 Bad Request` となり、レスポンスの `errors` に理由が返ります。成功しても、この時点ではログインしていません。
+
+SQLite CLI が使える場合は、`sqlite3 -readonly identity.db` でデータベースを開き、次を実行すると保存状態を確認できます。
+
+```sql
+SELECT Email, EmailConfirmed,
+       CASE WHEN PasswordHash IS NOT NULL AND length(PasswordHash) > 0
+            THEN 1 ELSE 0 END AS HasPasswordHash
+FROM AspNetUsers
+WHERE Email = 'reader@example.test';
+```
+
+このクエリの出力は次のとおりです。左からメールアドレス、確認済みフラグ、パスワードハッシュの有無です。
+
+```text
+reader@example.test|0|1
+```
+
+登録直後は `EmailConfirmed = 0`、`HasPasswordHash = 1` です。MVC 版と同様に、登録フォームの有無にかかわらず Identity がユーザーの行とパスワードハッシュを保存します。確認が終わったら `.quit` で SQLite を終了します。
+
+**次に、未確認のアカウントではログインできないことを確かめる**
+
+```bash
+curl -i "https://localhost:7261/identity/login?useCookies=true" -H "Content-Type: application/json" --data-binary @credentials.json
+```
+
+結果は **`401 Unauthorized`** です。登録時の `200` はユーザーの作成に成功したことを表し、ログインが許可されたという意味ではありません。
+
+**メールを確認してから、もう一度ログインする**
+
+アプリケーションを起動したターミナルで、`Development-only confirmation link for reader@example.test:` に続く確認用 URL を、ローカルのブラウザーで開きます。URL には `/identity/confirmEmail` と、そのユーザー専用の確認コードが含まれます。この API は MVC のような確認画面ではなく、`Thank you for confirming your email.` というテキストを返します。確認後に同じ SQL を実行すると、`EmailConfirmed` は `1` になります。
+
+メール確認を済ませてから、登録時と同じ JSON でログインします。
+
+```bash
+curl -i -c cookies.txt "https://localhost:7261/identity/login?useCookies=true" -H "Content-Type: application/json" --data-binary @credentials.json
+```
+
+成功すると **`200 OK`** となり、認証 Cookie が `cookies.txt` に保存されます。`useCookies=true` が Cookie を使う指定です。確認前やパスワードが間違っている場合は `401 Unauthorized` になります。
+
+**この段階の結果**
+
+| 操作 | ステータス | データ・認証状態 |
+| --- | --- | --- |
+| `POST /identity/register` | `200 OK` | ユーザーを作成。`EmailConfirmed = 0` |
+| メール確認前の `POST /identity/login?useCookies=true` | `401 Unauthorized` | まだログインできない |
+| 確認リンクを開く | `200 OK` | `EmailConfirmed = 1` に変わる |
+| 確認後の `POST /identity/login?useCookies=true` | `200 OK` | 認証 Cookie を発行 |
+
+ここで Cookie を付けて `GET /api/me` を呼んでも、まだ `404` です。**ログイン機能の追加と、ログイン済みユーザーが利用する業務 API の追加は別の作業**です。
+
+`curl` の `-c` はレスポンスの Cookie を保存し、`-b` は保存した Cookie を送信する指定です。以降も同じ `cookies.txt` を使います。ブラウザーの同一オリジンから `fetch` を使う場合、通常はブラウザーが Cookie を送ります。別オリジンの画面との連携は、CORS、Cookie の属性、CSRF 対策を別途設計してください。
+
+#### ステップ6：ログイン済みユーザーだけが呼べる API を追加する
+
+ここで初めて、自作の `/api/me` を追加します。`Program.cs` の先頭に次の `using` を追加します。
+
+```csharp
+using System.Security.Claims;
+```
+
+`app.MapGroup("/identity").MapIdentityApi<IdentityUser>();` の後、`app.Run();` より前に次を追加します。
+
+```csharp
+var api = app.MapGroup("/api").RequireAuthorization();
+api.MapGet("/me", (ClaimsPrincipal user) =>
+    TypedResults.Ok(new { email = user.FindFirstValue(ClaimTypes.Email) }));
+```
+
+`ClaimsPrincipal` は認証されたユーザーの情報です。ここでは、そのユーザーのメールアドレスを返します。`RequireAuthorization()` を `/api` グループに付けたので、グループに登録するエンドポイントは原則として認証済みユーザーだけが呼べます。MVC のグローバルな `AuthorizeFilter` は Minimal API には適用されません。
+
+再起動したら、**Cookie なし → Cookie あり**の順に同じ URL を呼びます。
+
+```bash
+curl -i https://localhost:7261/api/me
+curl -i -b cookies.txt https://localhost:7261/api/me
+```
+
+**この段階の結果**
+
+| リクエスト | ステータス | 意味 |
+| --- | --- | --- |
+| Cookie なしの `GET /api/me` | `401 Unauthorized` | URL は存在するが、未認証なので利用できない |
+| Cookie ありの `GET /api/me` | `200 OK` | 認証されたユーザーの情報を取得できる |
+
+Cookie を付けた場合の本文は次のとおりです。MVC の画面と異なり、未認証時はログイン画面へのリダイレクトではなく `401` になります。
+
+```json
+{"email":"reader@example.test"}
+```
+
+ステップ1の `/api/me` は「未実装なので `404`」でした。今は「実装済みだが、Cookie がなければ `401`」です。この違いから、エンドポイントの追加と認可の設定を確認できます。
+
+#### ステップ7：ログアウトの前に CSRF トークンを用意する
+
+`MapIdentityApi` はログアウト用 API を生成しません。自分で追加しますが、その前に **CSRF（クロスサイトリクエストフォージェリ）対策**を用意します。Cookie はブラウザーが自動送信するため、状態変更を行うログアウトには、別サイトから意図せず呼び出されないための確認が必要です。
+
+`Program.cs` の先頭に次の `using` を追加します。
+
+```csharp
+using Microsoft.AspNetCore.Antiforgery;
+```
+
+`builder.Services.AddAuthorization();` の後、`builder.Build()` より前に次を追加します。
+
+```csharp
+builder.Services.AddAntiforgery(options =>
+{
+    options.HeaderName = "X-CSRF-TOKEN";
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+});
+```
+
+これは偽造防止サービスと、トークンを受け取るヘッダー名の設定です。登録するだけでは、ログアウト処理はまだ存在しません。
+
+次に、ステップ6の `api.MapGet("/me", ...)` の後へ、トークン取得用のエンドポイントを追加します。既存の `api` グループを使うので、これにも認証が必要です。
+
+```csharp
+api.MapGet("/antiforgery", (HttpContext context, IAntiforgery antiforgery) =>
+{
+    var tokens = antiforgery.GetAndStoreTokens(context);
+    context.Response.Headers.CacheControl = "no-store";
+    return TypedResults.Ok(new { requestToken = tokens.RequestToken });
+});
+```
+
+`GetAndStoreTokens` は偽造防止 Cookie をレスポンスへ設定し、クライアントがヘッダーで返すトークンを取得します。`no-store` は、この応答をキャッシュに保存させない指定です。
+
+再起動して、次を実行します。
+
+```bash
+curl -i https://localhost:7261/api/antiforgery
+curl -b cookies.txt -c cookies.txt https://localhost:7261/api/antiforgery
+```
+
+**この段階の結果**
+
+| リクエスト | ステータス | 意味 |
+| --- | --- | --- |
+| Cookie なしの `GET /api/antiforgery` | `401 Unauthorized` | 未ログインではトークンを取得できない |
+| Cookie ありの `GET /api/antiforgery` | `200 OK` | `requestToken` を取得し、偽造防止 Cookie も保存する |
+| `POST /api/logout` | `404 Not Found` | まだログアウトの処理は追加していない |
+
+2つ目のリクエストの本文は、`{"requestToken":"..."}` という形です。値は実行ごとに異なります。このトークンを用意しただけではログアウトされないため、`GET /api/me` は同じ Cookie で引き続き `200` になります。
+
+#### ステップ8：トークンを検証してログアウトする
+
+`api.MapGet("/antiforgery", ...)` の後、`app.Run();` より前に、最後のエンドポイントを追加します。
+
+```csharp
+api.MapPost("/logout", async (
+    HttpContext context, IAntiforgery antiforgery, SignInManager<IdentityUser> signInManager) =>
+{
+    try
+    {
+        await antiforgery.ValidateRequestAsync(context);
+    }
+    catch (AntiforgeryValidationException)
+    {
+        return Results.Problem(statusCode: StatusCodes.Status400BadRequest,
+            title: "Invalid antiforgery token.");
+    }
+
+    await signInManager.SignOutAsync();
+    return Results.NoContent();
+});
+```
+
+`ValidateRequestAsync` が Cookie とヘッダーのトークンを検証し、成功した場合だけ `SignOutAsync` が認証 Cookie を削除します。検証失敗時は `400` を返して終了するため、その後のログアウト処理は実行されません。**トークン検証のないログアウト API を途中段階で公開することはしません。**
+
+再起動したら、まずトークンなしで呼びます。
+
+```bash
+curl -i -b cookies.txt -X POST https://localhost:7261/api/logout
+curl -i -b cookies.txt https://localhost:7261/api/me
+```
+
+ログアウトは **`400 Bad Request`** になり、その後の `/api/me` は **`200 OK`** のままです。失敗したリクエストではログイン状態が変わっていないことを確認できます。
+
+次にステップ7と同じコマンドでトークンを取得し直します。
+
+```bash
+curl -b cookies.txt -c cookies.txt https://localhost:7261/api/antiforgery
+```
+
+レスポンスの `requestToken` を、次の `取得したrequestToken` に貼り付けて送信します。トークン取得時に保存した偽造防止 Cookie と、このヘッダーの組で検証します。
+
+```bash
+curl -i -b cookies.txt -c cookies.txt -X POST https://localhost:7261/api/logout -H "X-CSRF-TOKEN: 取得したrequestToken"
+```
+
+成功すると **`204 No Content`** となり、`-c cookies.txt` によって Cookie ファイルにもログアウトが反映されます。
+
+```bash
+curl -i -b cookies.txt https://localhost:7261/api/me
+```
+
+再び **`401 Unauthorized`** になることを確認してください。これは現在のクライアントの Cookie を削除する操作であり、別端末の Cookie や、既に発行された独自 Bearer トークンを即時にすべて失効させる操作ではありません。
+
+**この段階の結果**
+
+| 操作 | ステータス | ログイン状態 |
+| --- | --- | --- |
+| Cookie あり・CSRF トークンなしでログアウト | `400 Bad Request` | 変わらない。`/api/me` は `200` |
+| Cookie と正しい CSRF トークンでログアウト | `204 No Content` | クライアントの認証 Cookie を削除 |
+| ログアウト後に同じ Cookie ファイルで `/api/me` を呼ぶ | `401 Unauthorized` | 未ログインとして扱われる |
+
+`AddAntiforgery` を登録するだけで、すべての JSON API が保護されるわけではありません。この例では `ValidateRequestAsync` でログアウト時の検証を明示しました。ほかの状態変更 API を追加する場合も、その API の Cookie 利用やリクエスト形式に応じた CSRF 対策が必要です。
+
+これで `src/09/IdentityApi/` の完成版と同じ処理がそろいました。途中で迷った場合は、同フォルダーの `Program.cs` と、サービス登録は `builder.Build()` より前、エンドポイント登録は `app.Run()` より前という配置を見比べてください。
+
+完成済みサンプルを直接使う場合は、そのフォルダーで `dotnet tool restore`、`ASPNETCORE_ENVIRONMENT=Development dotnet ef database update`、ステップ1の起動コマンドの順に実行します。既にマイグレーションが含まれているため、`dotnet ef migrations add` は不要です。
+
+> [!WARNING]
+> `credentials.json`、`cookies.txt`、確認 URL、CSRF トークンは動作確認用の機密情報です。Git に追加せず、確認後は一時ファイルを削除してください。完成済みサンプルではファイル名を `.gitignore` で除外しています。
+
+```bash
+rm credentials.json cookies.txt
+```
+
+#### エンドポイントをまとめて保護する方法
+
+| 指定 | 適用範囲 |
+| --- | --- |
+| `app.MapGet(...).RequireAuthorization()` | そのエンドポイントだけ |
+| `app.MapGroup("/api").RequireAuthorization()` | そのグループ配下に登録したエンドポイント。このサンプルの方式 |
+| `AddAuthorization` で `FallbackPolicy` を設定 | 明示的な認可指定がないリクエスト。詳細は[第6節](#6-認証認可ミドルウェアの設定) |
+
+MVC のグローバルな `AuthorizeFilter` は Minimal API には適用されません。ルートグループや `FallbackPolicy` を使う場合も、公開するエンドポイントだけに `.AllowAnonymous()` を指定し、グループ全体を意図せず公開しないようにします。
+
+</TabItem>
+</Tabs>
+
+> [!NOTE]
+> Identity API が発行できる組み込みの Bearer トークンは **独自形式であり、JWT ではありません**。Identity 単体を汎用的な OAuth / OIDC 認可サーバーとみなしたり、そのトークンを第4節の `AddJwtBearer` で検証したりしないでください。
+
+## 3. 外部ログインと OAuth / OpenID Connect
+
+### OAuth と OIDC の違い
+
+**OAuth 2.0** は、クライアントにリソースへのアクセス権を委譲するための枠組みです。**OpenID Connect (OIDC)** は、その上にユーザーの認証の仕組みを追加したプロトコルです。
+
+| 用語 | 主な用途 | 受け取り先 |
+| --- | --- | --- |
+| ID トークン | ユーザーの認証結果をクライアントに伝える | ログインを要求したクライアント |
+| アクセストークン | API へのアクセスに使う | 対象の API |
+| リフレッシュトークン | 新しいアクセストークンの取得に使う | 認可サーバーのトークンエンドポイント |
+
+**ID トークンを Web API の呼び出しに使いません。** また、OAuth のアクセストークンが必ず JWT であるとは限りません。利用するプロバイダーの仕様に合わせます。
+
+ブラウザー向けのサーバーサイド Web アプリケーションでは、OIDC の **認可コードフロー (Authorization Code Flow)** と **PKCE (Proof Key for Code Exchange)** を使う構成を基本にします。認可コードの交換とクライアントシークレットの利用はサーバー側で行います。
+
+```mermaid
+sequenceDiagram
+    accTitle: OIDC ログインとアプリケーション Cookie
+    accDescr: Web アプリがブラウザーを外部プロバイダーへ送り、戻ってきたコードをサーバー側で交換・検証した後、アプリケーション用 Cookie を発行する。
+    participant B as ブラウザー
+    participant W as MVC アプリ
+    participant I as OIDC プロバイダー
+    B->>W: 保護された画面を要求
+    W-->>B: 認可エンドポイントへリダイレクト
+    B->>I: ログインと必要な同意
+    I-->>B: コールバック URL へ認可コードを返す
+    B->>W: /signin-oidc にコードを届ける
+    W->>I: コードをトークンに交換（PKCE、クライアント認証）
+    I-->>W: ID トークンなど
+    W->>W: 認証応答とトークンを検証
+    W-->>B: アプリ用 Cookie を発行して画面へ戻す
+    B->>W: 以降は Cookie を送信
+```
+
+図は基本的な流れです。ASP.NET Core 10 では、プロバイダーが対応していれば **PAR (Pushed Authorization Requests)** により、認可要求を事前にサーバー間で送信する処理も使われます。
+
+### OIDC を使う MVC アプリケーション
+
+この例は、ローカルのユーザーデータベースを持たず、外部の OIDC プロバイダーで認証する別のアプリケーションです。
+
+```bash
+dotnet new mvc --name OidcWeb --framework net10.0 --auth None
+cd OidcWeb
+dotnet add package Microsoft.AspNetCore.Authentication.OpenIdConnect --version "10.0.*"
+dotnet user-secrets init
+dotnet user-secrets set "Authentication:Oidc:Authority" "https://identity.example.com"
+dotnet user-secrets set "Authentication:Oidc:ClientId" "YOUR_CLIENT_ID"
+dotnet user-secrets set "Authentication:Oidc:ClientSecret" "YOUR_CLIENT_SECRET"
+```
+
+`example.com` と `YOUR_...` はプレースホルダーです。実際のプロバイダーで **Web アプリケーション（機密クライアント）**を登録し、その発行者 URL と資格情報に置き換えてください。アプリが使うスコープとログアウトの仕様も確認します。
+
+この例の実行 URL は `https://localhost:7043` です。プロバイダーに次を登録します。
+
+| 設定 | 登録する URL |
+| --- | --- |
+| ログイン後のリダイレクト URI | `https://localhost:7043/signin-oidc` |
+| ログアウト後のコールバック URI | `https://localhost:7043/signout-callback-oidc` |
+
+`/signin-oidc` は認証ハンドラーが処理します。同名の MVC アクションを自作する必要はありません。`Authority` は単なるログイン画面の URL ではなく、OIDC のメタデータを取得できる発行者の URL です。
+
+`Program.cs` を次に置き換えます。
+
+```csharp
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
+
+var builder = WebApplication.CreateBuilder(args);
+
+string RequiredSetting(string key)
+{
+    var value = builder.Configuration[key];
+    return !string.IsNullOrWhiteSpace(value)
+        ? value
+        : throw new InvalidOperationException($"設定 {key} が必要です。");
+}
+
+var authority = RequiredSetting("Authentication:Oidc:Authority");
+var clientId = RequiredSetting("Authentication:Oidc:ClientId");
+var clientSecret = RequiredSetting("Authentication:Oidc:ClientSecret");
+
+builder.Services.AddControllersWithViews();
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = OpenIdConnectDefaults.AuthenticationScheme;
+})
+    .AddCookie(options => options.Cookie.SecurePolicy = CookieSecurePolicy.Always)
+    .AddOpenIdConnect(options =>
+    {
+        options.Authority = authority;
+        options.ClientId = clientId;
+        options.ClientSecret = clientSecret;
+        options.ResponseType = OpenIdConnectResponseType.Code;
+        options.UsePkce = true;
+        options.SaveTokens = true;
+        options.MapInboundClaims = false;
+        options.TokenValidationParameters.NameClaimType = "name";
+        options.TokenValidationParameters.RoleClaimType = "roles";
+    });
+builder.Services.AddAuthorization();
+
+var app = builder.Build();
+
+if (!app.Environment.IsDevelopment())
+{
+    app.UseExceptionHandler("/Home/Error");
+    app.UseHsts();
+}
+
+app.UseHttpsRedirection();
+app.UseRouting();
+app.UseAuthentication();
+app.UseAuthorization();
+app.MapStaticAssets();
+app.MapControllerRoute("default", "{controller=Home}/{action=Index}/{id?}")
+    .WithStaticAssets();
+app.Run();
+```
+
+ここでは Cookie を通常のリクエストの認証に、OIDC を未認証時のログイン開始（**チャレンジ / Challenge**）に使います。`SaveTokens = true` は、ログアウト時の `id_token_hint` などに使えるよう認証チケットにトークンを保存します。既定の Cookie 構成では Cookie のサイズが増えるため、不要なトークンを保持し続けず、要件によってサーバー側のチケット保存を検討します。
+
+`NameClaimType` / `RoleClaimType` は、この例では `name` / `roles` というクレームを発行するプロバイダーを想定した設定です。異なる名前ならプロバイダーの仕様に合わせて変更します。
+
+### ログアウトと Identity との使い分け
+
+`Controllers/AccountController.cs` を追加します。
+
+```csharp
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+
+namespace OidcWeb.Controllers;
+
+[Authorize]
+public class AccountController : Controller
+{
+    [HttpGet]
+    public IActionResult Profile() => View();
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public IActionResult Logout() => SignOut(
+        new AuthenticationProperties { RedirectUri = "/" },
+        CookieAuthenticationDefaults.AuthenticationScheme,
+        OpenIdConnectDefaults.AuthenticationScheme);
+}
+```
+
+`Views/Account/Profile.cshtml` を追加します。MVC テンプレートの `_ViewImports.cshtml` で有効な Form Tag Helper が、POST フォームに偽造防止トークンを出力します。
+
+```cshtml
+<h1>プロフィール</h1>
+<p>ログイン中: @User.Identity?.Name</p>
+<form asp-controller="Account" asp-action="Logout" method="post">
+    <button type="submit">ログアウト</button>
+</form>
+```
+
+次のコマンドで Development 環境として起動し、`https://localhost:7043/Account/Profile` を開きます。外部ログイン後にプロフィールへ戻り、フォームからログアウトすると Cookie の削除と OIDC のログアウトを要求する構成です。ログアウト後の動作はプロバイダーの対応にも依存します。
+
+```bash
+dotnet run --no-launch-profile -- --environment Development --urls https://localhost:7043
+```
+
+> [!NOTE]
+> このサンプルの外部プロバイダーへのログイン・ログアウト全体は、実際のクライアント登録と資格情報を使った確認が必要です。本章の自動テストでは外部通信を行わず、設定、ログイン開始時の要求、アプリ側のログアウト処理を検証します。実プロバイダーとの往復は未検証です。
+
+> [!WARNING]
+> ログアウトなどの状態変更は、GET リンクではなく **POST + クロスサイトリクエストフォージェリ (Cross-Site Request Forgery: CSRF) 対策**で実装します。遷移先を固定せず `returnUrl` などで受け取る場合は、`Url.IsLocalUrl` / `LocalRedirect` などで安全なローカル URL に制限してください。クライアントシークレットをブラウザーへ渡したり、ソース管理に含めたりしてはいけません。
+
+Identity に外部ログインを追加する場合は、別の構成になります。プロバイダーの認証結果を一時的な外部 Cookie で受け取り、`SignInManager` が外部ログイン識別子に対応するローカルアカウントを探し、最終的に Identity のアプリケーション Cookie でサインインします。既存の Identity 登録に、この例の既定 Cookie / OIDC スキームをそのまま重ねないでください。
+
+外部アカウントとローカルアカウントの関連付けには、プロバイダー名とそのプロバイダー内のユーザー識別子を使います。同じメールアドレスが返ったという理由だけで、既存のアカウントへ自動的に関連付ける設計は避けます。
+
+## 4. JWT Bearer 認証の導入
+
+### API が検証するもの
+
+**JWT (JSON Web Token)** は、クレームを格納できるトークン形式です。**Bearer 認証**では、クライアントは通常 `Authorization` ヘッダーでアクセストークンを送ります。
+
+```http
+GET /me HTTP/1.1
+Host: localhost:7051
+Authorization: Bearer YOUR_ACCESS_TOKEN
+```
+
+JWT を受け取る API は、少なくとも次を検証します。
+
+| 検証対象 | 意味 |
+| --- | --- |
+| 署名 | 信頼する発行者が発行し、改ざんされていないこと |
+| 発行者 `iss` | 受け入れる認可サーバーが発行したこと |
+| 対象 API `aud` | この API に対して発行されたこと |
+| 有効期限 `exp`、有効開始時刻 `nbf` など | 現在利用可能なトークンであること |
+
+検証後も、必要なロール・権限・リソース所有者の確認は別途必要です。JWT の署名は暗号化とは異なり、署名付き JWT の本文は読める場合があるため、秘密情報を格納する場所とは考えません。
+
+> [!WARNING]
+> API に独自の「ユーザー名とパスワードを受け取り JWT を発行するエンドポイント」を安易に作らないでください。本番のトークン取得には OAuth / OIDC に対応した認可サーバーを利用します。この章の API は **発行側ではなく検証側**です。
+
+### JWT を受け取る API を実装する
+
+```bash
+dotnet new web --name AuthApi --framework net10.0
+cd AuthApi
+dotnet add package Microsoft.AspNetCore.Authentication.JwtBearer --version "10.0.*"
+```
+
+`Program.cs` を次に置き換えます。Development 環境では次の小節の開発用トークンを、本番などそれ以外の環境では外部の発行者のトークンを検証します。
+
+```csharp
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
+
+var builder = WebApplication.CreateBuilder(args);
+
+var authentication = builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme);
+
+if (builder.Environment.IsDevelopment())
+{
+    authentication.AddJwtBearer();
+}
+else
+{
+    var authority = builder.Configuration["Authentication:Authority"];
+    var audience = builder.Configuration["Authentication:Audience"];
+    if (string.IsNullOrWhiteSpace(authority) || string.IsNullOrWhiteSpace(audience))
+    {
+        throw new InvalidOperationException(
+            "Authentication:Authority と Authentication:Audience が必要です。");
+    }
+
+    authentication.AddJwtBearer(options =>
+    {
+        options.Authority = authority;
+        options.Audience = audience;
+        options.MapInboundClaims = false;
+        options.TokenValidationParameters.NameClaimType = "name";
+        options.TokenValidationParameters.RoleClaimType = "roles";
+    });
+}
+
+builder.Services.AddAuthorizationBuilder()
+    .SetFallbackPolicy(new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build())
+    .AddPolicy("ReadReports", policy => policy
+        .RequireAuthenticatedUser()
+        .RequireClaim("permission", "reports.read"))
+    .AddPolicy("AdminOnly", policy => policy
+        .RequireAuthenticatedUser()
+        .RequireRole("Admin"));
+
+var app = builder.Build();
+
+app.UseHttpsRedirection();
+app.UseRouting();
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapGet("/health", () => Results.Ok(new { status = "ok" }))
+    .AllowAnonymous();
+app.MapGet("/me", (ClaimsPrincipal user) =>
+    Results.Ok(new { name = user.Identity?.Name }))
+    .RequireAuthorization();
+app.MapGet("/reports", () => Results.Ok(new[] { "月次レポート" }))
+    .RequireAuthorization("ReadReports");
+app.MapGet("/admin", () => Results.Ok(new { message = "管理者向け情報" }))
+    .RequireAuthorization("AdminOnly");
+
+app.Run();
+```
+
+外部プロバイダーを使う場合の `appsettings.json` の設定例です。`Authority`、`Audience`、クレーム名はプロバイダーと API 登録に合わせます。`permission` はこのサンプル独自の権限クレームであり、すべての発行者に含まれるものではありません。
+
+```json
+{
+  "Authentication": {
+    "Authority": "https://identity.example.com",
+    "Audience": "reports-api"
+  }
+}
+```
+
+`Authority` によってメタデータと署名検証用の公開鍵を取得する構成では、API に発行用の秘密鍵や Web クライアントのシークレットを置く必要はありません。`AddJwtBearer` の署名・発行者・対象 API・有効期間の検証を無効化せず、メタデータ取得にも HTTPS を使用します。
+
+### 開発用トークンで動作確認する
+
+`dotnet user-jwts` は開発専用のトークン生成ツールです。`AuthApi` フォルダーで次を実行します。トークンは短い有効期間とし、発行はアプリ起動前に行います。
+
+```bash
+dotnet user-jwts create --name reader --audience https://localhost:7051 --valid-for 1h
+dotnet user-jwts create --name reporter --audience https://localhost:7051 --claim permission=reports.read --valid-for 1h
+dotnet user-jwts create --name administrator --audience https://localhost:7051 --role Admin --valid-for 1h
+dotnet run --no-launch-profile -- --environment Development --urls https://localhost:7051
+```
+
+このツールはプロジェクトの `appsettings.Development.json` に `Authentication:Schemes:Bearer` の発行者・対象 API の設定を追加し、署名鍵を User Secrets に保存します。Development の `AddJwtBearer()` はこれらを読み込みます。トークンや署名鍵はコミットしません。
+
+別のターミナルから、各コマンドの出力トークンを `YOUR_..._TOKEN` に貼り付けて試します。以下は Bash での例です。
+
+```bash
+curl -i https://localhost:7051/health
+curl -i https://localhost:7051/me
+curl -i -H "Authorization: Bearer YOUR_READER_TOKEN" https://localhost:7051/me
+curl -i -H "Authorization: Bearer YOUR_READER_TOKEN" https://localhost:7051/reports
+curl -i -H "Authorization: Bearer YOUR_REPORTER_TOKEN" https://localhost:7051/reports
+curl -i -H "Authorization: Bearer YOUR_ADMINISTRATOR_TOKEN" https://localhost:7051/admin
+```
+
+| リクエスト | 期待する状態コード |
+| --- | --- |
+| トークンなしで `/health` | `200 OK` |
+| トークンなしで `/me` | `401 Unauthorized` |
+| `reader` で `/me` | `200 OK` |
+| `reader` で `/reports` | `403 Forbidden` |
+| `reporter` で `/reports` | `200 OK` |
+| `administrator` で `/admin` | `200 OK` |
+| 権限クレームのない `administrator` で `/reports` | `403 Forbidden` |
+| 署名が不正、別の対象 API、期限切れなどのトークンで `/me` | `401 Unauthorized` |
+
+**Admin というロールがあれば、すべてのポリシーを自動的に通過するわけではありません。** また、有効期間の検証には既定で時刻ずれの許容（[`ClockSkew`、5 分](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.identitymodel.tokens.tokenvalidationparameters.defaultclockskew)）があるため、期限直後のテストではその許容時間も考慮します。
+
+> [!NOTE]
+> Development 環境では開発ツールのクレームを既定のマッピングで扱い、本番側の例では `MapInboundClaims = false` にしています。この違いを意識し、本番発行者のクレーム形式でも認可を確認してください。開発用トークンが通るだけでは、本番プロバイダーとの連携確認にはなりません。
+
+## 5. ポリシーベース認可とロールベース認可
+
+### ポリシーとロールを適用する
+
+**ポリシー (Policy)** は、認可条件を名前付きでまとめたものです。前節では `ReadReports` が権限クレームを、`AdminOnly` がロールを確認しています。Minimal API では `RequireAuthorization`、MVC / コントローラーベース API では `[Authorize]` で適用します。
+
+コントローラーベース API に同じポリシーを適用する場合は、サービスに `AddControllers()`、エンドポイントに `MapControllers()` を追加し、例えば次のコントローラーを配置します。
+
+```csharp
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+
+namespace AuthApi.Controllers;
+
+[ApiController]
+[Route("api/reports")]
+[Authorize(Policy = "ReadReports")]
+public class ReportsController : ControllerBase
+{
+    [HttpGet]
+    public IActionResult Get() => Ok(new[] { "月次レポート" });
+
+    [HttpGet("audit")]
+    [Authorize(Roles = "Admin,Auditor")]
+    public IActionResult Audit() => Ok(new { message = "監査用情報" });
+}
+```
+
+`/api/reports/audit` にはコントローラーの条件も適用されるので、**`ReadReports` を満たし、かつ Admin または Auditor のロールが必要**です。
+
+| 書き方 | 条件 |
+| --- | --- |
+| `[Authorize]` | 既定のポリシー（通常は認証済み） |
+| `[Authorize(Roles = "Admin,Auditor")]` | Admin **または** Auditor |
+| `[Authorize(Roles = "Admin")]` と `[Authorize(Roles = "Auditor")]` を両方付ける | Admin **かつ** Auditor |
+| ポリシー内に複数の要件を追加する | すべての要件を満たす |
+| `[AllowAnonymous]` / `.AllowAnonymous()` | そのエンドポイントの認可をスキップする |
+
+Identity で `AddRoles<IdentityRole>()` を呼ぶのは、ロール管理のサービス登録です。**Admin ロールの作成やユーザーへの割り当てまでは行いません。** 信頼できる管理処理から `RoleManager` と `UserManager` を使い、`CreateAsync` / `AddToRoleAsync` の `IdentityResult.Succeeded` とエラーを確認します。登録フォームでユーザー自身に管理者ロールを選ばせないでください。Cookie や JWT に既に入っているロールは、データベースを更新した瞬間に必ず更新されるわけではありません。
+
+> [!NOTE]
+> 他言語の経験者向けに対応を整理すると、Spring Boot では Spring Security の `authorizeHttpRequests`、NestJS では Guards とロールのメタデータ、Laravel では Gates / Policies がアクセス条件の定義・適用に近い役割を担います。ただし、条件の結合方法や既定の許可・拒否は同一ではありません。
+>
+> Go / Echo の JWT ミドルウェアもトークンを検証してコンテキストへ渡しますが、アプリケーション固有の認可条件は別途設計します。Angular の Route Guards はブラウザー側の遷移制御であり、サーバー側の認可を代替しません。
+
+### 要件とハンドラーで条件を拡張する
+
+`RequireClaim("permission", "reports.read")` は値の一致を確認します。一方、OAuth のスコープが `"reports.read reports.write"` のような空白区切りで発行される場合、文字列全体との一致では目的の条件になりません。
+
+複雑な判定には、**要件 (Requirement)** と、その要件を評価する **認可ハンドラー (Authorization Handler)** を使います。以下を `AuthApi/ScopeAuthorization.cs` に追加します。この例は `scope` というクレーム名を使う発行者用です。`scp` などを使う発行者では仕様に合わせて変更してください。
+
+```csharp
+using Microsoft.AspNetCore.Authorization;
+
+namespace AuthApi;
+
+public sealed record ScopeRequirement(string Scope) : IAuthorizationRequirement;
+
+public sealed class ScopeHandler : AuthorizationHandler<ScopeRequirement>
+{
+    protected override Task HandleRequirementAsync(
+        AuthorizationHandlerContext context,
+        ScopeRequirement requirement)
+    {
+        var scopes = context.User.FindAll("scope")
+            .SelectMany(claim => claim.Value.Split(
+                ' ', StringSplitOptions.RemoveEmptyEntries));
+
+        if (scopes.Contains(requirement.Scope, StringComparer.Ordinal))
+        {
+            context.Succeed(requirement);
+        }
+
+        return Task.CompletedTask;
+    }
+}
+```
+
+`Program.cs` の先頭に `using AuthApi;` を追加し、`builder.Build()` より前に次を追加します。
+
+```csharp
+builder.Services.AddSingleton<IAuthorizationHandler, ScopeHandler>();
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy("ReadScopedReports", policy => policy
+        .RequireAuthenticatedUser()
+        .AddRequirements(new ScopeRequirement("reports.read")));
+```
+
+`app.Run()` より前にエンドポイントを追加します。
+
+```csharp
+app.MapGet("/scoped-reports", () => Results.Ok(new[] { "月次レポート" }))
+    .RequireAuthorization("ReadScopedReports");
+```
+
+`dotnet user-jwts create --name scoped-reader --audience https://localhost:7051 --scope "reports.read reports.write" --valid-for 1h` で発行したトークンなら、この条件を満たします。`reports.read.all` しか持たないトークンは拒否されます。部分文字列の検索で権限を判定しないことが重要です。
+
+このハンドラーは状態を持たないため Singleton にできます。`DbContext` など Scoped サービスに依存するハンドラーを Singleton に登録してはいけません。また、一つのハンドラーが成功しないだけで直ちに全体を失敗させる必要はありません。同じ要件を満たせる別のハンドラーもある場合は、`context.Fail()` による明示的な失敗との違いに注意します。
+
+### リソース単位の認可
+
+「認証済み」「経理ロール」といった条件だけでは、**この申請の所有者か**を判定できません。`[Authorize]` はアクション実行前に評価されるため、アクション内で取得するデータを使った認可には、`IAuthorizationService.AuthorizeAsync` を使います。
+
+基本的な流れは、認証を要求し、対象データを取得し、取得したリソースとユーザーを認可サービスに渡し、成功した場合だけ表示・更新する、という順序です。所有者 ID はリクエスト本文ではなく、保存済みデータと検証済みユーザー識別子で比較します。
+
+複数の発行者を受け入れる場合は `sub` だけが全世界で一意とは限らないため、発行者との組やアプリ内のユーザー ID への対応付けも設計します。リソースの存在を公開したくない場合の `404` と、権限不足を示す `403` の使い分けは API の方針として決めます。
+
+## 6. 認証・認可ミドルウェアの設定
+
+### サービス登録と実行順序
+
+`Add...` はサービスの登録、`Use...` はリクエスト処理のパイプラインへの組み込みです。例えば `AddAuthorization` だけでは、個々のエンドポイントを保護したことにはなりません。
+
+```mermaid
+flowchart TD
+    accTitle: 認証と認可を含むミドルウェアの順序
+    accDescr: ルーティング、必要なら CORS、認証、認可、必要なら偽造防止の順に実行し、最後にエンドポイントを処理する。
+    Routing["UseRouting: エンドポイントの選択"]
+    Cors["UseCors: 使用する場合"]
+    Authentication["UseAuthentication: ユーザーの認証"]
+    Authorization["UseAuthorization: エンドポイントの条件を評価"]
+    Antiforgery["UseAntiforgery: 使用する場合"]
+    Endpoint["MVC / Minimal API の実行"]
+    Routing --> Cors --> Authentication --> Authorization --> Antiforgery --> Endpoint
+```
+
+認証・認可のミドルウェアは、`UseRouting` の後、エンドポイント実行より前に置きます。CORS を使う場合は `UseCors` を認証・認可より前に、偽造防止ミドルウェアを使う場合は `UseAntiforgery` を認証・認可より後に置きます。各機能のサービス登録・ポリシー設定も別途必要です。
+
+`WebApplication` は登録済みサービスに応じて認証・認可ミドルウェアを自動追加できるため、テンプレートでは明示的な `UseAuthentication` がないこともあります。本章の独立したサンプルでは順序を明確にするため、明示しています。Identity テンプレートに追加する場合も、`UseAuthentication()` を `UseAuthorization()` の直前に置きます。
+
+> [!WARNING]
+> 認可より前に `UseStaticFiles` などがレスポンスを返す構成では、その後の認可処理は実行されません。公開用の `wwwroot` に機密ファイルを置かず、認可が必要なファイルは保護されたエンドポイントから返してください。
+
+### 認証スキームと既定のポリシー
+
+**認証スキーム (Authentication Scheme)** は、認証ハンドラーとその設定を識別する名前です。`Cookies`、`OpenIdConnect`、`Bearer` などを使い分けます。
+
+| 操作 | 意味 | 典型的な処理 |
+| --- | --- | --- |
+| Authenticate | 資格情報から認証結果を得る | Cookie / Bearer トークンの検証 |
+| Challenge | 認証を要求する | OIDC ログイン開始、Bearer の `401` と `WWW-Authenticate` |
+| Forbid | 認証済みだが許可しない | Bearer の `403`、Web 画面のアクセス拒否処理 |
+| SignIn / SignOut | ログイン状態を確立 / 解除する | Cookie の発行 / 削除など |
+
+Cookie と JWT を一つのアプリケーションで併用する場合は、API が Cookie でも認証を通過するのか、Bearer だけを許可するのかを明示します。例えば、登録済みの Bearer スキームだけを選ぶ属性は `[Authorize(AuthenticationSchemes = JwtBearerDefaults.AuthenticationScheme)]` です。Identity が内部で行う既定スキームの登録も考慮し、`AddAuthentication` を無計画に上書きしないでください。
+
+| ポリシー | 適用される場面 |
+| --- | --- |
+| `DefaultPolicy` | ポリシー名なしの `[Authorize]` / `RequireAuthorization()` |
+| `FallbackPolicy` | エンドポイントに明示的な認可ポリシーなどがない場合 |
+| 名前付きポリシー | `ReadReports` などを明示した場合 |
+
+第4節の `FallbackPolicy` は保護指定の付け忘れを防ぐための設定です。ただし、**名前付きポリシーに自動的に追加される条件ではありません**。そのため、各ポリシーにも `RequireAuthenticatedUser()` を入れています。`AllowAnonymous` はこれらの認可をスキップするので、公開する必要がある箇所だけに限定します。
+
+> [!NOTE]
+> ASP.NET Core 10 の Cookie 認証は、`[ApiController]` や JSON を扱う Minimal API など、**既知の API エンドポイント**ではログイン画面へリダイレクトせず、既定で `401` / `403` を返します。すべての URL やすべての `MapGet` が同じ扱いになるという意味ではありません。ブラウザー向け画面と API を分けて確認してください。
+
+### 本番環境への移行と確認項目
+
+| 確認すること | 注意点 |
+| --- | --- |
+| 認証方式 | 本番環境を Development にせず、開発用 JWT の設定・鍵を持ち込まない |
+| 秘密情報 | User Secrets は開発用。本番では安全な構成プロバイダーを使い、ログにも出さない |
+| HTTPS とプロキシ | 外部公開 URL とコールバックを一致させる。プロキシ経由では信頼する転送元を限定して Forwarded Headers を構成する |
+| Cookie と CSRF | `Secure` / `HttpOnly` を維持し、状態変更には偽造防止対策を行う。HTTPS や CORS だけで CSRF を防げるわけではない |
+| 複数インスタンス | Cookie の復号などに使う Data Protection のキーを、適切に保護・永続化・共有する |
+| ログアウトと失効 | Cookie の削除やクライアントでのトークン削除だけで、流出した JWT が即時無効になるわけではない。有効期間や失効の仕組みを設計する |
+| 認可のテスト | 未認証、権限不足、許可、署名不正、発行者・対象 API の不一致、期限切れをそれぞれ確認する |
+
+OIDC の `state` / `nonce`、相関 Cookie、署名検証などの安全機構を、ログインエラーを消すために無効化してはいけません。エラー時は、公開 URL、プロバイダーの登録、HTTPS、Cookie の送受信、クレーム名を確認します。
+
+認可の条件はテストで固定できます。例えば、`ReadReports` では「Admin だけでは許可されない」、スコープのハンドラーでは「`reports.read.all` は `reports.read` ではない」といった境界も確認すると、設定変更による意図しない許可を検出できます。
+
+本章の検証用プロジェクトは、リポジトリの `src/09/` にあります。本文の構成にテスト用の公開エントリーポイントなどを補い、Identity（MVC / Minimal API）、OIDC、JWT の各サンプルを分けています。リポジトリのルートから次を実行できます。
+
+```bash
+cd src/09
+dotnet test Chapter09.slnx
+```
+
+テストでは外部プロバイダーへの接続や実際のメール送信は行いません。本番構成でのログイン、メール確認、プロキシ経由の通信、複数インスタンスでの Cookie の共有は、別途環境を用意して確認してください。
+
+## 7. 参考ドキュメント
+
+### Microsoft Learn
+
+- [ASP.NET Core の認証の概要 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/authentication/?view=aspnetcore-10.0)
+- [MVC の単純な認可 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/mvc/security/authorization/simple?view=aspnetcore-10.0)
+- [ASP.NET Core のフィルター | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/mvc/controllers/filters?view=aspnetcore-10.0)
+- [認可で保護されたユーザーデータを含むアプリケーションの作成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/authorization/secure-data?view=aspnetcore-10.0#require-authenticated-users)
+- [ASP.NET Core Identity の概要 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/authentication/identity?view=aspnetcore-10.0)
+- [Identity モデルのカスタマイズ | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/authentication/customize-identity-model?view=aspnetcore-10.0)
+- [Identity のスキャフォールディング | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/authentication/scaffold-identity?view=aspnetcore-10.0)
+- [.NET ローカルツールのインストールと使用 | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/core/tools/local-tools-how-to-use)
+- [dotnet tool install | Microsoft Learn](https://learn.microsoft.com/ja-jp/dotnet/core/tools/dotnet-tool-install)
+- [Identity を使用して SPA の Web API バックエンドを保護する | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/authentication/identity-api-authorization?view=aspnetcore-10.0)
+- [外部ログインプロバイダーを使用した認証 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/authentication/social/?view=aspnetcore-10.0)
+- [OpenID Connect Web 認証の構成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/authentication/configure-oidc-web-authentication?view=aspnetcore-10.0)
+- [JWT Bearer 認証の構成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/authentication/configure-jwt-bearer-authentication?view=aspnetcore-10.0)
+- [dotnet user-jwts によるトークンの生成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/authentication/jwt-authn?view=aspnetcore-10.0)
+- [Cookie 認証 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/authentication/cookie?view=aspnetcore-10.0)
+- [ポリシーベースの認可 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/authorization/policies?view=aspnetcore-10.0)
+- [MVC のロールベースの認可 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/mvc/security/authorization/roles?view=aspnetcore-10.0)
+- [リソースベースの認可 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/authorization/resource-based?view=aspnetcore-10.0)
+- [ASP.NET Core ミドルウェア | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/middleware/?view=aspnetcore-10.0)
+- [静的ファイルの認可 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/fundamentals/static-files?view=aspnetcore-10.0#static-file-authorization)
+- [クロスサイトリクエストフォージェリ対策 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/anti-request-forgery?view=aspnetcore-10.0)
+- [Data Protection の構成 | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/security/data-protection/configuration/overview?view=aspnetcore-10.0)
+
+### SQLite の公式ドキュメント
+
+- [SQLite のコマンドラインシェル](https://sqlite.org/cli.html)
+- [SQLite のダウンロード](https://sqlite.org/download.html)
+
+### 他言語・フレームワークの公式ドキュメント
+
+- [HTTP リクエストの認可 | Spring Security](https://docs.spring.io/spring-security/reference/servlet/authorization/authorize-http-requests.html)
+- [認証システムの利用 | Django](https://docs.djangoproject.com/en/6.0/topics/auth/default/)
+- [認可 | NestJS](https://docs.nestjs.com/security/authorization)
+- [認可 | Laravel](https://laravel.com/docs/13.x/authorization)
+- [JWT ミドルウェア | Echo](https://echo.labstack.com/middleware/jwt/)
+- [Route Guards | Angular](https://angular.dev/guide/routing/route-guards)
+
+---
+
+*前の章: [第8章：データベースアクセスと ORM (Entity Framework Core)](../08-entity-framework-core/index.md)*
+
+*次の章: 第10章：テスト入門（準備中）*

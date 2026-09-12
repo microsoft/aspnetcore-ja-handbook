@@ -1496,3 +1496,7 @@ flowchart TB
 - [SQL Server の接続プール | Microsoft Learn](https://learn.microsoft.com/ja-jp/sql/connect/ado-net/sql-server-connection-pooling?view=sql-server-ver17)
 - [EF Core アプリケーションのテスト | Microsoft Learn](https://learn.microsoft.com/ja-jp/ef/core/testing/)
 - [ASP.NET Core での統合テスト | Microsoft Learn](https://learn.microsoft.com/ja-jp/aspnet/core/test/integration-tests?view=aspnetcore-10.0)
+
+---
+
+*次の章: [第9章：認証と認可](../09-authentication-and-authorization/index.mdx)*
