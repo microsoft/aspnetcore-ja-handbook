@@ -1084,13 +1084,15 @@ try
 }
 catch
 {
-    await transaction.RollbackAsync(cancellationToken);
+    await transaction.RollbackAsync(CancellationToken.None);
     throw;
 }
 ```
 
 > [!TIP]
 > `await using` で破棄されるとき、コミットされていないトランザクションは自動的にロールバックされます。そのため `catch` 内の `RollbackAsync` は必須ではありませんが、意図を明示するために書いておくと読みやすくなります。
+>
+> [`RollbackAsync` 自体もキャンセルの対象です](https://learn.microsoft.com/ja-jp/dotnet/api/microsoft.entityframeworkcore.storage.idbcontexttransaction.rollbackasync?view=efcore-10.0)。要求のキャンセルで後始末まで中断しないよう、ここでは `CancellationToken.None` を渡します。ただし、接続障害などによるロールバックの失敗を防ぐ指定ではありません。
 
 分離レベルを指定することもできます。
 

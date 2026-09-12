@@ -515,7 +515,7 @@ when IDENTITY_INSERT is set to OFF.
 [公式が案内している回避策](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/value-generation#inserting-explicit-values-into-identity-columns)は、`SET IDENTITY_INSERT` を自分で切り替える方法です。**この設定はトランザクションではなく接続のセッションに対して働く**ため、EF Core の操作と同じ接続で実行する必要があります。次の例では、トランザクションによって接続を開いたままにし、その接続上で SQL の発行と保存を行います。
 
 > [!IMPORTANT]
-> **次のコードは、EF Core の自動再試行を有効にしていない構成が前提です。** [公式の接続回復性の説明](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/#connection-resiliency)のとおり、`UseAzureSql` は既定で再試行を有効にします。`UseAzureSql` や `EnableRetryOnFailure` を使う構成では、このコードをそのまま実行せず、[付録4の実行戦略とトランザクションの例](../appendix-efcore-04/#接続の回復性とトランザクションの併用)に従ってください。`CreateExecutionStrategy().ExecuteAsync(...)` の中で、試行ごとに新しい `DbContext` とトランザクションを作り、`IDENTITY_INSERT ON`、保存、`OFF`、コミットを一単位として扱います。Azure SQL 向けの再試行設定を外すことを推奨するものではありません。
+> **次のコードは、EF Core の自動再試行を有効にしていない構成が前提です。** [公式の接続回復性の説明](https://learn.microsoft.com/ja-jp/ef/core/providers/sql-server/#connection-resiliency)のとおり、`UseAzureSql` は既定で再試行を有効にします。`UseAzureSql` や `EnableRetryOnFailure` を使う構成では、このコードをそのまま実行せず、[付録4の実行戦略とトランザクションの例](../appendix-efcore-04/index.md#接続の回復性とトランザクションの併用)に従ってください。`CreateExecutionStrategy().ExecuteAsync(...)` の中で、試行ごとに新しい `DbContext` とトランザクションを作り、`IDENTITY_INSERT ON`、保存、`OFF`、コミットを一単位として扱います。Azure SQL 向けの再試行設定を外すことを推奨するものではありません。
 
 ```csharp
 await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
