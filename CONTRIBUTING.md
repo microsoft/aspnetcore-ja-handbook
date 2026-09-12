@@ -83,7 +83,7 @@ src/content/docs/
 
 ### ローカルでの確認手順
 
-[Node.js](https://nodejs.org/) の **22.12 以上** が必要です（`node --version` で確認できます）。
+[Node.js](https://nodejs.org/) の **22.19.0 以上** が必要です（`node --version` で確認できます）。Astro の間接依存である `undici` の要件に合わせています。
 
 ```bash
 # 1. 依存パッケージをインストールする（初回のみ）
