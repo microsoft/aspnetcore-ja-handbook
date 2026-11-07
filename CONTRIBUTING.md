@@ -83,7 +83,7 @@ src/content/docs/
 
 ### ローカルでの確認手順
 
-[Node.js](https://nodejs.org/) の **22.19.0 以上** が必要です（`node --version` で確認できます）。Astro の間接依存である `undici` の要件に合わせています。
+[Node.js](https://nodejs.org/) の **26 系**が必要です（`node --version` で確認できます）。nvm を使用する場合は、リポジトリのルートで `nvm install` と `nvm use` を実行すると、`.nvmrc` に指定されたバージョンを使用できます。CI でも同じ 26 系を使用します。
 
 ```bash
 # 1. 依存パッケージをインストールする（初回のみ）
